@@ -78,7 +78,6 @@ var _drag_start := Vector3.ZERO
 var _drag_end := Vector3.ZERO
 var _preview: MeshInstance3D = null
 
-var _house: Node3D = null
 var _is_headless := false
 var _build_test_done := false
 var _npc_test_done := false
@@ -253,10 +252,6 @@ func _build_ground() -> void:
 # ---------------------------------------------------------------- building
 
 func _build_house() -> void:
-	_house = Node3D.new()
-	_house.name = "House"
-	add_child(_house)
-
 	var y0 := 0.0
 	var y1 := FLOOR_H
 
@@ -289,52 +284,37 @@ func _build_house() -> void:
 	]
 	building.submit_many(intents)
 
-	# NOTE: slabs and stairs are still emitted directly here. They belong in
-	# BuildingState too (doc #18 lists Floor / Stair alongside Wall), but they
-	# are not what the State refactor was about, and converting them now would
-	# mix two changes. Tracked as remaining debt.
-
-	# Upper slab: two pieces plus a landing at the head of the stairs, leaving
-	# a stairwell hole between WELL_X0 and WELL_X1.
-	_add_box(_house, Vector3(WELL_X0 * 0.5, y1 - 0.1, HOUSE_D * 0.5),
-		Vector3(WELL_X0, 0.2, HOUSE_D), "stone", true)            # west half
-	_add_box(_house, Vector3((WELL_X0 + HOUSE_W) * 0.5, y1 - 0.1, WELL_Z0 * 0.5),
-		Vector3(HOUSE_W - WELL_X0, 0.2, WELL_Z0), "stone", true)  # south strip
-	_add_box(_house, Vector3((WELL_X1 + HOUSE_W) * 0.5, y1 - 0.1,
-		WELL_Z0 + (HOUSE_D - WELL_Z0) * 0.5),
-		Vector3(HOUSE_W - WELL_X1, 0.2, HOUSE_D - WELL_Z0), "stone", true)  # landing
-
-	# Stairs: stepped visuals, one hidden sloped collider. Colliding against the
-	# step boxes themselves makes CharacterBody3D catch on every riser.
-	#
-	# The ramp runs from WELL_X0 to WELL_X1 and rises the full floor. Its slope
-	# must stay under the agent's floor_max_angle, and — just as important — it
-	# must TOP OUT AT FLOOR LEVEL. A ramp that reaches full height only at the
-	# far wall leaves nothing to arrive on, and its tilted collider presents a
-	# vertical face along z = WELL_Z0 that an agent cannot climb from the south.
-	var steps := 8
-	var run_x := WELL_X1 - WELL_X0
-	var rise := FLOOR_H
-	var step_run := run_x / float(steps)
-	var step_rise := rise / float(steps)
+	# Slabs and the stair are submitted as Intents like everything else, so
+	# BuildingState owns them (doc #18 lists Floor and Stair alongside Wall).
+	# A roof generator needs to know where the floors are, which it could not do
+	# while these were emitted straight into the scene.
 	var well_d := HOUSE_D - WELL_Z0
 	var well_cz := WELL_Z0 + well_d * 0.5
 
-	for i in steps:
-		var top := float(i + 1) * step_rise
-		var cx := WELL_X0 + (float(i) + 0.5) * step_run
-		_add_box(_house, Vector3(cx, top * 0.5, well_cz),
-			Vector3(step_run, top, well_d), "wood")
+	# Upper slab: two pieces plus a landing at the head of the stairs, leaving a
+	# stairwell hole between WELL_X0 and WELL_X1.
+	building.submit_many([
+		CozyBuildingIntent.add_slab(
+			Vector3(WELL_X0 * 0.5, y1 - 0.1, HOUSE_D * 0.5),
+			Vector3(WELL_X0, 0.2, HOUSE_D), "stone", 1),                      # west half
+		CozyBuildingIntent.add_slab(
+			Vector3((WELL_X0 + HOUSE_W) * 0.5, y1 - 0.1, WELL_Z0 * 0.5),
+			Vector3(HOUSE_W - WELL_X0, 0.2, WELL_Z0), "stone", 1),            # south strip
+		CozyBuildingIntent.add_slab(
+			Vector3((WELL_X1 + HOUSE_W) * 0.5, y1 - 0.1, well_cz),
+			Vector3(HOUSE_W - WELL_X1, 0.2, well_d), "stone", 1),             # landing
+	])
 
-	var ramp := StaticBody3D.new()
-	var rcs := CollisionShape3D.new()
-	var rbox := BoxShape3D.new()
-	rbox.size = Vector3(sqrt(run_x * run_x + rise * rise), 0.2, well_d)
-	rcs.shape = rbox
-	ramp.add_child(rcs)
-	ramp.position = Vector3(WELL_X0 + run_x * 0.5, rise * 0.5, well_cz)
-	ramp.rotation.z = atan2(rise, run_x)
-	_house.add_child(ramp)
+	# The stair runs from WELL_X0 to WELL_X1 and rises the full floor. Its slope
+	# must stay under the agent's floor_max_angle, and — just as important — it
+	# must TOP OUT AT FLOOR LEVEL. A ramp reaching full height only at the far
+	# wall leaves nothing to arrive on, and its tilted collider presents a
+	# vertical face along z = WELL_Z0 that an agent cannot climb from the south.
+	# Those constraints are properties of the stair's state (start/end), which is
+	# why they live in CozyStairState rather than in the model.
+	building.submit(CozyBuildingIntent.add_stair(
+		Vector3(WELL_X0, 0.0, well_cz), Vector3(WELL_X1, FLOOR_H, well_cz),
+		well_d, "wood"))
 
 
 ## A flat roof slab. Simple on purpose — see the class note. Its job right now
@@ -354,31 +334,6 @@ func _add_wall(a: Vector3, b: Vector3, mat_id := "wood", floor_id := 0) -> CozyW
 		CozyBuildingIntent.draw_wall(a, b, FLOOR_H, WALL_T, mat_id, floor_id))
 
 
-## `collide` matters: floor slabs MUST be solid, or agents walk off the edge and
-## drop to the floor below. Stair step boxes deliberately do NOT collide — the
-## hidden ramp carries that, otherwise the capsule catches on every riser.
-func _add_box(parent: Node3D, center: Vector3, box_size: Vector3, mat_id: String,
-		collide := false) -> MeshInstance3D:
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = box_size
-	mi.mesh = bm
-	mi.position = center
-	mi.material_override = CozyMaterials.get_material(mat_id,
-		Vector3(maxf(box_size.x / 2.0, 1.0), maxf(box_size.z / 2.0, 1.0), 1.0))
-	parent.add_child(mi)
-
-	if collide:
-		var body := StaticBody3D.new()
-		body.position = center
-		var cs := CollisionShape3D.new()
-		var bs := BoxShape3D.new()
-		bs.size = box_size
-		cs.shape = bs
-		body.add_child(cs)
-		parent.add_child(body)
-
-	return mi
 
 
 # ---------------------------------------------------------------- furniture
@@ -848,7 +803,36 @@ func _report() -> void:
 	_check_wall_connection()
 	_check_openings()
 	_check_wall_assembly()
+	_check_building_state()
 	_check_npc_route_plan()
+
+
+## Doc #18 — BuildingState owns floors and stairs, not only walls.
+##
+## This is the debt that blocked V2-17: a roof generator has to know where the
+## floors are and how high the building goes, and it could not find out while
+## slabs and stairs were emitted straight into the scene.
+func _check_building_state() -> void:
+	var s := building.state
+	print("[cozyv2] building state: %s  [%s]" % [
+		s.describe(),
+		"OK" if s.slabs.size() >= 3 and s.stairs.size() >= 1 else "FAIL, incomplete"])
+
+	# A stair steeper than an agent's floor_max_angle is climbed by nobody, so
+	# the constraint is asserted rather than trusted (doc #30).
+	var st: CozyStairState = s.stairs[0]
+	var deg := rad_to_deg(st.slope_angle())
+	var limit := rad_to_deg(player.floor_max_angle)
+	print("[cozyv2] stair %s: %.2f m run, %.2f m rise, %.1f deg (agent limit %.0f)  [%s]" % [
+		st.floor_span(), st.run(), st.rise(), deg, limit,
+		"OK" if deg < limit else "FAIL, too steep to climb"])
+
+	# The head must land at floor level, or the agent arrives on a lip (#30).
+	var head_y := st.end.y
+	var slab_y := s.slabs[0].surface_y()
+	print("[cozyv2] stair head at y=%.2f, floor surface at y=%.2f  [%s]" % [
+		head_y, slab_y,
+		"OK" if is_equal_approx(head_y, slab_y) else "FAIL, stair tops out short"])
 
 
 ## Wall assembly (V2.1 doc 58.3 Layer 3 / E.16 / E.21).

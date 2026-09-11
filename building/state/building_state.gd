@@ -14,7 +14,15 @@ signal changed
 
 var walls: Array[CozyWallState] = []
 
+## Doc #18 lists Floor and Stair alongside Wall as things BuildingState owns.
+## They used to be emitted straight into the scene, which meant a roof generator
+## had no way to find out where the floors were.
+var slabs: Array[CozySlabState] = []
+var stairs: Array[CozyStairState] = []
+
 var _next_wall_id := 1
+var _next_slab_id := 1
+var _next_stair_id := 1
 
 
 func add_wall(a: Vector3, b: Vector3, height := 3.0, thickness := 0.25,
@@ -25,6 +33,50 @@ func add_wall(a: Vector3, b: Vector3, height := 3.0, thickness := 0.25,
 	walls.append(w)
 	changed.emit()
 	return w
+
+
+func add_slab(center: Vector3, size: Vector3, material := "stone",
+		floor_id := 0) -> CozySlabState:
+	var s := CozySlabState.create("slab_%03d" % _next_slab_id, center, size,
+		material, floor_id)
+	_next_slab_id += 1
+	slabs.append(s)
+	changed.emit()
+	return s
+
+
+func add_stair(start: Vector3, end: Vector3, width := 3.0,
+		material := "wood") -> CozyStairState:
+	var s := CozyStairState.create("stair_%03d" % _next_stair_id, start, end,
+		width, material)
+	_next_stair_id += 1
+	stairs.append(s)
+	changed.emit()
+	return s
+
+
+func slab(id: String) -> CozySlabState:
+	for s in slabs:
+		if s.id == id:
+			return s
+	return null
+
+
+func stair(id: String) -> CozyStairState:
+	for s in stairs:
+		if s.id == id:
+			return s
+	return null
+
+
+## Slabs whose walkable surface sits at this floor's elevation — what a roof
+## generator and a floor query both need.
+func slabs_on_floor(floor_id: int) -> Array[CozySlabState]:
+	var out: Array[CozySlabState] = []
+	for s in slabs:
+		if s.floor_id == floor_id:
+			out.append(s)
+	return out
 
 
 func remove_wall(id: String) -> bool:
@@ -102,4 +154,5 @@ func to_dict() -> Dictionary:
 
 
 func describe() -> String:
-	return "%d wall(s), %.1f m3" % [walls.size(), total_volume()]
+	return "%d wall(s), %d slab(s), %d stair(s), %.1f m3" % [
+		walls.size(), slabs.size(), stairs.size(), total_volume()]

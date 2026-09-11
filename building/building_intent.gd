@@ -11,7 +11,7 @@ extends RefCounted
 ## and the existing drag-to-place prototype is explicitly only a test tool until
 ## it goes through here (doc #75, Phase 3).
 
-enum Kind { DRAW_WALL, REMOVE_WALL, ADD_OPENING }
+enum Kind { DRAW_WALL, REMOVE_WALL, ADD_OPENING, ADD_SLAB, ADD_STAIR }
 
 var kind: Kind = Kind.DRAW_WALL
 
@@ -21,11 +21,15 @@ var b := Vector3.ZERO
 var wall_id := ""
 var opening: CozyOpening = null
 
-## DRAW_WALL parameters
+## DRAW_WALL / ADD_SLAB parameters
 var height := 3.0
 var thickness := 0.25
 var material_id := "wood"
 var floor_id := 0
+
+## ADD_SLAB / ADD_STAIR parameters
+var size := Vector3.ONE
+var width := 3.0
 
 ## Openings to cut into the wall as it is created. Carried on the intent so a
 ## wall and its doorway are one atomic edit — the wall's id does not exist until
@@ -55,6 +59,30 @@ static func remove_wall(p_wall_id: String) -> CozyBuildingIntent:
 	var i := CozyBuildingIntent.new()
 	i.kind = Kind.REMOVE_WALL
 	i.wall_id = p_wall_id
+	return i
+
+
+## A floor or ceiling slab. `a` is its centre, `size` its extents.
+static func add_slab(p_center: Vector3, p_size: Vector3, p_material := "stone",
+		p_floor := 0) -> CozyBuildingIntent:
+	var i := CozyBuildingIntent.new()
+	i.kind = Kind.ADD_SLAB
+	i.a = p_center
+	i.size = p_size
+	i.material_id = p_material
+	i.floor_id = p_floor
+	return i
+
+
+## A staircase from `a` (foot) to `b` (head, at the upper floor's level).
+static func add_stair(p_start: Vector3, p_end: Vector3, p_width := 3.0,
+		p_material := "wood") -> CozyBuildingIntent:
+	var i := CozyBuildingIntent.new()
+	i.kind = Kind.ADD_STAIR
+	i.a = p_start
+	i.b = p_end
+	i.width = p_width
+	i.material_id = p_material
 	return i
 
 

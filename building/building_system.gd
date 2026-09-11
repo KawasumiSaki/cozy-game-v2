@@ -17,6 +17,13 @@ signal structure_changed
 var state := CozyBuildingState.new()
 var wall_views: Array[CozyWall] = []
 
+## Slabs and stairs are synced wholesale rather than incrementally. There are a
+## handful of them, so a dirty set would be bookkeeping for no saving — unlike
+## walls, where one edit can touch many. If the count ever grows, this is the
+## place to add tracking.
+var slab_views: Array[CozySlab] = []
+var stair_views: Array[CozyStair] = []
+
 ## Optional terrain gate (doc #12). When set, a DRAW_WALL intent must be
 ## approved by the ground before it may change state. The rule lives HERE, not
 ## in the UI — doc #70 puts rules and solvers between State and Generator, and
@@ -87,6 +94,13 @@ func submit_many(intents: Array) -> CozyWallState:
 					touched.append(w.id)
 					last_dirty.add_wall(w.id, w.floor_id)
 
+			CozyBuildingIntent.Kind.ADD_SLAB:
+				state.add_slab(intent.a, intent.size, intent.material_id,
+					intent.floor_id)
+
+			CozyBuildingIntent.Kind.ADD_STAIR:
+				state.add_stair(intent.a, intent.b, intent.width, intent.material_id)
+
 	regenerate(touched)
 	return result
 
@@ -143,7 +157,43 @@ func regenerate(seed_ids: Array[String] = [], skip_solve := false) -> void:
 			dirty[id] = true
 
 	_sync_views(dirty)
+	_sync_structures()
 	structure_changed.emit()
+
+
+## Bring slab and stair views in line with the state. Same shape as `_sync_views`
+## but without the dirty set — see the note on `slab_views`.
+func _sync_structures() -> void:
+	_sync_group(state.slabs, slab_views, func(s): return s.id,
+		func(): return CozySlab.new(), func(v, s): v.setup_from(s))
+	_sync_group(state.stairs, stair_views, func(s): return s.id,
+		func(): return CozyStair.new(), func(v, s): v.setup_from(s))
+
+
+func _sync_group(states: Array, views: Array, id_of: Callable,
+		make_view: Callable, assign: Callable) -> void:
+	var alive := {}
+	for s in states:
+		alive[id_of.call(s)] = true
+
+	for i in range(views.size() - 1, -1, -1):
+		var v = views[i]
+		if not is_instance_valid(v) or not alive.has(id_of.call(v.state)):
+			if is_instance_valid(v):
+				v.queue_free()
+			views.remove_at(i)
+
+	var have := {}
+	for v in views:
+		have[id_of.call(v.state)] = v
+
+	for s in states:
+		if have.has(id_of.call(s)):
+			continue
+		var v = make_view.call()
+		_view_root.add_child(v)
+		assign.call(v, s)
+		views.append(v)
 
 
 ## Create, refresh or retire views so the scene matches the state.
