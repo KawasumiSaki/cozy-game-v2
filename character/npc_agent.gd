@@ -17,6 +17,13 @@ enum State { IDLE, GOING, WORKING }
 ## How close the agent must actually get before it may start working.
 const ARRIVE_RADIUS := 1.5
 
+## The resident's data (V2-22, doc #43). STATE, not node — the agent reads it
+## rather than keeping its own copy of anything, which is what makes a save file
+## possible without serialising a scene tree.
+var npc_state: CozyNpcState = null
+
+## Fallbacks used only when no state is attached, so the agent still works
+## standalone in a test.
 var job_id := "researcher"
 var job_point_type := "work"   ## What kind of interaction this agent seeks.
 
@@ -35,6 +42,21 @@ var _work_left := 0.0
 var _idle_timer := 0.6
 var _stuck_time := 0.0
 var _last_pos := Vector3.ZERO
+
+
+func _ready() -> void:
+	super._ready()
+	if npc_state != null:
+		# Speed comes from the state, so a trait or an attribute change takes
+		# effect without anything having to remember to push it here.
+		move_speed = npc_state.effective_move_speed()
+		job_id = npc_state.job_id
+
+
+## What kind of point to look for. The JOB decides (doc #138), so swapping a
+## resident's job redirects them without touching their behaviour.
+func want_point_type() -> String:
+	return npc_state.job_point_type() if npc_state != null else job_point_type
 
 
 func _physics_process(delta: float) -> void:
@@ -64,14 +86,19 @@ func _acquire_job() -> void:
 	for o in objects:
 		if not is_instance_valid(o):
 			continue
-		for p in o.free_points_of_type(job_point_type):
+		for p in o.free_points_of_type(want_point_type()):
 			var d := global_position.distance_to(p.world_position)
 			if d < best_dist:
 				best_dist = d
 				best = p
 
+	if npc_state != null and not npc_state.is_assignable():
+		last_status = "aversion: will not do %s" % npc_state.job_name()
+		_idle_timer = 2.0
+		return
+
 	if best == null:
-		last_status = "no free %s point" % job_point_type
+		last_status = "no free %s point" % want_point_type()
 		_idle_timer = 1.0
 		return
 
@@ -157,6 +184,16 @@ func _finish_work() -> void:
 		_target_point.release()
 	_target_point = null
 	completions += 1
+
+	# Working trains the job's skill, scaled by passion (愿景 §10: ×1 / ×2 / ×4).
+	# This is what makes a resident grow into their role rather than staying a
+	# fixed production number.
+	if npc_state != null:
+		var skill_id := CozyJobDefs.primary_skill(npc_state.job_id)
+		if skill_id != "":
+			npc_state.train(skill_id,
+				maxi(1, int(round(npc_state.passion_multiplier(skill_id)))))
+
 	state = State.IDLE
 	_idle_timer = 0.8
 	last_status = "completed %d" % completions
@@ -172,6 +209,9 @@ func _abandon_job() -> void:
 
 
 func status_line() -> String:
+	if npc_state != null:
+		return "%s | %s | done %d" % [
+			npc_state.describe(), last_status, completions]
 	return "%s | %s | done %d" % [job_id, last_status, completions]
 
 

@@ -579,9 +579,14 @@ func _build_characters() -> void:
 	npc = CozyNpcAgent.new()
 	npc.setup("Researcher", Color(0.94, 0.76, 0.62), Color(0.78, 0.44, 0.42),
 		Color(0.20, 0.14, 0.10), false)
+	# The resident's data (V2-22). Everything about who they are lives here; the
+	# node only reads it.
+	npc.npc_state = CozyNpcState.create("npc_001", "Alice", "researcher", 20260911)
+	npc.npc_state.move_speed = 3.5
+	npc.npc_state.set_passion("research", CozySkills.Passion.INTERESTED)
+	npc.npc_state.train("research", 6)
 	npc.uses_gravity = true
 	npc.floor_max_angle = deg_to_rad(55.0)
-	npc.move_speed = 3.5
 	add_child(npc)
 	npc.global_position = Vector3(6.0, 0.2, 1.5)
 	npc.navigator = world_navigator
@@ -1560,6 +1565,7 @@ func _check_npc_work() -> void:
 	var ok := npc.completions > 0
 	print("[cozyv2] npc completed %d job(s), state=%s  [%s]" % [
 		npc.completions, npc.last_status, "OK" if ok else "FAIL, never finished work"])
+	_check_npc_state()
 
 
 func _run_live_rebuild_test() -> void:
@@ -1895,6 +1901,60 @@ func _check_occlusion() -> void:
 		occlusion.debug_summary(), others,
 		"OK" if others == 0 else "FAIL, faded on someone else's behalf"])
 
+
+## The resident's data model (V2-22, doc #43 / 愿景 §9-§10).
+##
+## Checked after the NPC has worked, because the interesting assertion is that
+## the data CHANGED — a state that round-trips but never grows is a snapshot,
+## not a resident.
+func _check_npc_state() -> void:
+	var st := npc.npc_state
+	if st == null:
+		print("[cozyv2] npc state: NOT ATTACHED  [FAIL]")
+		return
+
+	# 愿景 §10 — the multipliers are specified, so they are asserted.
+	var p_neutral := CozySkills.passion_multiplier(CozySkills.Passion.NEUTRAL)
+	var p_interested := CozySkills.passion_multiplier(CozySkills.Passion.INTERESTED)
+	var p_passionate := CozySkills.passion_multiplier(CozySkills.Passion.PASSIONATE)
+	var hate_blocked := not CozySkills.can_be_assigned(CozySkills.Passion.HATE)
+	print("[cozyv2] passions: neutral x%.0f interested x%.0f passionate x%.0f, hate blocked=%s  [%s]" % [
+		p_neutral, p_interested, p_passionate, str(hate_blocked),
+		"OK" if is_equal_approx(p_neutral, 1.0) and is_equal_approx(p_interested, 2.0) 			and is_equal_approx(p_passionate, 4.0) and hate_blocked else "FAIL"])
+
+	# THE PAYOFF, checked FIRST: work must have grown the skill. Asserting it
+	# after the clamp test below would measure a value that test just destroyed —
+	# which is exactly what the first version of this did.
+	#
+	# Starts at 6 with INTERESTED passion (x2), so each finished job adds 2.
+	var trained := st.skill("research")
+	print("[cozyv2] working trained the skill: research=%d after %d job(s)  [%s]" % [
+		trained, npc.completions,
+		"OK" if trained > 6 else "FAIL, skill did not grow"])
+
+	# 愿景 §9 — 0..20, and a value beyond it must be clamped rather than stored.
+	# Destructive, so it runs after everything that reads the worked-for value.
+	st.train("research", 999)
+	var clamped := st.skill("research") == CozySkills.MAX_LEVEL
+	st.train("research", -999)
+	clamped = clamped and st.skill("research") == CozySkills.MIN_LEVEL
+	print("[cozyv2] skill clamp: 0..%d held  [%s]" % [
+		CozySkills.MAX_LEVEL, "OK" if clamped else "FAIL"])
+
+	# doc E.21 — the same seed must give the same character, or a resident's
+	# traits would rearrange themselves across a save and reload.
+	var a := CozyNpcState.create("t", "T", "researcher", 4242)
+	var b := CozyNpcState.create("t", "T", "researcher", 4242)
+	print("[cozyv2] traits deterministic: %s  [%s]" % [
+		str(a.traits), "OK" if a.traits == b.traits and a.traits.size() > 0 else "FAIL"])
+
+	# Round-trip is the save path (V2-26). Everything that matters must survive.
+	st.set_passion("research", CozySkills.Passion.INTERESTED)
+	var restored := CozyNpcState.from_dict(st.to_dict())
+	var same := restored.job_id == st.job_id 		and restored.traits == st.traits 		and restored.skill("research") == st.skill("research") 		and restored.passion("research") == st.passion("research") 		and is_equal_approx(restored.move_speed, st.move_speed)
+	print("[cozyv2] npc state round-trip: job=%s traits=%d skill=%d  [%s]" % [
+		restored.job_name(), restored.traits.size(), restored.skill("research"),
+		"OK" if same else "FAIL"])
 
 func _check_room_at(pos: Vector3, expected: String) -> void:
 	var r := floor_system.room_at(pos)

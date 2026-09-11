@@ -72,7 +72,7 @@
 ### Phase 5 — NPC
 | ID | Block | Status |
 |---|---|---|
-| V2-22 | NPC data model | ⬜ |
+| V2-22 | NPC data model | ✅ |
 | V2-23 | Job / Task | ✅ simplified |
 | V2-24 | Cross-floor work | ✅ |
 | V2-25 | Schedule & needs | ⬜ |
@@ -124,6 +124,8 @@
 | Language | Code and comments in English | Willow 2026-09-11 |
 | UI tool grouping | By OPERATION, not by resulting object — a Door is a wall opening, not a tool | doc #24 |
 | UI selection | Right-click probes what is under the cursor; the menu is built from that | Willow 2026-09-11 |
+| HP / stamina | Shown **only in dungeons**, never on the home HUD | Willow 2026-09-11 |
+| Passion | Scales EXPERIENCE (x1/x2/x4), never speed; aversion means not assignable | 愿景 §10 |
 
 ---
 
@@ -150,7 +152,9 @@ Stated plainly so it is not rediscovered later.
 8. **Outlines emit walls and one doorway only.** Windows and automatic stairs
    are not built, self-intersecting outlines are not guarded against, and a roof
    does not regenerate when the room polygon under it changes.
-9. **The wall assembler does not tile roofs** — ART-12's idea applied to roofs
+9. **Trait effects are mostly inert.** `mood_aura` and friends are stored but
+   nothing consumes them yet — they need V2-25's needs system.
+10. **The wall assembler does not tile roofs** — ART-12's idea applied to roofs
    is not built.
 
 ---
