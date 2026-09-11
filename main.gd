@@ -807,7 +807,48 @@ func _report() -> void:
 	_check_terrain()
 	_check_wall_connection()
 	_check_openings()
+	_check_wall_assembly()
 	_check_npc_route_plan()
+
+
+## Wall assembly (V2.1 doc 58.3 Layer 3 / E.16 / E.21).
+##
+## Three properties, checked separately: blocks tile the span (so a longer wall
+## has proportionally more), the blocks merge into ONE mesh (doc #61), and the
+## layout is DETERMINISTIC so masonry cannot rearrange itself across a reload.
+func _check_wall_assembly() -> void:
+	var south: CozyWall = null
+	for v in building.wall_views:
+		if v.state != null and v.state.length() > 7.5 and v.state.floor_id == 0:
+			south = v
+			break
+	if south == null:
+		print("[cozyv2] wall assembly: SOUTH WALL NOT FOUND  [FAIL]")
+		return
+
+	print("[cozyv2] wall assembly: %.1f m %s wall -> %d blocks in %d mesh(es)  [%s]" % [
+		south.state.length(), south.state.material_id, south.block_count(),
+		south.mesh_count(),
+		"OK" if south.block_count() > 20 and south.mesh_count() == 1 else "FAIL"])
+
+	# doc E.21 — identical inputs must give an identical layout.
+	var a := CozyWallAssembly.blocks_for_span(0.0, 8.0, 0.0, 3.0, 0.8, 0.4, 12345)
+	var b := CozyWallAssembly.blocks_for_span(0.0, 8.0, 0.0, 3.0, 0.8, 0.4, 12345)
+	var same := a.size() == b.size()
+	if same:
+		for i in a.size():
+			if not is_equal_approx(float(a[i]["shade"]), float(b[i]["shade"])):
+				same = false
+				break
+	print("[cozyv2] wall assembly deterministic: %d vs %d blocks, shades match=%s  [%s]" % [
+		a.size(), b.size(), str(same), "OK" if same and a.size() > 0 else "FAIL"])
+
+	# Scaling — twice the wall, meaningfully more blocks.
+	var half := CozyWallAssembly.blocks_for_span(0.0, 4.0, 0.0, 3.0, 0.8, 0.4, 1)
+	var full := CozyWallAssembly.blocks_for_span(0.0, 8.0, 0.0, 3.0, 0.8, 0.4, 1)
+	print("[cozyv2] wall assembly scaling: 4 m -> %d blocks, 8 m -> %d  [%s]" % [
+		half.size(), full.size(),
+		"OK" if full.size() > half.size() * 3 / 2 else "FAIL"])
 
 
 ## Terrain data layer (V2.1 doc #5–#11).

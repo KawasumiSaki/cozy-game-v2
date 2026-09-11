@@ -11,21 +11,29 @@ const MATERIALS := {
 		"name": "Wood",
 		"color": Color(0.62, 0.44, 0.26),
 		"pattern": "plank",
+		"block_length": 1.6,
+		"block_height": 0.28,
 	},
 	"stone": {
 		"name": "Stone",
 		"color": Color(0.56, 0.56, 0.58),
 		"pattern": "flat",
+		"block_length": 0.8,
+		"block_height": 0.4,
 	},
 	"brick": {
 		"name": "Brick",
 		"color": Color(0.66, 0.36, 0.30),
 		"pattern": "plank",
+		"block_length": 0.6,
+		"block_height": 0.3,
 	},
 	"plaster": {
 		"name": "Plaster",
 		"color": Color(0.86, 0.82, 0.72),
 		"pattern": "flat",
+		"block_length": 2.0,
+		"block_height": 1.0,
 	},
 }
 
@@ -52,6 +60,13 @@ static func get_texture(id: String) -> ImageTexture:
 		tex = CozyPixelArt.make_texture(16, def["color"], 0.04, hash(id))
 	_tex_cache[id] = tex
 	return tex
+
+
+## Block dimensions for procedural wall assembly (doc 58.3 Layer 3).
+## Wood reads as long planks, stone as shorter courses, plaster as big panels.
+static func block_size(id: String) -> Vector2:
+	var d := get_def(id)
+	return Vector2(float(d.get("block_length", 0.8)), float(d.get("block_height", 0.4)))
 
 
 static func get_material(id: String, uv_scale := Vector3.ONE) -> StandardMaterial3D:
