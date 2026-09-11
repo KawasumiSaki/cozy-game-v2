@@ -36,6 +36,7 @@ var walls: Array[CozyWall] = []
 var hud: Label = null
 var floor_system: CozyFloorSystem = null
 var room_graph: CozyRoomGraph = null
+var local_nav: CozyLocalNav = null
 
 var _is_headless := false
 
@@ -224,6 +225,14 @@ func _detect_rooms() -> void:
 	room_graph = CozyRoomGraph.new()
 	room_graph.build(floor_system)
 
+	# ---- Local navigation (V2-09) ----
+	# The lower half of the doc's split (#41): macro says "cross this room",
+	# local says "here is how you actually walk across it".
+	var ground_rooms := floor_system.rooms_on(0)
+	if not ground_rooms.is_empty():
+		local_nav = CozyLocalNav.new()
+		local_nav.build(ground_rooms[0])
+
 
 ## Doorways are physically open, but topologically they CLOSE a room — a door
 ## separates two spaces while remaining passable (doc #29: a Door knows both
@@ -255,6 +264,35 @@ func _report_rooms() -> void:
 		"door_south[door] -> stair_main[stair]")
 	_check_route("room_0_0", "room_1_0", "stair_main[stair]")
 	_check_route("room_1_0", "room_1_0", "(no route)")
+
+	_check_nav()
+
+
+## Local navigation, and the dynamic-update requirement from doc #86:
+## put a piece of furniture in the way and routing must react to it.
+func _check_nav() -> void:
+	if local_nav == null:
+		print("[cozyv2] local nav NOT BUILT  [FAIL]")
+		return
+
+	var from := Vector2(3.25, 1.0)   # just inside the doorway
+	var to := Vector2(5.3, 4.5)      # foot of the staircase
+
+	var p1 := local_nav.find_path(from, to)
+	var l1 := CozyLocalNav.path_length(p1)
+	print("[cozyv2] nav door->stair:      %3d pts, %5.2f m  [%s]" % [
+		p1.size(), l1, "OK" if p1.size() > 0 else "FAIL, no path"])
+	if p1.is_empty():
+		return
+
+	# Block the direct line with a 0.6 x 4.0 m obstacle, as a table would.
+	local_nav.add_obstacle(Rect2(4.0, 1.2, 0.6, 4.0))
+	var p2 := local_nav.find_path(from, to)
+	var l2 := CozyLocalNav.path_length(p2)
+	var detoured := p2.size() > 0 and l2 > l1
+	print("[cozyv2] nav after obstacle:   %3d pts, %5.2f m  [%s]" % [
+		p2.size(), l2,
+		"OK, detour +%.2f m" % (l2 - l1) if detoured else "FAIL, route did not change"])
 
 
 func _check_route(from_id: String, to_id: String, expect: String) -> void:

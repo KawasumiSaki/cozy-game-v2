@@ -100,6 +100,20 @@ no geometry, no per-floor special-casing. That is doc #41's macro route, and the
 prerequisite for the NPC reaching a second-floor machine (#112) without any
 `if npc_is_textile_worker: go_upstairs()`.
 
+**Local navigation** (V2-09) closes Phase 1 — the lower half of the doc's split:
+the room graph says *which* room to cross, local nav says *how*.
+
+```
+nav door->stair:       15 pts,  4.33 m  [OK]
+nav after obstacle:    22 pts,  5.56 m  [OK, detour +1.23 m]
+```
+
+Dropping a 0.6 x 4.0 m obstacle (a table) across the direct line makes the route
+wrap around it and grow by 1.23 m. That is doc #86's hard requirement —
+"when furniture changes, navigation MUST update" — demonstrated rather than
+asserted. A grid was chosen over a baked navmesh precisely because marking
+cells is synchronous and cheap, while rebaking at runtime is neither.
+
 Run it yourself:
 ```bash
 godot --headless --path ~/cozy-game-v2 --quit-after 900
@@ -125,7 +139,7 @@ godot --headless --path ~/cozy-game-v2 --quit-after 900
 | V2-06 | Room detection | Closed regions auto-derived from the wall graph | M | ✅ 09-11 |
 | V2-07 | Portal | Door / stair / elevator unified as a space connector | S | ✅ 09-11 |
 | V2-08 | Room graph | Macro routing: room → portal → room, across floors | M | ✅ 09-11 |
-| V2-09 | Local navigation | Navmesh per room; furniture updates it | M | ⬜ |
+| V2-09 | Local navigation | Navmesh per room; furniture updates it | M | ✅ 09-11 |
 
 ### Phase 2 — Terrain
 | # | Block | One-liner | Size | Status |
@@ -189,9 +203,15 @@ systems** (doc #179). Space → terrain → building → object → interaction 
 | V2-06 | Room detection | ✅ done — walls now mean something |
 | V2-07 | Portal | ✅ done |
 | V2-08 | Room graph | ✅ done — cross-floor routing works |
+| V2-09 | Local navigation | ✅ done — and reacts to obstacles |
 
-Next session: **V2-09 local navigation** (navmesh per room, updated when
-furniture moves), then Phase 4 Object / InteractionPoint.
+**Phase 1 (spatial core) is complete.** The world now has real floors, rooms
+derived from geometry, portals, cross-floor routing, and local pathfinding.
+
+Next: **Phase 3 building interaction** pulled forward as a vertical slice —
+let the player drag out a wall in-game and watch rooms, portals, the room graph
+and local nav all re-derive live. That exercises every block above at once and
+is the doc's "dynamic spatial structure" claim (#28) made visible.
 
 Reaching V2-06 today means the world stops being "a box you can walk in" and
 starts having **rooms that the system understands** — which is the prerequisite
