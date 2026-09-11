@@ -49,6 +49,19 @@ const RULES := {
 		"near_building": 0.6,
 		"scale": [0.6, 1.0],
 	},
+	"tree": {
+		"asset_id": "tree_oak_01",
+		"base_density": 0.17,
+		# Trees belong to the woodland region and are essentially absent
+		# elsewhere — a lone tree on open grassland should be an event.
+		"biomes": {"forest_edge": 1.0, "grassland": 0.015, "village": 0.0,
+			"shore": 0.0, "rocky": 0.0},
+		"materials": {"grass": 1.0, "soil": 0.6, "sand": 0.0, "stone": 0.0, "water": 0.0},
+		# doc E.20.2 — "建筑周围不应出现：厚草 / 大石头 / 大树". Not a thinning
+		# factor but an absolute: zero means zero.
+		"near_building": 0.0,
+		"scale": [0.85, 1.25],
+	},
 }
 
 ## Ground people walk on may not sprout these (doc E.20.2).
@@ -65,23 +78,47 @@ static func get_rule(id: String) -> Dictionary:
 	return RULES.get(id, {})
 
 
+## Flatten a rule's tables once, so a hot loop does not re-do dictionary
+## lookups for every candidate. Purely a cache — it changes no behaviour.
+static func resolve(rule_id: String) -> Dictionary:
+	var r := get_rule(rule_id)
+	if r.is_empty():
+		return {}
+	return {
+		"id": rule_id,
+		"asset_id": r["asset_id"],
+		"biomes": r["biomes"],
+		"materials": r["materials"],
+		"base_density": float(r["base_density"]),
+		"near_building": float(r["near_building"]),
+		"scale_lo": float(r["scale"][0]),
+		"scale_hi": float(r["scale"][1]),
+	}
+
+
 ## The deterministic half of E.20.1 — everything except the random term.
 ##
 ## Split out from the roll on purpose: this is the part that carries meaning
 ## ("density here is 0.42, and zero on sand") and it can be asserted directly,
 ## where a probability that already has noise baked in cannot.
+##
+## The formula lives HERE and only here. The by-id and by-resolved entry points
+## both funnel through it, because two copies of a density rule will drift.
+static func base_probability_resolved(res: Dictionary, biome: String,
+		material: String, near_building: bool) -> float:
+	if res.is_empty():
+		return 0.0
+	var p: float = res["base_density"]
+	p *= float(res["biomes"].get(biome, 0.0))
+	p *= float(res["materials"].get(material, 0.0))
+	if near_building:
+		p *= float(res["near_building"])
+	return clampf(p, 0.0, 1.0)
+
+
 static func base_probability(rule_id: String, biome: String, material: String,
 		near_building: bool) -> float:
-	var r := get_rule(rule_id)
-	if r.is_empty():
-		return 0.0
-
-	var p: float = r["base_density"]
-	p *= float(r["biomes"].get(biome, 0.0))
-	p *= float(r["materials"].get(material, 0.0))
-	if near_building:
-		p *= float(r["near_building"])
-	return clampf(p, 0.0, 1.0)
+	return base_probability_resolved(resolve(rule_id), biome, material, near_building)
 
 
 ## Does this rule spawn at this cell?
@@ -89,5 +126,11 @@ static func base_probability(rule_id: String, biome: String, material: String,
 ## world rearranges itself across a save and reload (doc E.21).
 static func spawns(rule_id: String, biome: String, material: String,
 		near_building: bool, seed_val: int) -> bool:
-	var p := base_probability(rule_id, biome, material, near_building)
-	return CozyArtSeed.unit(seed_val) < p
+	return CozyArtSeed.unit(seed_val) \
+		< base_probability(rule_id, biome, material, near_building)
+
+
+static func spawns_resolved(res: Dictionary, biome: String, material: String,
+		near_building: bool, seed_val: int) -> bool:
+	return CozyArtSeed.unit(seed_val) \
+		< base_probability_resolved(res, biome, material, near_building)

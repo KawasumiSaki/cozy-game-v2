@@ -28,6 +28,7 @@ const PLACEHOLDER_SIZE := {
 	"grass_tuft_01": 0.55,
 	"flower_daisy_01": 0.45,
 	"rock_small_01": 0.40,
+	"tree_oak_01": 2.40,
 }
 
 var terrain: CozyTerrainSystem = null
@@ -41,6 +42,13 @@ var world_seed := 20260911
 var _meshes: Dictionary = {}       ## asset_id -> MultiMeshInstance3D
 var _counts: Dictionary = {}       ## rule_id  -> instances placed
 var _candidates := 0
+
+## Phase timings from the last rebuild, milliseconds. Split because the two
+## halves have completely different fixes — sampling is arithmetic, mesh
+## building is GPU buffer upload — and guessing which one dominates is how
+## optimisation turns into superstition.
+var sample_ms := 0.0
+var build_ms := 0.0
 
 
 func setup(p_terrain: CozyTerrainSystem, p_assets: CozyAssetLibrary,
@@ -66,8 +74,23 @@ func rebuild() -> Dictionary:
 	if terrain == null:
 		return _counts
 
+	var _rebuild_t0 := float(Time.get_ticks_usec()) / 1000.0
 	var by_asset := {}     ## asset_id -> Array of {pos, scale}
-	var rule_ids := CozyScatterRule.ids()
+
+	# Asked once, not per sample point. See CozyBiome.classify.
+	var any_water := false
+	for coord in terrain.chunks:
+		if (terrain.chunks[coord] as CozyTerrainChunk).has_water:
+			any_water = true
+			break
+
+	# Resolve the rule tables once. The inner loop runs per candidate per rule,
+	# and re-doing the dictionary lookups there is pure waste.
+	var rules: Array = []
+	for rule_id in CozyScatterRule.ids():
+		var res := CozyScatterRule.resolve(rule_id)
+		if not res.is_empty():
+			rules.append(res)
 
 	var extent := terrain.chunk_extent()
 	var origin := terrain.origin
@@ -78,7 +101,8 @@ func rebuild() -> Dictionary:
 			_candidates += 1
 			var material := terrain.material_id_at(x, z)
 			if material != "water":
-				var biome := CozyBiome.classify(terrain, building_points, x, z)
+				var biome := CozyBiome.classify(terrain, building_points, x, z,
+					world_seed, any_water)
 				var near_building := biome == CozyBiome.VILLAGE
 
 				# ChunkCoord + local cell, per doc E.21's seed hierarchy.
@@ -87,15 +111,15 @@ func rebuild() -> Dictionary:
 				var lx := int(floor((x - origin.x) / SAMPLE_STEP))
 				var lz := int(floor((z - origin.y) / SAMPLE_STEP))
 
-				for rule_id in rule_ids:
+				for res in rules:
+					var rule_id: String = res["id"]
 					var seed_val := CozyArtSeed.for_cell(world_seed, ccoord, lx, lz, rule_id)
-					if not CozyScatterRule.spawns(rule_id, biome, material,
+					if not CozyScatterRule.spawns_resolved(res, biome, material,
 							near_building, seed_val):
 						continue
-					var r := CozyScatterRule.get_rule(rule_id)
-					var asset_id: String = r["asset_id"]
+					var asset_id: String = res["asset_id"]
 					var sc := CozyArtSeed.range_f(seed_val ^ 0x5bf03635,
-						float(r["scale"][0]), float(r["scale"][1]))
+						res["scale_lo"], res["scale_hi"])
 					if not by_asset.has(asset_id):
 						by_asset[asset_id] = []
 					by_asset[asset_id].append({"pos": Vector3(x, 0.0, z), "scale": sc})
@@ -103,8 +127,11 @@ func rebuild() -> Dictionary:
 			z += SAMPLE_STEP
 		x += SAMPLE_STEP
 
+	var t_build := Time.get_ticks_usec()
 	for asset_id in by_asset:
 		_build_multimesh(asset_id, by_asset[asset_id])
+	build_ms = float(Time.get_ticks_usec() - t_build) / 1000.0
+	sample_ms = float(t_build) / 1000.0 - _rebuild_t0
 
 	return _counts
 
@@ -148,6 +175,8 @@ func _texture_for(asset_id: String) -> Texture2D:
 			return CozyPixelArt.make_flower_texture()
 		"rock_small_01":
 			return CozyPixelArt.make_pebble_texture()
+		"tree_oak_01":
+			return CozyPixelArt.make_tree_texture()
 		_:
 			return CozyPixelArt.make_grass_tuft_texture()
 

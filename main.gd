@@ -1175,12 +1175,30 @@ func _check_scatter() -> void:
 	print("[cozyv2] scatter near building: %.2f vs %.2f open  [%s]" % [
 		near, away, "OK" if near < away else "FAIL, no thinning"])
 
-	# E.21 — the same world must rebuild identically.
+	# E.19.2 / E.20.2 — woodland is a REGION and trees obey it strictly.
+	var forest_p := CozyScatterRule.base_probability("tree",
+		CozyBiome.FOREST_EDGE, "grass", false)
+	var open_p := CozyScatterRule.base_probability("tree",
+		CozyBiome.GRASSLAND, "grass", false)
+	var near_p := CozyScatterRule.base_probability("tree",
+		CozyBiome.VILLAGE, "grass", true)
+	var trees := scatter.instance_count("tree")
+	print("[cozyv2] scatter forest: forest=%.2f open=%.3f near-building=%.2f, %d tree(s)  [%s]" % [
+		forest_p, open_p, near_p, trees,
+		"OK" if forest_p > 0.1 and open_p < 0.05 and near_p == 0.0 and trees > 0 else "FAIL"])
+
+	# E.21 — the same world must rebuild identically. Also the measurement that
+	# decides whether per-chunk dirty regions are worth building: if a full
+	# rebuild is this cheap, added complexity buys nothing.
 	var fp1 := scatter.fingerprint()
+	var t0 := Time.get_ticks_usec()
 	scatter.rebuild()
+	var ms := float(Time.get_ticks_usec() - t0) / 1000.0
 	var fp2 := scatter.fingerprint()
 	print("[cozyv2] scatter deterministic: fingerprint %d vs %d  [%s]" % [
 		fp1, fp2, "OK" if fp1 == fp2 and fp1 != 0 else "FAIL, field rearranged"])
+	print("[cozyv2] scatter rebuild cost: %.1f ms total = %.1f sampling + %.1f mesh build" % [
+		ms, scatter.sample_ms, scatter.build_ms])
 
 
 ## Asset library (V2.1 doc E.3 / E.4).

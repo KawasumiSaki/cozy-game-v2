@@ -27,6 +27,11 @@ var chunk_z := 0
 ## Nothing rebuilds until a caller clears it — that is what keeps edits local.
 var dirty := true
 
+## Does this chunk contain any water? Maintained as cells change, because the
+## shore test otherwise probes five neighbours per sample point and a world with
+## no water in it pays that cost for nothing.
+var has_water := false
+
 var _material: PackedInt32Array
 var _height: PackedFloat32Array
 var _build: PackedByteArray
@@ -47,6 +52,7 @@ func _init(p_chunk_x := 0, p_chunk_z := 0) -> void:
 	for i in n:
 		_build[i] = CozyTerrainMaterials.default_buildability(
 			CozyTerrainMaterials.id_of(_material[i]))
+	_recount_water()
 
 
 # ---------------------------------------------------------------- geometry
@@ -95,6 +101,21 @@ func cell_at(lx: int, lz: int) -> CozyTerrainCell:
 	return CozyTerrainCell.create(material_id_at(lx, lz), height_at(lx, lz))
 
 
+# Index-based accessors for the hot path. The system's `locate_index()` hands
+# back a flat index, and going back through (lx, lz) would just multiply out
+# again — these skip the round trip.
+func material_by_index(i: int) -> String:
+	return CozyTerrainMaterials.id_of(_material[i])
+
+
+func height_by_index(i: int) -> float:
+	return _height[i]
+
+
+func buildability_by_index(i: int) -> int:
+	return _build[i]
+
+
 # ---------------------------------------------------------------- mutation
 # Every setter marks the chunk dirty. Rebuilding the surface is the caller's
 # decision, made once per edit, not once per cell (doc #33).
@@ -106,11 +127,30 @@ func set_material(lx: int, lz: int, material_id: String) -> bool:
 	var new_index := CozyTerrainMaterials.index_of(material_id)
 	if _material[i] == new_index:
 		return false
+
+	var was_water := _material[i] == _water_index
+	var is_water := new_index == _water_index
 	_material[i] = new_index
 	# Default buildability follows the new material (doc #7 / #11).
 	_build[i] = CozyTerrainMaterials.default_buildability(material_id)
 	dirty = true
+
+	if was_water != is_water:
+		# A flip changes whether the shore test can short-circuit. Recounting
+		# beats tracking a running total with two counters to keep in step.
+		_recount_water()
 	return true
+
+
+static var _water_index := CozyTerrainMaterials.index_of("water")
+
+
+func _recount_water() -> void:
+	for i in _material.size():
+		if _material[i] == _water_index:
+			has_water = true
+			return
+	has_water = false
 
 
 func set_height(lx: int, lz: int, h: float) -> bool:

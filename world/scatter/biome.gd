@@ -27,29 +27,50 @@ const VILLAGE_RADIUS := 7.0
 ## How far water's influence reaches for shore.
 const SHORE_REACH := 2.5
 
+## Woodland is a REGION, not a per-cell roll: a value-noise field decides where
+## forest exists at all, and trees then scatter densely inside it. Per-cell
+## scatter alone can only ever produce denser speckle, never a forest.
+const FOREST_SCALE := 17.0
+const FOREST_THRESHOLD := 0.60
+
 
 ## `building_points` are world positions of built things (wall midpoints,
 ## furniture). Positions rather than nodes because a wall's node sits at the
 ## origin — its geometry is baked into vertices, so `global_position` would say
 ## every wall is at (0,0,0).
+## `any_water` is the caller's answer to "does this world contain water at all".
+## Passed in rather than looked up per call, because the shore test probes five
+## neighbours per sample point and in a world with no water that is five lookups
+## per point spent proving a negative — measured at the dominant cost of a
+## scatter rebuild.
 static func classify(terrain: CozyTerrainSystem, building_points: Array,
-		x: float, z: float) -> String:
+		x: float, z: float, world_seed := 0, any_water := true) -> String:
 	# Water in reach -> shore. Checked on a small cross so a single water cell
 	# does not turn its whole neighbourhood into coastline.
-	if _near_water(terrain, x, z):
+	if any_water and _near_water(terrain, x, z):
 		return SHORE
 
 	var material := terrain.material_id_at(x, z)
 	if material == "stone" or material == "sand":
 		return ROCKY
 
+	# Woodland is decided by a region field, before anything built is considered
+	# — a forest does not stop being a forest because a house is nearby.
+	if is_woodland(x, z, world_seed):
+		return FOREST_EDGE
+
 	if _near_building(building_points, x, z):
 		return VILLAGE
 
-	# Grass that is not near anything built reads as open grassland. Forest edge
-	# is reserved for ground the terrain actually marks as wooded — which today
-	# is nothing, because there are no trees. Stated rather than faked.
 	return GRASSLAND
+
+
+## Is this point inside the woodland region? Deterministic from the world seed
+## (doc E.21), so the forest is in the same place after a save and reload.
+static func is_woodland(x: float, z: float, world_seed: int) -> bool:
+	if world_seed == 0:
+		return false
+	return CozyArtSeed.value_noise(x, z, FOREST_SCALE, world_seed) > FOREST_THRESHOLD
 
 
 static func _near_water(terrain: CozyTerrainSystem, x: float, z: float) -> bool:

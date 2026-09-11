@@ -164,6 +164,38 @@ static func make_pebble_texture(base := Color(0.56, 0.56, 0.58), seed_val := 3) 
 	return _outline(img, Color(0.24, 0.24, 0.26, 1.0))
 
 
+static func make_tree_texture(seed_val := 4) -> ImageTexture:
+	const W := 24
+	const H := 32
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val
+
+	# Trunk
+	var trunk := Color(0.42, 0.29, 0.19)
+	for y in range(20, H - 1):
+		for x in range(10, 14):
+			img.set_pixel(x, y, trunk)
+
+	# Canopy: a rough disc, with a lit top and shaded underside.
+	var leaf := Color(0.28, 0.52, 0.24)
+	var cx := 12.0
+	var cy := 12.0
+	for y in range(2, 22):
+		for x in range(1, W - 1):
+			var dx := float(x) - cx
+			var dy := (float(y) - cy) * 1.15
+			if dx * dx + dy * dy <= 92.0:
+				var n := rng.randf_range(-0.06, 0.06)
+				var shade := 1.0 - float(y) * 0.012
+				img.set_pixel(x, y, Color(
+					clampf(leaf.r * shade + n, 0.0, 1.0),
+					clampf(leaf.g * shade + n, 0.0, 1.0),
+					clampf(leaf.b * shade + n, 0.0, 1.0), 1.0))
+	return _outline(img, Color(0.14, 0.22, 0.12, 1.0))
+
+
 ## Billboarding material for scattered vegetation. Fixed-Y so a sprite never
 ## tips with the camera (docs/ART_PROFILE.md), alpha-cut so depth sorting stays
 ## correct and walls still occlude it.
