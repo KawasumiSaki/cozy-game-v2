@@ -114,6 +114,36 @@ wrap around it and grow by 1.23 m. That is doc #86's hard requirement —
 asserted. A grid was chosen over a baked navmesh precisely because marking
 cells is synchronous and cheap, while rebaking at runtime is neither.
 
+**Live building** (Phase 3 pulled forward):
+press `B`, drag on the ground, and a wall appears — after which rooms, portals,
+the room graph and local navigation all re-derive.
+
+```
+--- live rebuild test: add a dividing wall ---
+floor-0 rooms 1 -> 2  [OK]
+  room_0_0 (24.0 m2, 5 verts)      left half
+  room_0_1 (24.0 m2, 4 verts)      right half
+  room_1_0 (48.0 m2, 4 verts)      upper floor untouched
+  door_south  f0/outdoors <-> f0/room_0_0     re-bound to the left room
+  stair_main  f0/room_0_1 <-> f1/room_1_0     re-bound to the right room
+```
+
+One wall splits the room in two **and both portals re-bind to the correct new
+rooms**, with nothing explicitly handling that — it falls out of re-deriving
+downstream. This is doc #28's "dynamic spatial structure".
+
+### Bug this test caught: T-junctions
+
+The dividing wall's far end lands in the *middle* of the north wall. The
+detector originally only joined segments that shared an endpoint, so a
+T-junction left the long wall as a single edge — the graph was not planar and
+face traversal could not see the two new rooms. The wall silently failed to
+divide.
+
+Fixed with **planar subdivision**: any node lying on a segment's interior splits
+that segment. This is a prerequisite for wall connection solving (#24) and
+procedural building fusion (#25), so it had to be right here rather than later.
+
 Run it yourself:
 ```bash
 godot --headless --path ~/cozy-game-v2 --quit-after 900
@@ -152,7 +182,7 @@ godot --headless --path ~/cozy-game-v2 --quit-after 900
 ### Phase 3 — Building
 | # | Block | One-liner | Size | Status |
 |---|---|---|---|---|
-| V2-14 | Building intent | Draw an outline → system generates the structure | M | ⬜ |
+| V2-14 | Building intent | Draw an outline → system generates the structure | M | 🚧 09-11 — drag-to-place wall + live rebuild |
 | V2-15 | Wall connection solver | Corners, beams, joints where segments meet | M | ⬜ |
 | V2-16 | Openings | Door / window cut into a wall as parametric openings | M | ⬜ |
 | V2-17 | Roof generator | Polygon → ridge → roof geometry (gable/hip/flat) | L | ⬜ |

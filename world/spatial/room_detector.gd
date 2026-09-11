@@ -18,6 +18,7 @@ extends RefCounted
 
 const SNAP := 1000.0   ## Quantise endpoints to 1mm so shared corners unify.
 const MAX_STEPS := 100000
+const ON_EDGE_TOL := 0.001   ## Metres; a node this close to a segment lies on it.
 
 
 var _positions: Array[Vector2] = []
@@ -35,10 +36,62 @@ var _he_used: Array[bool] = []
 ## Returns: Array[PackedVector2Array], one polygon per enclosed room.
 func detect(segments: Array) -> Array:
 	_reset()
+
+	# Pass 1 — collect every endpoint as a candidate node.
+	var raw: Array = []
 	for seg in segments:
-		_add_segment(seg[0], seg[1])
+		var a: Vector2 = seg[0]
+		var b: Vector2 = seg[1]
+		raw.append([a, b])
+		_node_index(a)
+		_node_index(b)
+
+	# Pass 2 — planar subdivision: split each segment wherever another node
+	# lies on its interior.
+	#
+	# This is NOT optional. A wall that butts into the middle of another wall
+	# forms a T-junction, and without splitting, the graph is not planar — the
+	# long wall is still one edge, so face traversal cannot see the two rooms
+	# the new wall just created. A dividing wall would silently fail to divide.
+	var all_nodes := _positions.duplicate()
+	for seg in raw:
+		for part in _split_at_nodes(seg[0], seg[1], all_nodes):
+			_add_segment(part[0], part[1])
+
 	_sort_edges()
 	return _trace_faces()
+
+
+## Break a-b at every known node strictly between its endpoints, ordered along
+## the segment. Returns the sub-segments (or the original span when nothing
+## lands on it).
+func _split_at_nodes(a: Vector2, b: Vector2, nodes: Array) -> Array:
+	var d := b - a
+	var len_sq := d.length_squared()
+	if len_sq < 1e-12:
+		return [[a, b]]
+
+	var cuts: Array = []
+	for node_pos in nodes:
+		var pos: Vector2 = node_pos
+		var t: float = (pos - a).dot(d) / len_sq
+		if t <= 0.0 or t >= 1.0:
+			continue   # Only interior points split; endpoints are already nodes.
+		if (a + d * t).distance_to(pos) <= ON_EDGE_TOL:
+			cuts.append({"t": t, "p": pos})
+
+	if cuts.is_empty():
+		return [[a, b]]
+
+	cuts.sort_custom(func(x: Dictionary, y: Dictionary) -> bool: return x["t"] < y["t"])
+
+	var out: Array = []
+	var prev := a
+	for c in cuts:
+		out.append([prev, c["p"]])
+		prev = c["p"]
+	out.append([prev, b])
+	return out
 
 
 func _reset() -> void:

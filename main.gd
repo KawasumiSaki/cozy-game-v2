@@ -1,9 +1,14 @@
 extends Node3D
-## CozyVale V2 — Phase 0 technical spike (V2 tech doc #169).
+## CozyVale V2 — Phase 0/1 spike, plus live building.
 ##
-## The doc scopes Phase 0 down to exactly four things, to prove four things:
-##     ground / wall / two characters / one building
-##   -> front-to-back relations, going up and down floors, occlusion, camera
+## The doc scopes Phase 0 (#169) down to ground / wall / two characters / one
+## building, to prove front-to-back relations, floors, occlusion and camera.
+## Phase 1 adds the spatial core: floors, rooms, portals, macro + local routing.
+##
+## This scene also pulls the first slice of Phase 3 forward: the player can drag
+## out a wall and every derived layer re-computes live — rooms, portals, the room
+## graph and local navigation. That is doc #28's claim made visible:
+##     "a building is not a static picture but a dynamic spatial structure"
 ##
 ## AXIS CONVENTION (important):
 ##   The design doc records height as Z, but Godot is Y-up.
@@ -12,7 +17,8 @@ extends Node3D
 ##       doc(x, y, z)  ->  godot(x, z, y)
 ##
 ## Controls:
-##   WASD move | Q/E rotate camera | R/F pitch | mouse wheel zoom
+##   WASD move | Q/E rotate | R/F pitch | wheel zoom | B toggle build mode
+##   In build mode: left-drag on the ground to place a wall
 
 ## Floor height: a building-system parameter, not hard-coded around the codebase (#8.2).
 const FLOOR_H := 3.0
@@ -26,19 +32,37 @@ const WALL_T := 0.25
 const WELL_X0 := 5.0
 const WELL_Z0 := 3.0
 
-## Flip on to print a per-frame physics probe (useful under --headless).
+## Wall endpoints snap to this grid while dragging. Doc #84 is explicit that
+## snapping must be assistance, not a cage — so this is deliberately fine.
+const SNAP_M := 0.25
+const MIN_WALL_LEN := 0.5
+
+## When the headless autopilot has finished its run, exercise live rebuilding.
+const AUTOPILOT_DONE_FRAME := 420
+
+## Flip on to print a per-frame physics probe outside headless too.
 const DEBUG_PHYSICS_PROBE := false
 
 var camera: CozyCameraRig = null
 var player: CozyCharacter = null
 var npc: CozyCharacter = null
-var walls: Array[CozyWall] = []
 var hud: Label = null
+
+var walls: Array[CozyWall] = []
 var floor_system: CozyFloorSystem = null
 var room_graph: CozyRoomGraph = null
 var local_nav: CozyLocalNav = null
+var _nav_by_room: Dictionary = {}
 
+var build_mode := false
+var _drag_active := false
+var _drag_start := Vector3.ZERO
+var _drag_end := Vector3.ZERO
+var _preview: MeshInstance3D = null
+
+var _house: Node3D = null
 var _is_headless := false
+var _build_test_done := false
 
 
 func _ready() -> void:
@@ -50,11 +74,11 @@ func _ready() -> void:
 	_build_environment()
 	_build_ground()
 	_build_house()
-	_detect_rooms()
+	_rebuild_spatial()
 	_build_characters()
 	_build_camera()
 	_build_hud()
-	_report_rooms()
+	_report()
 
 
 # ---------------------------------------------------------------- environment
@@ -106,9 +130,9 @@ func _build_ground() -> void:
 # ---------------------------------------------------------------- building
 
 func _build_house() -> void:
-	var house := Node3D.new()
-	house.name = "House"
-	add_child(house)
+	_house = Node3D.new()
+	_house.name = "House"
+	add_child(_house)
 
 	var y0 := 0.0
 	var y1 := FLOOR_H
@@ -117,22 +141,22 @@ func _build_house() -> void:
 	# The doorway splits the south wall into two segments. This is exactly the
 	# advantage of segment walls over tiles (doc #16 / #19): the opening can sit
 	# anywhere, it does not have to snap to a grid cell.
-	_add_wall(house, Vector3(0.0, y0, 0.0), Vector3(2.5, y0, 0.0))              # south, left of door
-	_add_wall(house, Vector3(4.0, y0, 0.0), Vector3(HOUSE_W, y0, 0.0))          # south, right of door
-	_add_wall(house, Vector3(HOUSE_W, y0, 0.0), Vector3(HOUSE_W, y0, HOUSE_D))  # east
-	_add_wall(house, Vector3(HOUSE_W, y0, HOUSE_D), Vector3(0.0, y0, HOUSE_D))  # north
-	_add_wall(house, Vector3(0.0, y0, HOUSE_D), Vector3(0.0, y0, 0.0))          # west
+	_add_wall(_house, Vector3(0.0, y0, 0.0), Vector3(2.5, y0, 0.0))              # south, left of door
+	_add_wall(_house, Vector3(4.0, y0, 0.0), Vector3(HOUSE_W, y0, 0.0))          # south, right of door
+	_add_wall(_house, Vector3(HOUSE_W, y0, 0.0), Vector3(HOUSE_W, y0, HOUSE_D))  # east
+	_add_wall(_house, Vector3(HOUSE_W, y0, HOUSE_D), Vector3(0.0, y0, HOUSE_D))  # north
+	_add_wall(_house, Vector3(0.0, y0, HOUSE_D), Vector3(0.0, y0, 0.0))          # west
 
 	# ---- Floor 1: a full ring of exterior walls ----
-	_add_wall(house, Vector3(0.0, y1, 0.0), Vector3(HOUSE_W, y1, 0.0))
-	_add_wall(house, Vector3(HOUSE_W, y1, 0.0), Vector3(HOUSE_W, y1, HOUSE_D))
-	_add_wall(house, Vector3(HOUSE_W, y1, HOUSE_D), Vector3(0.0, y1, HOUSE_D))
-	_add_wall(house, Vector3(0.0, y1, HOUSE_D), Vector3(0.0, y1, 0.0))
+	_add_wall(_house, Vector3(0.0, y1, 0.0), Vector3(HOUSE_W, y1, 0.0))
+	_add_wall(_house, Vector3(HOUSE_W, y1, 0.0), Vector3(HOUSE_W, y1, HOUSE_D))
+	_add_wall(_house, Vector3(HOUSE_W, y1, HOUSE_D), Vector3(0.0, y1, HOUSE_D))
+	_add_wall(_house, Vector3(0.0, y1, HOUSE_D), Vector3(0.0, y1, 0.0))
 
 	# ---- Upper slab, with a hole left open for the stairwell ----
-	_add_box(house, Vector3(WELL_X0 * 0.5, y1 - 0.1, HOUSE_D * 0.5),
+	_add_box(_house, Vector3(WELL_X0 * 0.5, y1 - 0.1, HOUSE_D * 0.5),
 		Vector3(WELL_X0, 0.2, HOUSE_D), "stone")
-	_add_box(house, Vector3((WELL_X0 + HOUSE_W) * 0.5, y1 - 0.1, WELL_Z0 * 0.5),
+	_add_box(_house, Vector3((WELL_X0 + HOUSE_W) * 0.5, y1 - 0.1, WELL_Z0 * 0.5),
 		Vector3(HOUSE_W - WELL_X0, 0.2, WELL_Z0), "stone")
 
 	# ---- Stairs: stepped visuals, but a single sloped collider ----
@@ -150,7 +174,7 @@ func _build_house() -> void:
 	for i in steps:
 		var top := float(i + 1) * step_rise
 		var cx := WELL_X0 + (float(i) + 0.5) * step_run
-		_add_box(house, Vector3(cx, top * 0.5, well_cz),
+		_add_box(_house, Vector3(cx, top * 0.5, well_cz),
 			Vector3(step_run, top, well_d), "wood")
 
 	var ramp := StaticBody3D.new()
@@ -161,7 +185,7 @@ func _build_house() -> void:
 	ramp.add_child(rcs)
 	ramp.position = Vector3(WELL_X0 + run_x * 0.5, rise * 0.5, well_cz)
 	ramp.rotation.z = atan2(rise, run_x)
-	house.add_child(ramp)
+	_house.add_child(ramp)
 
 
 func _add_wall(parent: Node3D, a: Vector3, b: Vector3, mat_id := "wood") -> void:
@@ -183,11 +207,12 @@ func _add_box(parent: Node3D, center: Vector3, box_size: Vector3, mat_id: String
 	return mi
 
 
-# ---------------------------------------------------------------- rooms (V2-06)
+# ---------------------------------------------------------------- spatial rebuild
 
-## Rooms are DERIVED, never authored (doc #26). Feed the wall graph for each
-## floor through a planar face traversal and the enclosed regions fall out.
-func _detect_rooms() -> void:
+## Re-derive every layer that depends on the walls: rooms, portals, the room
+## graph and local navigation. Safe to call repeatedly — that is the whole point
+## (doc #28: change a wall, the room polygon is recomputed).
+func _rebuild_spatial() -> void:
 	floor_system = CozyFloorSystem.new()
 	floor_system.floor_height = FLOOR_H
 
@@ -207,31 +232,26 @@ func _detect_rooms() -> void:
 		for i in polys.size():
 			floor_system.add_room(CozyRoom.new("room_%d_%d" % [fi, i], fi, polys[i]))
 
-	# ---- Portals (V2-07) ----
-	# A door and a staircase are the SAME abstraction to the routing system:
-	# something that joins space A to space B (doc #8.5). Registering them as
-	# portals is what stops floor changes from needing bespoke NPC code (#112).
+	# Portals. These are fixtures for now — V2-16 (openings) will derive them
+	# from the wall data itself, at which point walling up a door will
+	# automatically remove its portal.
 	floor_system.add_portal(CozyPortal.new("door_south", CozyPortal.Kind.DOOR,
 		Vector3(3.25, 0.05, -1.0), Vector3(3.25, 0.05, 1.0)))
 	floor_system.add_portal(CozyPortal.new("stair_main", CozyPortal.Kind.STAIR,
 		Vector3(5.3, 0.05, 4.5), Vector3(7.6, FLOOR_H + 0.05, 4.5)))
-
-	# Now that rooms exist, ask the spatial model which room each side lands in.
 	floor_system.resolve_portals()
 
-	# ---- Room graph (V2-08) ----
-	# Rooms are nodes, portals are edges. This is the macro half of navigation
-	# (doc #41): it answers "which rooms must I cross?" without any geometry.
+	# Rooms are nodes, portals are edges (doc #41, macro half).
 	room_graph = CozyRoomGraph.new()
 	room_graph.build(floor_system)
 
-	# ---- Local navigation (V2-09) ----
-	# The lower half of the doc's split (#41): macro says "cross this room",
-	# local says "here is how you actually walk across it".
-	var ground_rooms := floor_system.rooms_on(0)
-	if not ground_rooms.is_empty():
-		local_nav = CozyLocalNav.new()
-		local_nav.build(ground_rooms[0])
+	# Local navigation per room (doc #41, local half).
+	_nav_by_room.clear()
+	for r in floor_system.all_rooms():
+		var nav := CozyLocalNav.new()
+		nav.build(r)
+		_nav_by_room[r.id] = nav
+	local_nav = _nav_by_room.get("room_0_0", null)
 
 
 ## Doorways are physically open, but topologically they CLOSE a room — a door
@@ -244,86 +264,6 @@ func _door_bridges(floor_index: int) -> Array:
 	return [[Vector2(2.5, 0.0), Vector2(4.0, 0.0)]]
 
 
-func _report_rooms() -> void:
-	if not _is_headless or floor_system == null:
-		return
-	print("[cozyv2] detected rooms:")
-	print(floor_system.describe())
-
-	# Assert the full lookup chain: wall graph -> polygon -> floor -> world point.
-	_check_room_at(Vector3(4.0, 0.1, 3.0), "room_0_0")            # inside, ground floor
-	_check_room_at(Vector3(4.0, FLOOR_H + 0.1, 3.0), "room_1_0")  # same xz, upper floor
-	_check_room_at(Vector3(4.0, 0.1, -6.0), "outdoors")           # outside the footprint
-
-	# Portals must resolve to the rooms their endpoints land in (doc #29).
-	_check_portal("door_south", "", "room_0_0")        # outside <-> ground floor
-	_check_portal("stair_main", "room_0_0", "room_1_0")  # ground floor <-> upper floor
-
-	# Room graph must produce cross-floor routes with no geometry involved.
-	_check_route(CozyRoomGraph.OUTDOORS, "room_1_0",
-		"door_south[door] -> stair_main[stair]")
-	_check_route("room_0_0", "room_1_0", "stair_main[stair]")
-	_check_route("room_1_0", "room_1_0", "(no route)")
-
-	_check_nav()
-
-
-## Local navigation, and the dynamic-update requirement from doc #86:
-## put a piece of furniture in the way and routing must react to it.
-func _check_nav() -> void:
-	if local_nav == null:
-		print("[cozyv2] local nav NOT BUILT  [FAIL]")
-		return
-
-	var from := Vector2(3.25, 1.0)   # just inside the doorway
-	var to := Vector2(5.3, 4.5)      # foot of the staircase
-
-	var p1 := local_nav.find_path(from, to)
-	var l1 := CozyLocalNav.path_length(p1)
-	print("[cozyv2] nav door->stair:      %3d pts, %5.2f m  [%s]" % [
-		p1.size(), l1, "OK" if p1.size() > 0 else "FAIL, no path"])
-	if p1.is_empty():
-		return
-
-	# Block the direct line with a 0.6 x 4.0 m obstacle, as a table would.
-	local_nav.add_obstacle(Rect2(4.0, 1.2, 0.6, 4.0))
-	var p2 := local_nav.find_path(from, to)
-	var l2 := CozyLocalNav.path_length(p2)
-	var detoured := p2.size() > 0 and l2 > l1
-	print("[cozyv2] nav after obstacle:   %3d pts, %5.2f m  [%s]" % [
-		p2.size(), l2,
-		"OK, detour +%.2f m" % (l2 - l1) if detoured else "FAIL, route did not change"])
-
-
-func _check_route(from_id: String, to_id: String, expect: String) -> void:
-	var got := room_graph.route_description(room_graph.find_route(from_id, to_id))
-	print("[cozyv2] route %-10s -> %-10s : %s  [%s]" % [
-		CozyRoomGraph.display_name(from_id), CozyRoomGraph.display_name(to_id), got,
-		"OK" if got == expect else "FAIL, expected " + expect])
-
-
-func _check_portal(pid: String, expect_a: String, expect_b: String) -> void:
-	for p in floor_system.all_portals():
-		if p.id != pid:
-			continue
-		var got_a := p.a_room if p.a_room != "" else "outdoors"
-		var got_b := p.b_room if p.b_room != "" else "outdoors"
-		var ok := got_a == (expect_a if expect_a != "" else "outdoors") \
-			and got_b == (expect_b if expect_b != "" else "outdoors")
-		print("[cozyv2] portal %-12s %s <-> %s  [%s]" % [
-			pid, got_a, got_b,
-			"OK" if ok else "FAIL, expected %s/%s" % [expect_a, expect_b]])
-		return
-	print("[cozyv2] portal %s NOT FOUND  [FAIL]" % pid)
-
-
-func _check_room_at(pos: Vector3, expected: String) -> void:
-	var r := floor_system.room_at(pos)
-	var got := r.id if r != null else "outdoors"
-	print("[cozyv2] room_at(%s) -> %s  [%s]" % [
-		pos, got, "OK" if got == expected else "FAIL, expected " + expected])
-
-
 # ---------------------------------------------------------------- characters
 
 func _build_characters() -> void:
@@ -331,8 +271,7 @@ func _build_characters() -> void:
 	# built inside _ready() from the configured colors. So setup() must run
 	# BEFORE add_child(), otherwise every character gets the default palette.
 
-	# Player starts outside, facing the doorway — easy to verify "walk round the
-	# back / walk inside / go upstairs".
+	# Player starts outside, facing the doorway.
 	player = CozyCharacter.new()
 	player.setup("Player", Color(0.96, 0.80, 0.66), Color(0.36, 0.52, 0.78),
 		Color(0.28, 0.18, 0.12), true)
@@ -372,6 +311,7 @@ func _build_hud() -> void:
 
 	hud = Label.new()
 	hud.position = Vector2(8, 6)
+	hud.add_theme_font_size_override("font_size", 11)
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.0, 0.0, 0.0, 0.45)
 	sb.set_content_margin_all(6)
@@ -379,9 +319,112 @@ func _build_hud() -> void:
 	layer.add_child(hud)
 
 
+# ---------------------------------------------------------------- build interaction
+
+## Where the mouse points on the build floor's plane.
+## The camera is orthographic, so the ray is still well-defined.
+func _mouse_ground_point() -> Vector3:
+	var mp := get_viewport().get_mouse_position()
+	var from := camera.project_ray_origin(mp)
+	var dir := camera.project_ray_normal(mp)
+	var plane_y := floor_system.elevation_of(_build_floor_index())
+	if absf(dir.y) < 0.0001:
+		return Vector3(INF, INF, INF)
+	var t := (plane_y - from.y) / dir.y
+	if t < 0.0:
+		return Vector3(INF, INF, INF)
+	return from + dir * t
+
+
+## Build on the floor the player is standing on — so you can wall in an upstairs
+## room without touching the ground floor.
+func _build_floor_index() -> int:
+	return player.current_floor(FLOOR_H)
+
+
+func _snap(v: Vector3) -> Vector3:
+	return Vector3(snappedf(v.x, SNAP_M), v.y, snappedf(v.z, SNAP_M))
+
+
+func _begin_drag() -> void:
+	var p := _mouse_ground_point()
+	if not is_finite(p.x):
+		return
+	_drag_start = _snap(p)
+	_drag_end = _drag_start
+	_drag_active = true
+	_update_preview()
+
+
+func _update_drag() -> void:
+	if not _drag_active:
+		return
+	var p := _mouse_ground_point()
+	if is_finite(p.x):
+		_drag_end = _snap(p)
+	_update_preview()
+
+
+func _end_drag() -> void:
+	if not _drag_active:
+		return
+	_drag_active = false
+	_clear_preview()
+
+	var t := CozyWall.segment_transform(_drag_start, _drag_end, FLOOR_H)
+	if float(t["length"]) < MIN_WALL_LEN:
+		return   # A click, not a drag — nothing to build.
+
+	_add_wall(_house, _drag_start, _drag_end)
+	# Everything downstream re-derives from the wall list, so one call is enough.
+	_rebuild_spatial()
+	_update_hud()
+
+
+func _update_preview() -> void:
+	if _preview == null:
+		_preview = MeshInstance3D.new()
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.35, 0.80, 1.0, 0.45)
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_preview.material_override = mat
+		add_child(_preview)
+
+	var t := CozyWall.segment_transform(_drag_start, _drag_end, FLOOR_H)
+	var bm := BoxMesh.new()
+	bm.size = Vector3(float(t["length"]), FLOOR_H, WALL_T)
+	_preview.mesh = bm
+	_preview.position = t["center"]
+	_preview.rotation.y = t["angle"]
+
+
+func _clear_preview() -> void:
+	if _preview != null:
+		_preview.queue_free()
+		_preview = null
+
+
 # ---------------------------------------------------------------- input
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_B:
+			build_mode = not build_mode
+			if not build_mode:
+				_drag_active = false
+				_clear_preview()
+			_update_hud()
+			return
+
+	if build_mode:
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed:
+				_begin_drag()
+			else:
+				_end_drag()
+			return
+
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			camera.zoom_in()
@@ -390,6 +433,30 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(delta: float) -> void:
+	_handle_camera_keys(delta)
+
+	if _is_headless:
+		player.set_move_dir(_autopilot_dir())
+		if not _build_test_done and Engine.get_physics_frames() > AUTOPILOT_DONE_FRAME:
+			_build_test_done = true
+			_run_live_rebuild_test()
+	else:
+		if build_mode:
+			_update_drag()
+			player.stop()
+		else:
+			_handle_move_keys()
+
+	if DEBUG_PHYSICS_PROBE or _is_headless:
+		print("frame=%d pos=(%.2f, %.2f, %.2f) floor=%d on_floor=%s" % [
+			Engine.get_physics_frames(), player.global_position.x,
+			player.global_position.y, player.global_position.z,
+			player.current_floor(FLOOR_H), str(player.is_on_floor())])
+
+	_update_hud()
+
+
+func _handle_camera_keys(delta: float) -> void:
 	if Input.is_key_pressed(KEY_Q):
 		camera.rotate_by(-100.0 * delta)
 	if Input.is_key_pressed(KEY_E):
@@ -399,32 +466,22 @@ func _process(delta: float) -> void:
 	if Input.is_key_pressed(KEY_F):
 		camera.pitch_by(-45.0 * delta)
 
+
+func _handle_move_keys() -> void:
 	var dir := Vector3.ZERO
-	if _is_headless:
-		dir = _autopilot_dir()
-	else:
-		if Input.is_key_pressed(KEY_W):
-			dir += camera.ground_forward()
-		if Input.is_key_pressed(KEY_S):
-			dir -= camera.ground_forward()
-		if Input.is_key_pressed(KEY_A):
-			dir -= camera.ground_right()
-		if Input.is_key_pressed(KEY_D):
-			dir += camera.ground_right()
+	if Input.is_key_pressed(KEY_W):
+		dir += camera.ground_forward()
+	if Input.is_key_pressed(KEY_S):
+		dir -= camera.ground_forward()
+	if Input.is_key_pressed(KEY_A):
+		dir -= camera.ground_right()
+	if Input.is_key_pressed(KEY_D):
+		dir += camera.ground_right()
 
 	if dir.length_squared() > 0.0:
 		player.set_move_dir(dir.normalized())
 	else:
 		player.stop()
-
-	# Auto-on under --headless so CI/self-checks always report physics state.
-	if DEBUG_PHYSICS_PROBE or _is_headless:
-		print("frame=%d pos=(%.2f, %.2f, %.2f) floor=%d on_floor=%s" % [
-			Engine.get_physics_frames(), player.global_position.x,
-			player.global_position.y, player.global_position.z,
-			player.current_floor(FLOOR_H), str(player.is_on_floor())])
-
-	_update_hud()
 
 
 ## Headless autopilot: drives the player through the Phase 0 acceptance path
@@ -443,9 +500,111 @@ func _autopilot_dir() -> Vector3:
 	return Vector3.ZERO                     # arrived
 
 
+# ---------------------------------------------------------------- self-check
+
+func _report() -> void:
+	if not _is_headless or floor_system == null:
+		return
+	print("[cozyv2] detected rooms:")
+	print(floor_system.describe())
+
+	# Assert the full lookup chain: wall graph -> polygon -> floor -> world point.
+	_check_room_at(Vector3(4.0, 0.1, 3.0), "room_0_0")            # inside, ground floor
+	_check_room_at(Vector3(4.0, FLOOR_H + 0.1, 3.0), "room_1_0")  # same xz, upper floor
+	_check_room_at(Vector3(4.0, 0.1, -6.0), "outdoors")           # outside the footprint
+
+	# Portals must resolve to the rooms their endpoints land in (doc #29).
+	_check_portal("door_south", "", "room_0_0")          # outside <-> ground floor
+	_check_portal("stair_main", "room_0_0", "room_1_0")  # ground floor <-> upper floor
+
+	# Room graph must produce cross-floor routes with no geometry involved.
+	_check_route(CozyRoomGraph.OUTDOORS, "room_1_0",
+		"door_south[door] -> stair_main[stair]")
+	_check_route("room_0_0", "room_1_0", "stair_main[stair]")
+	_check_route("room_1_0", "room_1_0", "(no route)")
+
+	_check_nav()
+
+
+## Proves doc #28 — "a building is not a static picture but a dynamic spatial
+## structure". Add a dividing wall at runtime; every derived layer must follow.
+## Runs only after the autopilot has arrived, because a bisecting wall would
+## otherwise block the walk-through path.
+func _run_live_rebuild_test() -> void:
+	print("[cozyv2] --- live rebuild test: add a dividing wall ---")
+	var before := floor_system.rooms_on(0).size()
+	_add_wall(_house, Vector3(4.0, 0.0, 0.0), Vector3(4.0, 0.0, HOUSE_D))
+	_rebuild_spatial()
+	var after := floor_system.rooms_on(0).size()
+	print("[cozyv2] floor-0 rooms %d -> %d  [%s]" % [
+		before, after,
+		"OK" if after == before + 1 else "FAIL, expected %d" % (before + 1)])
+	print(floor_system.describe())
+
+
+## Local navigation, and the dynamic-update requirement from doc #86:
+## put a piece of furniture in the way and routing must react to it.
+func _check_nav() -> void:
+	if local_nav == null:
+		print("[cozyv2] local nav NOT BUILT  [FAIL]")
+		return
+
+	var from := Vector2(3.25, 1.0)   # just inside the doorway
+	var to := Vector2(5.3, 4.5)      # foot of the staircase
+
+	var p1 := local_nav.find_path(from, to)
+	var l1 := CozyLocalNav.path_length(p1)
+	print("[cozyv2] nav door->stair:      %3d pts, %5.2f m  [%s]" % [
+		p1.size(), l1, "OK" if p1.size() > 0 else "FAIL, no path"])
+	if p1.is_empty():
+		return
+
+	# Block the direct line with a 0.6 x 4.0 m obstacle, as a table would.
+	local_nav.add_obstacle(Rect2(4.0, 1.2, 0.6, 4.0))
+	var p2 := local_nav.find_path(from, to)
+	var l2 := CozyLocalNav.path_length(p2)
+	var detoured := p2.size() > 0 and l2 > l1
+	print("[cozyv2] nav after obstacle:   %3d pts, %5.2f m  [%s]" % [
+		p2.size(), l2,
+		"OK, detour +%.2f m" % (l2 - l1) if detoured else "FAIL, route did not change"])
+
+
+func _check_room_at(pos: Vector3, expected: String) -> void:
+	var r := floor_system.room_at(pos)
+	var got := r.id if r != null else "outdoors"
+	print("[cozyv2] room_at(%s) -> %s  [%s]" % [
+		pos, got, "OK" if got == expected else "FAIL, expected " + expected])
+
+
+func _check_portal(pid: String, expect_a: String, expect_b: String) -> void:
+	for p in floor_system.all_portals():
+		if p.id != pid:
+			continue
+		var got_a := p.a_room if p.a_room != "" else "outdoors"
+		var got_b := p.b_room if p.b_room != "" else "outdoors"
+		var ok := got_a == (expect_a if expect_a != "" else "outdoors") \
+			and got_b == (expect_b if expect_b != "" else "outdoors")
+		print("[cozyv2] portal %-12s %s <-> %s  [%s]" % [
+			pid, got_a, got_b,
+			"OK" if ok else "FAIL, expected %s/%s" % [expect_a, expect_b]])
+		return
+	print("[cozyv2] portal %s NOT FOUND  [FAIL]" % pid)
+
+
+func _check_route(from_id: String, to_id: String, expect: String) -> void:
+	var got := room_graph.route_description(room_graph.find_route(from_id, to_id))
+	print("[cozyv2] route %-10s -> %-10s : %s  [%s]" % [
+		CozyRoomGraph.display_name(from_id), CozyRoomGraph.display_name(to_id), got,
+		"OK" if got == expect else "FAIL, expected " + expect])
+
+
+# ---------------------------------------------------------------- HUD text
+
 func _update_hud() -> void:
 	var p := player.global_position
 	var room := floor_system.room_at(p) if floor_system != null else null
-	hud.text = "CozyVale V2  Phase 0\nWASD move | Q/E rotate | R/F pitch | wheel zoom\npos   %.1f, %.1f, %.1f\nfloor %d\nroom  %s\nwalls %d" % [
-		p.x, p.y, p.z, player.current_floor(FLOOR_H),
-		(room.id if room != null else "outdoors"), walls.size()]
+	var mode := "BUILD (drag to place a wall)" if build_mode else "MOVE"
+	hud.text = "CozyVale V2\n%s\nWASD move | Q/E rotate | R/F pitch | wheel zoom | B build\npos   %.1f, %.1f, %.1f\nfloor %d   room %s\nwalls %d   rooms %d" % [
+		mode, p.x, p.y, p.z, player.current_floor(FLOOR_H),
+		(room.id if room != null else "outdoors"),
+		walls.size(), floor_system.all_rooms().size() if floor_system != null else 0]

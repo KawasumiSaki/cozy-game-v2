@@ -37,20 +37,31 @@ func setup(p_start: Vector3, p_end: Vector3, p_height := 3.0,
 	_rebuild()
 
 
+## Solve a segment into the box placement a wall needs.
+## Shared with the build-mode preview so the two can never drift apart.
+##
+## A wall extends across the ground plane; height is handled separately, so
+## length only cares about the XZ delta. Aligning the box's local +X with the
+## segment direction means rotating +X about Y by theta to get (cos t, 0, -sin t),
+## which matches the unit segment direction when theta = atan2(-dz, dx).
+static func segment_transform(a: Vector3, b: Vector3, wall_height: float) -> Dictionary:
+	var d := b - a
+	d.y = 0.0
+	var length := maxf(d.length(), 0.001)
+	return {
+		"length": length,
+		"angle": atan2(-d.z, d.x),
+		"center": (a + b) * 0.5 + Vector3(0.0, wall_height * 0.5, 0.0),
+	}
+
+
 func _rebuild() -> void:
 	for c in get_children():
 		c.queue_free()
 
-	# A wall extends across the ground plane; height is handled separately,
-	# so length only cares about the XZ delta.
-	var d := end - start
-	d.y = 0.0
-	var length := maxf(d.length(), 0.001)
-
-	# Align the box's local +X with the segment direction.
-	# Rotating +X about Y by theta yields (cos t, 0, -sin t); matching that to
-	# the unit segment direction gives theta = atan2(-dz, dx).
-	var angle := atan2(-d.z, d.x)
+	var t := segment_transform(start, end, height)
+	var length: float = t["length"]
+	var angle: float = t["angle"]
 
 	var box := BoxMesh.new()
 	box.size = Vector3(length, height, thickness)
@@ -63,7 +74,7 @@ func _rebuild() -> void:
 	mesh_instance = MeshInstance3D.new()
 	mesh_instance.mesh = box
 	mesh_instance.material_override = _mat
-	mesh_instance.position = (start + end) * 0.5 + Vector3(0.0, height * 0.5, 0.0)
+	mesh_instance.position = t["center"]
 	mesh_instance.rotation.y = angle
 	add_child(mesh_instance)
 
