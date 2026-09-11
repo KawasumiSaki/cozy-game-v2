@@ -215,10 +215,10 @@ godot --headless --path ~/cozy-game-v2 --quit-after 900
 ### Phase 2 — Terrain
 | # | Block | One-liner | Size | Status |
 |---|---|---|---|---|
-| V2-10 | Fine grid + chunk | Sub-metre terrain cells, chunked for memory | M | ⬜ |
-| V2-11 | Materials + dig/fill | Grass↔Soil↔Sand↔Stone↔Water, brush editing | M | ⬜ |
+| V2-10 | Fine grid + chunk | Sub-metre terrain cells, chunked for memory | M | ✅ 09-11 |
+| V2-11 | Materials + dig/fill | Grass↔Soil↔Sand↔Stone↔Water, brush editing | M | ✅ 09-11 |
 | V2-12 | Road rasterization | Draw a path → smooth → rasterize to a terrain mask | M | ⬜ |
-| V2-13 | Foundation | Building sits on terrain; support check | S | ⬜ |
+| V2-13 | Foundation | Building sits on terrain; support check | S | ✅ 09-11 (validator) |
 
 ### Phase 3 — Building
 | # | Block | One-liner | Size | Status |
@@ -234,7 +234,7 @@ godot --headless --path ~/cozy-game-v2 --quit-after 900
 | V2-18 | WorldObject | Unified base for furniture / machine / container / item | M | ✅ 09-11 (box furniture) |
 | V2-19 | Free placement | No tile snap + validation (wall / overlap / support / doorway) | M | ✅ 09-11 (no snap; validation basic) |
 | V2-20 | InteractionPoint | Decouples NPC from furniture entirely | M | ✅ 09-11 |
-| V2-21 | Containers | Inventory + capacity + access point | S | ⬜ |
+| V2-21 | Containers | Inventory + capacity + access point | S | 🚧 09-11 (inventory store done) |
 
 ### Phase 5 — NPC
 | # | Block | One-liner | Size | Status |
@@ -349,3 +349,64 @@ screen. None would have been obvious while playing.
    ramp below, open hole above.
 6. **Interaction points were (0,0,0) at planning time** — their world positions
    were only updated in `_process`, but planning happens in `_ready`.
+
+
+---
+
+## V2.1 alignment — 2026-09-11
+
+The upstream master was replaced by 《游戏V2技术架构·最新整合版》. It confirmed
+most of what was already built and turned the bugs found here into formal rules
+(#21 T-junction, #22 connection solver, #24 openings, #30 stairs, #74 the whole
+list). Four real conflicts remained, and all four are now closed.
+
+### The conflicts, and what they were
+
+**1. No Intent layer** (doc #1.4/#70, Appendix C)
+The scene did `UI -> add_child(CozyWall)` — literally the "UI directly edits
+Mesh" pattern Appendix C forbids.
+→ `CozyBuildingIntent` + `CozyTerrainIntent`. `CozyBuildingSystem` is now the
+only place that creates a wall node, and the chain runs
+Intent -> State -> Solver -> Generator -> Runtime nodes.
+
+**2. Mesh was the State** (doc #18/#64)
+`start/end/height/material/openings` lived on a Node3D, so deleting the mesh
+deleted the building.
+→ `CozyWallState` + `CozyBuildingState` hold the truth; `CozyWall` is demoted
+to a generated view. `to_dict()` is already the save shape.
+
+**3. One local edit rebuilt the world** (doc #32/#33, Appendix C)
+`_rebuild_spatial()` rebuilt every room, every nav grid and the whole room
+graph on any change.
+→ `CozyDirtyRegion` records what an edit actually touched. Rooms are re-derived
+only for the changed floor; nav grids only for rooms on it.
+
+**4. No Terrain** (doc #4/#12)
+Buildings could be placed anywhere, on anything.
+→ Terrain cells / chunks / data-driven materials, an intent + rasterizer, and a
+foundation gate enforced inside `CozyBuildingSystem` rather than in a mouse
+handler. `DRAW_WALL` onto uncleared grass is now refused, with a reason.
+
+Plus doc #34-#36: construction is no longer free. Cost is bound to geometry.
+
+### Deliberately deferred
+
+These are in the doc but premature here; doing them now would be effort spent
+on foundations that do not exist yet.
+
+| Doc | Why not yet |
+|---|---|
+| #47-#53 Procedural Art / Art Grammar / Seed | Needs real art assets. Designing grammar for placeholder textures is building on nothing. |
+| #58-#61 LOD, chunk streaming | Two rooms and sixteen terrain chunks do not have a performance problem. |
+| #62-#67 SaveSystem | The save shape now exists (`to_dict` on state and terrain) but nothing writes it yet. Worth doing once objects and NPCs also have state. |
+| #68 project directory | A pure move with no functional gain; better done in the same pass as the next structural change. |
+| #13-#14 full Foundation solver, Building<->Terrain feedback | The validator reports `valid_with_foundation` but no solver acts on it yet. |
+
+### Known remaining debt, stated plainly
+
+- **Slabs and stairs are not in BuildingState.** Doc #18 lists Floor and Stair
+  alongside Wall. They are still emitted directly by the scene.
+- **Terrain height is not displaced into the mesh.** The field carries it and
+  DIG/FILL change it; drawing it needs a subdivided grid per chunk.
+- **Openings do not yet create Portals.** Door and stair portals are still
+  registered as fixtures, so walling up a doorway would not remove its portal.
