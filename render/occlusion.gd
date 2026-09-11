@@ -12,8 +12,8 @@ extends Node3D
 ## The player stays visible and the building keeps its structure.
 
 var camera: Camera3D = null
-var targets: Array = []   ## Characters that must stay visible
-var walls: Array = []     ## Fadeable walls (each needs a static_body)
+var targets: Array = []    ## Characters that must stay visible
+var fadables: Array = []   ## Anything exposing bodies() + set_fade() — walls, roofs
 
 const FADE_ALPHA := 0.22
 const AIM_HEIGHT := 1.0   ## Aim at chest height, not at the feet
@@ -37,7 +37,7 @@ func _process(_delta: float) -> void:
 		if hit and hit.has("collider"):
 			blocked[hit["collider"]] = true
 
-	for w in walls:
+	for w in fadables:
 		if not is_instance_valid(w):
 			continue
 		# A wall is built from several pieces (sills, lintels, spans between
