@@ -776,6 +776,11 @@ func _build_characters() -> void:
 	npc.npc_state.move_speed = 3.5
 	npc.npc_state.set_passion("research", CozySkills.Passion.INTERESTED)
 	npc.npc_state.train("research", 6)
+	# A starter larder. Eating needs food to exist (debt 15), and until §45's
+	# production chain lands there is nothing that produces any — a resident with
+	# an empty pack simply starves, which is the honest behaviour and a poor
+	# first impression. Six loaves is a few days at the doc's own meal times.
+	npc.npc_state.inventory.add("bread", 6.0)
 	npc.uses_gravity = true
 	npc.floor_max_angle = deg_to_rad(55.0)
 	add_child(npc)
@@ -1541,6 +1546,7 @@ func _report() -> void:
 	_check_camera()
 	_check_ui()
 	_check_container()
+	_check_eating()
 	_check_save_load()
 	_check_assets()
 	_check_scatter()
@@ -2494,6 +2500,68 @@ func _check_container() -> void:
 	# Leave the world as it was found.
 	c.inventory.items.clear()
 	pack.items.clear()
+
+
+## Eating (debt 15, and doc #35's item vocabulary).
+##
+## `tick` had no `eat` branch at all: hunger only ever climbed, so a resident
+## reached "critical: eat", walked to a seat, and starved there for the rest of
+## the save. Worth recording that the debt note said "`eat` only restores hunger"
+## — it did not even do that. A debt list can be wrong in the DIRECTION of the
+## problem, not merely stale, and this is the second time today that checking the
+## claim was worth more than acting on it.
+##
+## Three assertions, and the first two are the ones that matter:
+##   1. eating needs FOOD — the pack must shrink
+##   2. an empty pack does NOT feed anyone
+##   3. the larder drains at a sane rate
+func _check_eating() -> void:
+	# (1) and (2): the same meal, with and without a larder.
+	var fed := CozyNpcState.create("fed", "Fed", "researcher", 3)
+	fed.traits = []
+	fed.hunger = 80.0
+	fed.inventory.add("bread", 2.0)
+	var bread_before := fed.inventory.count("bread")
+	fed.tick(1.0, "eat")
+
+	var empty := CozyNpcState.create("empty", "Empty", "researcher", 4)
+	empty.traits = []
+	empty.hunger = 80.0
+	empty.tick(1.0, "eat")
+
+	var fed_ok := fed.hunger < 80.0 and fed.inventory.count("bread") < bread_before
+	var empty_ok := empty.hunger >= 80.0
+	print("[cozyv2] eating: with bread hunger 80->%.0f (bread %.0f->%.0f); empty pack 80->%.0f  [%s]" % [
+		fed.hunger, bread_before, fed.inventory.count("bread"), empty.hunger,
+		"OK" if fed_ok and empty_ok else "FAIL, eating is free food or no food"])
+
+	# (3) The per-frame trap. `tick` runs about 60 times a second with a
+	# `game_hours` of ~0.003, so a naive "still hungry? eat a loaf" consumes the
+	# whole larder in one second. One second of eating is 0.2 game hours, which is
+	# 12 hunger points — well under one 45-point loaf.
+	var nib := CozyNpcState.create("nib", "Nib", "researcher", 5)
+	nib.traits = []
+	nib.hunger = 80.0
+	nib.inventory.add("bread", 10.0)
+	for i in 60:
+		nib.tick(1.0 / 300.0, "eat")
+	var drained := 10.0 - nib.inventory.count("bread")
+	var nib_ok := nib.hunger < 79.0 and drained <= 1.0
+	print("[cozyv2] eating a second of frames: hunger 80->%.0f, loaves eaten %.0f  [%s]" % [
+		nib.hunger, drained,
+		"OK" if nib_ok else "FAIL, servings are not being banked across frames"])
+
+	# (4) The vocabulary itself (doc #35): food is a CATEGORY in the item table,
+	# not a second table, and an inedible item reports no nourishment rather than
+	# a default a caller could read.
+	var foods := CozyMaterials.food_ids()
+	var vocab_ok := foods.has("bread") and CozyMaterials.nourishment("bread") > 0.0 \
+		and CozyMaterials.nourishment("wood") == 0.0 \
+		and not CozyMaterials.is_food("wood")
+	print("[cozyv2] item vocabulary: foods=%s, wood is food=%s nourishment=%.0f  [%s]" % [
+		str(foods), str(CozyMaterials.is_food("wood")),
+		CozyMaterials.nourishment("wood"),
+		"OK" if vocab_ok else "FAIL"])
 
 
 # ---------------------------------------------------------------- save / load

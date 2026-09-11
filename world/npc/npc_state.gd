@@ -73,6 +73,16 @@ const MOOD_PER_HOUR := 6.0
 const MOOD_BASE := 75.0
 
 ## A need past this stops waiting for the schedule (doc #116).
+## Hunger points restored per game hour spent eating (debt 15).
+##
+## Sized so the doc's own day keeps a resident fed: two meals totalling two hours
+## restore 120, while hunger climbs 4/h over 24 h — 96. Balance numbers like this
+## are the only ones in this file that are guesses rather than derivations.
+const EAT_PER_HOUR := 60.0
+
+## Hunger points of the serving currently being eaten. See `_eat`.
+var _serving_left := 0.0
+
 const ENERGY_CRITICAL := 15.0
 const HUNGER_CRITICAL := 80.0
 
@@ -88,6 +98,13 @@ func tick(game_hours: float, activity := "work", night := false) -> void:
 	# Hunger climbs; "Gourmet" makes it climb faster (modifier hunger_rate).
 	hunger = clampf(hunger
 		+ HUNGER_PER_HOUR * game_hours * modifier_product("hunger_rate"), 0.0, 100.0)
+
+	# Eating is the ONLY thing that brings hunger back down, and it needs FOOD
+	# (debt 15). Before this there was no `eat` branch at all: hunger only ever
+	# climbed, so a resident reached "critical: eat", walked to a seat, and
+	# starved there for the rest of the save.
+	if activity == "eat" and hunger > 0.0:
+		hunger = maxf(0.0, hunger - _eat(EAT_PER_HOUR * game_hours))
 
 	if activity == "sleep":
 		energy = clampf(energy + ENERGY_RECOVER_PER_HOUR * game_hours, 0.0, 100.0)
@@ -105,6 +122,41 @@ func tick(game_hours: float, activity := "work", night := false) -> void:
 
 	var rate := MOOD_PER_HOUR * game_hours * maxf(modifier_product("mood_resilience"), 0.1)
 	mood = clampf(mood + clampf(target - mood, -rate, rate), 0.0, 100.0)
+
+
+## Eat for a slice of time, consuming whole servings as they are finished, and
+## report the hunger actually restored.
+##
+## The banked progress exists because `tick` runs per FRAME. `game_hours` is about
+## 0.003 there, so a naive "am I still hungry? then eat a loaf" consumes the whole
+## larder in one second — the loop would run 60 times a second, once per frame.
+## Servings are whole items (you eat a loaf, not 0.37 of one), so something has to
+## remember how much of the current loaf is gone.
+func _eat(want: float) -> float:
+	if inventory == null or want <= 0.0:
+		return 0.0
+	var restored := 0.0
+	var left := want
+	while left > 0.0:
+		if _serving_left <= 0.0 and not _take_a_serving():
+			break                       # nothing edible left in the pack
+		var bite := minf(left, _serving_left)
+		_serving_left -= bite
+		left -= bite
+		restored += bite
+	return restored
+
+
+## Take one serving out of the pack and bank its nourishment. False when the pack
+## holds nothing edible — which is the honest answer, and the reason a resident
+## with an empty pack stays hungry however long they sit at the table.
+func _take_a_serving() -> bool:
+	for id in CozyMaterials.food_ids():
+		if inventory.count(id) >= 1.0:
+			inventory.spend({id: 1.0})
+			_serving_left += CozyMaterials.nourishment(id)
+			return true
+	return false
 
 
 ## The most pressing unmet need, or "" when nothing is urgent (doc #116).
@@ -235,6 +287,9 @@ func to_dict() -> Dictionary:
 		"passions": passions.duplicate(),
 		"traits": traits.duplicate(),
 		"inventory": inventory.items.duplicate() if inventory else {},
+		# How much of the loaf in hand is already gone. Small, but losing it on
+		# load would hand the resident a free serving every save.
+		"serving_left": _serving_left,
 	}
 
 
@@ -266,6 +321,7 @@ static func from_dict(d: Dictionary) -> CozyNpcState:
 		s.inventory = CozyInventory.new()
 	for k in d.get("inventory", {}):
 		s.inventory.add(String(k), float(d["inventory"][k]))
+	s._serving_left = float(d.get("serving_left", 0.0))
 	return s
 
 
