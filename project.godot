@@ -1,0 +1,28 @@
+; Engine configuration file.
+; CozyVale V2 — "Real Space Under the Hood, Pixel Art on the Surface."
+
+config_version=5
+
+[application]
+
+config/name="CozyVale V2"
+config/description="3D Spatial Core + Orthographic Camera + Pixel Art Surface"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+
+[display]
+
+; 640x360 is half of 1280x720, so integer upscaling keeps pixels crisp.
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/stretch/mode="viewport"
+window/stretch/aspect="keep"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+; Pixel art: disable smoothing everywhere by default.
+textures/canvas_textures/default_texture_filter=0
+anti_aliasing/quality/msaa_3d=0
+anti_aliasing/quality/screen_space_aa=0

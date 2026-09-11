@@ -1,0 +1,8 @@
+# Godot editor cache — regenerated automatically, never commit it.
+.godot/
+
+# Local export output
+/build/
+
+# Local export temp files
+*.tmp

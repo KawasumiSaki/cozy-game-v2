@@ -1,0 +1,148 @@
+# CozyVale V2 — Block Roadmap
+
+> Engine: Godot 4.7.2 · Repo: `~/cozy-game-v2` · Started: 2026-09-11
+> Upstream: 《游戏 V2 技术架构》 (tech architecture) + 《游戏-愿景-v2》 (north star)
+> This file is the working map. One block ≈ one session of work.
+> **Every block must end with the demo still runnable.**
+
+---
+
+## Axis convention (locked decision)
+
+The tech doc records height as **Z** (`Floor 0 = Z 0`, `Floor 1 = Z 3`).
+Godot is **Y-up**. This project maps the doc's Z onto Godot's +Y:
+
+```
+doc(x, y, z)  ->  godot(x, z, y)
+```
+
+Semantics are identical — a floor is still a real elevation, not a render layer.
+Only the axis label changes. All spatial code follows this mapping.
+
+---
+
+## Current state
+
+**Phase 0 technical spike — COMPLETE and verified.**
+
+Headless self-check (`--quit-after 900`) drives the player through the Phase 0
+acceptance path and reports physics state every frame:
+
+```
+frame  24  (3.25, 0.00, -3.50)  floor=0   gravity settles
+frame 107  (3.25, 0.00,  2.92)  floor=0   walks north through the doorway
+frame 156  (5.45, 0.72,  4.08)  floor=0   onto the staircase
+frame 190  (6.87, 2.13,  4.08)  floor=1   reaches the upper floor
+frame 206  (7.53, 2.80,  4.08)  floor=1   arrives, stops
+```
+
+Proven: gravity, doorway traversal, stair climbing, floor detection,
+occlusion raycasting — zero errors, zero warnings.
+
+Run it yourself:
+```bash
+godot --headless --path ~/cozy-game-v2 --quit-after 900
+```
+
+---
+
+## Block list
+
+### Phase 0 — Technical spike
+| # | Block | One-liner | Size | Status |
+|---|---|---|---|---|
+| V2-00 | Skeleton + self-check | Project layout, axis convention, headless autopilot harness | S | ✅ 09-11 |
+| V2-01 | Orthographic camera | Ortho rig, follow, zoom steps, yaw/pitch, ground-space basis | S | ✅ 09-11 |
+| V2-02 | Segment wall | start/end/height/thickness → mesh + collider; any length, any angle | S | ✅ 09-11 |
+| V2-03 | Character billboard | Real 3D position + 2D pixel sprite, capsule collision | S | ✅ 09-11 |
+| V2-04 | Occlusion fade | Ray camera→character; fade only the blocking wall | S | ✅ 09-11 |
+
+### Phase 1 — Spatial core
+| # | Block | One-liner | Size | Status |
+|---|---|---|---|---|
+| V2-05 | Floor system | Elevation registry; floor as a first-class spatial layer | S | ⬜ |
+| V2-06 | Room detection | Closed regions auto-derived from the wall graph | M | ⬜ |
+| V2-07 | Portal | Door / stair / elevator unified as a space connector | S | ⬜ |
+| V2-08 | Room graph | Macro routing: room → portal → room, across floors | M | ⬜ |
+| V2-09 | Local navigation | Navmesh per room; furniture updates it | M | ⬜ |
+
+### Phase 2 — Terrain
+| # | Block | One-liner | Size | Status |
+|---|---|---|---|---|
+| V2-10 | Fine grid + chunk | Sub-metre terrain cells, chunked for memory | M | ⬜ |
+| V2-11 | Materials + dig/fill | Grass↔Soil↔Sand↔Stone↔Water, brush editing | M | ⬜ |
+| V2-12 | Road rasterization | Draw a path → smooth → rasterize to a terrain mask | M | ⬜ |
+| V2-13 | Foundation | Building sits on terrain; support check | S | ⬜ |
+
+### Phase 3 — Building
+| # | Block | One-liner | Size | Status |
+|---|---|---|---|---|
+| V2-14 | Building intent | Draw an outline → system generates the structure | M | ⬜ |
+| V2-15 | Wall connection solver | Corners, beams, joints where segments meet | M | ⬜ |
+| V2-16 | Openings | Door / window cut into a wall as parametric openings | M | ⬜ |
+| V2-17 | Roof generator | Polygon → ridge → roof geometry (gable/hip/flat) | L | ⬜ |
+
+### Phase 4 — Object & interaction
+| # | Block | One-liner | Size | Status |
+|---|---|---|---|---|
+| V2-18 | WorldObject | Unified base for furniture / machine / container / item | M | ⬜ |
+| V2-19 | Free placement | No tile snap + validation (wall / overlap / support / doorway) | M | ⬜ |
+| V2-20 | InteractionPoint | Decouples NPC from furniture entirely | M | ⬜ |
+| V2-21 | Containers | Inventory + capacity + access point | S | ⬜ |
+
+### Phase 5 — NPC
+| # | Block | One-liner | Size | Status |
+|---|---|---|---|---|
+| V2-22 | NPC data model | Identity, attributes, skills, needs, inventory | M | ⬜ |
+| V2-23 | Job / Task | Job = what I'm responsible for; Task = what I do now | L | ⬜ |
+| V2-24 | Cross-floor work | Warehouse → stair → floor 1 → machine, no hard-coding | L | ⬜ |
+| V2-25 | Schedule & needs | Time-of-day behaviour; hunger / energy drive tasks | M | ⬜ |
+
+### Phase 6 — Persistence
+| # | Block | One-liner | Size | Status |
+|---|---|---|---|---|
+| V2-26 | Save / load | Save world facts, not transient computation (doc #132–133) | M | ⬜ |
+
+---
+
+## Hard non-goals until the vertical slice works (doc #178)
+
+Explicitly **banned** from core development before Phase 0–5 hold together:
+
+❌ open world ❌ multiplayer ❌ complex combat ❌ 100+ NPC
+❌ full economy ❌ world-tree storyline ❌ the Veil as a full system
+❌ airship piloting ❌ large-scale weather ❌ water simulation
+❌ fluid dynamics ❌ infinite procedural world ❌ genetics/growth systems
+
+The danger is never "we can't write code" — it's **dependency creep between
+systems** (doc #179). Space → terrain → building → object → interaction → NPC.
+
+---
+
+## Target set for 2026-09-11
+
+| # | Block | Notes |
+|---|---|---|
+| V2-00…04 | Phase 0 spike | ✅ done |
+| V2-05 | Floor system | Foundational; everything spatial reads it |
+| V2-06 | Room detection | The block that makes walls mean something |
+| V2-07 | Portal | Door + stair as first-class connectors (stretch) |
+
+Reaching V2-06 today means the world stops being "a box you can walk in" and
+starts having **rooms that the system understands** — which is the prerequisite
+for navigation and NPC work in later sessions.
+
+---
+
+## Art policy
+
+**Art is intentionally a placeholder.** All textures are generated
+procedurally at runtime (`render/pixel_art.gd`). Nothing is a real asset.
+
+When real pixel-art materials arrive from an external generator, only two
+files change — nothing in the game logic:
+
+- `render/pixel_art.gd` — texture factory
+- `data/materials.gd` — the material table
+
+That is the whole point of doc #134 (Data-Driven Design).
