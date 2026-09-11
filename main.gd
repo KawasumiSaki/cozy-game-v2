@@ -72,6 +72,7 @@ var occlusion: CozyOcclusion = null
 var hud: CozyHud = null
 var menu: CozyContextMenu = null
 
+var clock: CozyTimeSystem = null
 var building: CozyBuildingSystem = null
 var terrain: CozyTerrainSystem = null
 var terrain_renderer: CozyTerrainRenderer = null
@@ -119,6 +120,7 @@ func _ready() -> void:
 	if _is_headless:
 		print("[cozyv2] headless self-check start")
 	_build_environment()
+	_build_clock()
 	_build_assets()
 	_build_terrain()
 	# The homestead starts on ground that has already been cleared. Without
@@ -153,6 +155,11 @@ func _ready() -> void:
 	_build_camera()
 	_build_hud()
 	_report()
+
+
+func _build_clock() -> void:
+	clock = CozyTimeSystem.new()
+	add_child(clock)
 
 
 # ---------------------------------------------------------------- environment
@@ -439,6 +446,13 @@ func _place_initial_furniture() -> void:
 	_place_object("campfire", -2.0, 5.0, 0)
 	_place_object("campfire", 10.5, 2.0, 0)
 
+	# A resident's day needs a bed and somewhere to sit, and both have to be
+	# INSIDE: the schedule (V2-25) sends them to sleep, to eat and to rest, and
+	# without these the day simply cannot happen. Furniture placement is by
+	# hand for now — build-mode placement is how a player would do it.
+	_place_object("bed", 1.5, 1.5, 0)
+	_place_object("chair", 2.0, 5.0, 0)
+
 
 func _place_object(def_id: String, x: float, z: float, floor_index: int) -> CozyWorldObject:
 	if not CozyObjectDefs.exists(def_id):
@@ -491,15 +505,49 @@ func _rebuild_spatial(dirty: CozyDirtyRegion = null) -> void:
 		for r in _rooms_by_floor[fi]:
 			floor_system.add_room(r)
 
-	# Portals. Fixtures for now — V2-16 style derivation would bind these to
-	# actual openings once openings carry a portal flag.
-	floor_system.add_portal(CozyPortal.new("door_south", CozyPortal.Kind.DOOR,
-		Vector3(3.25, 0.05, -1.0), Vector3(3.25, 0.05, 1.0)))
+	# The stair portal is still a fixture — a stair is a special component whose
+	# two ends are not derivable from a wall opening. Doors are NOT: they come
+	# out of the wall data below, which is why there is no hand-written door
+	# portal here any more. Registering one by hand as well produced a duplicate
+	# describing the same doorway.
+	#
 	# Both anchors sit OUTSIDE the ramp footprint: the foot just west of it (the
 	# only side you can walk onto), the head on the landing at floor level.
 	floor_system.add_portal(CozyPortal.new("stair_main", CozyPortal.Kind.STAIR,
 		Vector3(WELL_X0 - 0.3, 0.05, 4.5),
 		Vector3((WELL_X1 + HOUSE_W) * 0.5, FLOOR_H + 0.05, 4.5)))
+
+	# Door openings become portals (doc #27 / #29).
+	#
+	# This was MISSING, and it bit: a wall carrying a door still left the rooms
+	# on either side disconnected in the room graph, so a resident whose bedroom
+	# ended up on the far side of a new wall could not reach the stairs — even
+	# though the wall had a door in it. Openings carve geometry, and nothing had
+	# told the graph that they are also passable.
+	#
+	# Doc #29 says a Door "knows room_a and room_b", so the pairing is derived
+	# exactly the way everything else here is: place two probe points either
+	# side of the wall and ask the spatial model which rooms they land in.
+	for ws in building.state.walls:
+		for o in ws.openings:
+			if o.kind != CozyOpening.Kind.DOOR:
+				continue
+			var seg := ws.effective_segment()
+			var a3: Vector3 = seg[0]
+			var b3: Vector3 = seg[1]
+			var flat := Vector3(b3.x - a3.x, 0.0, b3.z - a3.z)
+			if flat.length() < 0.001:
+				continue
+			var dir := flat.normalized()
+			# Openings are measured from the wall's original start.
+			var at := ws.start + dir * o.offset
+			var normal := Vector3(-dir.z, 0.0, dir.x)
+			# Probe far enough out to clear the wall's own thickness.
+			var reach := ws.thickness + 0.9
+			floor_system.add_portal(CozyPortal.new(
+				"%s_%s" % [ws.id, "door"], CozyPortal.Kind.DOOR,
+				at + normal * reach, at - normal * reach))
+
 	floor_system.resolve_portals()
 
 	room_graph = CozyRoomGraph.new()
@@ -591,6 +639,7 @@ func _build_characters() -> void:
 	npc.global_position = Vector3(6.0, 0.2, 1.5)
 	npc.navigator = world_navigator
 	npc.objects = objects
+	npc.clock = clock
 
 
 # ---------------------------------------------------------------- camera & occlusion
@@ -1210,13 +1259,18 @@ func _report() -> void:
 	_check_room_at(Vector3(4.0, FLOOR_H + 0.1, 3.0), "room_1_0")
 	_check_room_at(Vector3(4.0, 0.1, -6.0), "outdoors")
 
-	_check_portal("door_south", "", "room_0_0")
+	# Doors are derived from wall openings now, so the check looks for the
+	# connection rather than for a hand-chosen id.
+	_check_door_between("", "room_0_0")
 	_check_portal("stair_main", "room_0_0", "room_1_0")
 
-	_check_route(CozyRoomGraph.OUTDOORS, "room_1_0",
-		"door_south[door] -> stair_main[stair]")
-	_check_route("room_0_0", "room_1_0", "stair_main[stair]")
-	_check_route("room_1_0", "room_1_0", "(no route)")
+	# Asserted by the KIND of connector crossed, not by id: a door's portal id is
+	# generated from the wall that carries the opening, so a named expectation
+	# would break every time the walls are renumbered — and "through a door,
+	# then up a stair" is what this test actually means.
+	_check_route_kinds(CozyRoomGraph.OUTDOORS, "room_1_0", ["door", "stair"])
+	_check_route_kinds("room_0_0", "room_1_0", ["stair"])
+	_check_route_kinds("room_1_0", "room_1_0", [])
 
 	_check_camera()
 	_check_ui()
@@ -1566,6 +1620,7 @@ func _check_npc_work() -> void:
 	print("[cozyv2] npc completed %d job(s), state=%s  [%s]" % [
 		npc.completions, npc.last_status, "OK" if ok else "FAIL, never finished work"])
 	_check_npc_state()
+	_check_schedule_and_needs()
 
 
 func _run_live_rebuild_test() -> void:
@@ -1573,7 +1628,9 @@ func _run_live_rebuild_test() -> void:
 	var before := floor_system.rooms_on(0).size()
 	# Bisect the GROUND floor. The autopilot has already finished by this frame,
 	# so the new wall cannot interfere with the walk-through test.
-	_add_wall(Vector3(4.0, 0.0, 0.0), Vector3(4.0, 0.0, HOUSE_D), "wood", 0)
+	var divider := _add_wall(Vector3(4.0, 0.0, 0.0), Vector3(4.0, 0.0, HOUSE_D),
+		"wood", 0)
+	divider.add_opening(CozyOpening.door(HOUSE_D * 0.5, 1.2))
 	_rebuild_spatial(building.last_dirty)
 	_refresh_occlusion_fadables()
 	var after := floor_system.rooms_on(0).size()
@@ -1956,11 +2013,84 @@ func _check_npc_state() -> void:
 		restored.job_name(), restored.traits.size(), restored.skill("research"),
 		"OK" if same else "FAIL"])
 
+## Schedule and needs (V2-25, doc #114-#116, 愿景 §10).
+##
+## The point of this block was to make V2-22's data MOVE, and to give the ten
+## traits something to actually affect — until now they were stored numbers
+## nothing read. Both are asserted here rather than assumed.
+func _check_schedule_and_needs() -> void:
+	# doc #114's own day: the schedule must resolve differently at different hours.
+	var slots: Array[String] = [
+		CozySchedule.activity_at(3.0), CozySchedule.activity_at(9.0),
+		CozySchedule.activity_at(12.0), CozySchedule.activity_at(23.0)]
+	var varied: bool = slots[0] != slots[1] and slots[1] != slots[2] and slots[2] != slots[3]
+	print("[cozyv2] schedule: 03:00=%s 09:00=%s 12:00=%s 23:00=%s  [%s]" % [
+		slots[0], slots[1], slots[2], slots[3],
+		"OK" if varied and slots[0] == "sleep" and slots[1] == "work" else "FAIL"])
+
+	# The schedule resolves to a POINT TYPE, never to an object (doc #115).
+	var work_point := CozySchedule.point_for("work")
+	var sleep_point := CozySchedule.point_for("sleep")
+	print("[cozyv2] schedule resolves to point types: work->%s sleep->%s  [%s]" % [
+		work_point, sleep_point,
+		"OK" if work_point == "work" and sleep_point == "sleep" else "FAIL"])
+
+	# Needs decay, and sleep is the only thing that restores energy.
+	var s1 := CozyNpcState.create("n1", "N", "researcher", 7)
+	s1.traits = []
+	s1.hunger = 0.0
+	s1.energy = 100.0
+	s1.tick(4.0, "work")
+	var decayed := s1.hunger > 0.0 and s1.energy < 100.0
+	var before_sleep := s1.energy
+	s1.tick(4.0, "sleep")
+	print("[cozyv2] needs: hunger 0->%d, energy 100->%d->%d(sleep)  [%s]" % [
+		int(s1.hunger), int(before_sleep), int(s1.energy),
+		"OK" if decayed and s1.energy > before_sleep else "FAIL"])
+
+	# A critical need overrides the schedule (doc #116).
+	s1.energy = 5.0
+	var urgent := s1.critical_need()
+	print("[cozyv2] critical need at energy 5: %s  [%s]" % [
+		urgent if urgent != "" else "(none)", "OK" if urgent == "sleep" else "FAIL"])
+
+	# THE PAYOFF FOR THE TRAITS: until this block they were stored values that
+	# nothing consumed. Two residents, same hour, one of them Gourmet.
+	var plain := CozyNpcState.create("p", "Plain", "researcher", 11)
+	plain.traits = []
+	var gourmet := CozyNpcState.create("g", "Gourmet", "researcher", 12)
+	gourmet.traits = ["gourmet"]          # hunger_rate 1.2
+	plain.hunger = 0.0
+	gourmet.hunger = 0.0
+	plain.tick(3.0, "work")
+	gourmet.tick(3.0, "work")
+	print("[cozyv2] trait effect is live: hunger plain=%d gourmet=%d  [%s]" % [
+		int(plain.hunger), int(gourmet.hunger),
+		"OK" if gourmet.hunger > plain.hunger else "FAIL, trait is inert"])
+
+
 func _check_room_at(pos: Vector3, expected: String) -> void:
 	var r := floor_system.room_at(pos)
 	var got := r.id if r != null else "outdoors"
 	print("[cozyv2] room_at(%s) -> %s  [%s]" % [
 		pos, got, "OK" if got == expected else "FAIL, expected " + expected])
+
+
+## Is there a door portal joining these two spaces? Ids are generated from the
+## wall that carries the opening, so matching on the connection is both more
+## meaningful and less brittle than naming one.
+func _check_door_between(expect_a: String, expect_b: String) -> void:
+	var want_a := expect_a if expect_a != "" else "outdoors"
+	var want_b := expect_b if expect_b != "" else "outdoors"
+	for p in floor_system.all_portals():
+		if p.kind != CozyPortal.Kind.DOOR:
+			continue
+		var a := p.a_room if p.a_room != "" else "outdoors"
+		var b := p.b_room if p.b_room != "" else "outdoors"
+		if (a == want_a and b == want_b) or (a == want_b and b == want_a):
+			print("[cozyv2] door portal %-14s %s <-> %s  [OK]" % [p.id, a, b])
+			return
+	print("[cozyv2] door portal %s <-> %s: NONE FOUND  [FAIL]" % [want_a, want_b])
 
 
 func _check_portal(pid: String, expect_a: String, expect_b: String) -> void:
@@ -1976,6 +2106,17 @@ func _check_portal(pid: String, expect_a: String, expect_b: String) -> void:
 			"OK" if ok else "FAIL, expected %s/%s" % [expect_a, expect_b]])
 		return
 	print("[cozyv2] portal %s NOT FOUND  [FAIL]" % pid)
+
+
+func _check_route_kinds(from_id: String, to_id: String, expect: Array) -> void:
+	var route := room_graph.find_route(from_id, to_id)
+	var got: Array = []
+	for p in route:
+		got.append(p.kind_name())
+	var label := "(no route)" if got.is_empty() else " -> ".join(got)
+	print("[cozyv2] route %-10s -> %-10s : %s  [%s]" % [
+		CozyRoomGraph.display_name(from_id), CozyRoomGraph.display_name(to_id), label,
+		"OK" if got == expect else "FAIL, expected %s" % str(expect)])
 
 
 func _check_route(from_id: String, to_id: String, expect: String) -> void:

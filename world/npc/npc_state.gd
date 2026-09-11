@@ -60,6 +60,71 @@ static func create(p_id: String, p_name: String, p_job := "researcher",
 	return s
 
 
+# ---------------------------------------------------------------- needs
+#
+# Rates per game hour. These are the numbers that make a resident's day move,
+# and the place where trait modifiers finally DO something — until this existed
+# the ten traits were stored values nothing read.
+
+const HUNGER_PER_HOUR := 4.0
+const ENERGY_PER_HOUR := 3.0
+const ENERGY_RECOVER_PER_HOUR := 14.0
+const MOOD_PER_HOUR := 6.0
+const MOOD_BASE := 75.0
+
+## A need past this stops waiting for the schedule (doc #116).
+const ENERGY_CRITICAL := 15.0
+const HUNGER_CRITICAL := 80.0
+
+
+## Advance this resident's needs by `game_hours`.
+##
+## `activity` matters because sleep is the only thing that restores energy, and
+## `night` matters because some traits only care after dark.
+func tick(game_hours: float, activity := "work", night := false) -> void:
+	if game_hours <= 0.0:
+		return
+
+	# Hunger climbs; "Gourmet" makes it climb faster (modifier hunger_rate).
+	hunger = clampf(hunger
+		+ HUNGER_PER_HOUR * game_hours * modifier_product("hunger_rate"), 0.0, 100.0)
+
+	if activity == "sleep":
+		energy = clampf(energy + ENERGY_RECOVER_PER_HOUR * game_hours, 0.0, 100.0)
+	else:
+		energy = clampf(energy - ENERGY_PER_HOUR * game_hours, 0.0, 100.0)
+
+	# Mood drifts toward a target set by hunger, tiredness and the hour, and
+	# traits change how FAST it moves rather than where it lands. That split is
+	# deliberate: "Iron Will" should not make a resident happier, only steadier.
+	var target := MOOD_BASE
+	target += modifier_sum("mood_night") if night else modifier_sum("mood_day")
+	target -= hunger * 0.35
+	target -= (100.0 - energy) * 0.15
+	target = clampf(target, 0.0, 100.0)
+
+	var rate := MOOD_PER_HOUR * game_hours * maxf(modifier_product("mood_resilience"), 0.1)
+	mood = clampf(mood + clampf(target - mood, -rate, rate), 0.0, 100.0)
+
+
+## The most pressing unmet need, or "" when nothing is urgent (doc #116).
+##
+## The doc's chain is "Energy ↓ → Need = Sleep → find bed → sleep". A critical
+## need does NOT wait for the schedule to come round to it — that is the whole
+## point of it being critical.
+func critical_need() -> String:
+	if energy <= ENERGY_CRITICAL:
+		return "sleep"
+	if hunger >= HUNGER_CRITICAL:
+		return "eat"
+	return ""
+
+
+func need_summary() -> String:
+	return "hp %d  hunger %d  energy %d  mood %d" % [
+		int(hp), int(hunger), int(energy), int(mood)]
+
+
 # ---------------------------------------------------------------- skills
 
 func skill(id: String) -> int:

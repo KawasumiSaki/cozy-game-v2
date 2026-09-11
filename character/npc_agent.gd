@@ -29,6 +29,10 @@ var job_point_type := "work"   ## What kind of interaction this agent seeks.
 
 var state: State = State.IDLE
 
+## The clock, so the agent knows what KIND of thing it should be doing (#115).
+## Without one it falls back to its job, which keeps it usable in a test.
+var clock: CozyTimeSystem = null
+
 var navigator: CozyWorldNavigator = null
 var objects: Array = []        ## CozyWorldObject list, refreshed by the caller.
 
@@ -53,10 +57,45 @@ func _ready() -> void:
 		job_id = npc_state.job_id
 
 
-## What kind of point to look for. The JOB decides (doc #138), so swapping a
-## resident's job redirects them without touching their behaviour.
+## What kind of point to look for.
+##
+## Decided in three steps, most urgent first:
+##   1. a CRITICAL need overrides everything (doc #116)
+##   2. otherwise the SCHEDULE says what kind of thing to do (doc #115)
+##   3. and the JOB says which interaction the resident prefers (doc #138)
+##
+## Note that none of these name an object. The schedule resolves to an activity,
+## the activity to a point type, and the world is searched for one. That is what
+## keeps `if npc_is_textile_worker: go_upstairs()` from ever being necessary.
 func want_point_type() -> String:
-	return npc_state.job_point_type() if npc_state != null else job_point_type
+	if npc_state == null:
+		return job_point_type
+
+	var urgent := npc_state.critical_need()
+	if urgent != "":
+		var urgent_point := CozySchedule.point_for(urgent)
+		if urgent_point != "":
+			return urgent_point
+
+	if clock != null:
+		var activity := CozySchedule.activity_at(clock.hour)
+		var point := CozySchedule.point_for(activity)
+		if point != "":
+			return point
+
+	return npc_state.job_point_type()
+
+
+## What the resident believes they are doing right now — for the HUD and the
+## info panel, not for any decision.
+func current_activity() -> String:
+	if npc_state != null:
+		var urgent := npc_state.critical_need()
+		if urgent != "":
+			return urgent
+	if clock != null:
+		return CozySchedule.activity_at(clock.hour)
+	return "work"
 
 
 func _physics_process(delta: float) -> void:
@@ -71,6 +110,14 @@ func _physics_process(delta: float) -> void:
 			_work_left -= delta
 			if _work_left <= 0.0:
 				_finish_work()
+
+	# Needs advance with the clock. `current_activity()` rather than the
+	# schedule alone, so a resident who is up because a need woke them recovers
+	# (or does not) according to what they are actually doing.
+	if npc_state != null:
+		var hours := delta / CozyTimeSystem.REAL_SECONDS_PER_GAME_HOUR
+		npc_state.tick(hours, current_activity(),
+			clock.is_night() if clock != null else false)
 
 	# Let the base class apply gravity and move.
 	super._physics_process(delta)
@@ -109,7 +156,7 @@ func _acquire_job() -> void:
 
 	var pts := navigator.plan(global_position, best.world_position)
 	if pts.is_empty():
-		last_status = "no route"
+		last_status = "no route: %s" % navigator.last_failure
 		_idle_timer = 1.0
 		return
 
@@ -210,8 +257,8 @@ func _abandon_job() -> void:
 
 func status_line() -> String:
 	if npc_state != null:
-		return "%s | %s | done %d" % [
-			npc_state.describe(), last_status, completions]
+		return "%s | %s | %s | done %d" % [
+			npc_state.describe(), current_activity(), last_status, completions]
 	return "%s | %s | done %d" % [job_id, last_status, completions]
 
 
@@ -220,6 +267,7 @@ func debug_line() -> String:
 	var wp := Vector3.ZERO
 	if _path_i < _path.size():
 		wp = _path[_path_i]
-	return "npc %s pos=(%.2f,%.2f,%.2f) wp=%d/%d -> (%.2f,%.2f,%.2f) stuck=%.1f" % [
+	return "npc %s pos=(%.2f,%.2f,%.2f) wp=%d/%d -> (%.2f,%.2f,%.2f) stuck=%.1f want=%s act=%s why=%s" % [
 		State.keys()[state], global_position.x, global_position.y, global_position.z,
-		_path_i, _path.size(), wp.x, wp.y, wp.z, _stuck_time]
+		_path_i, _path.size(), wp.x, wp.y, wp.z, _stuck_time,
+		want_point_type(), current_activity(), last_status]

@@ -17,6 +17,9 @@ var floor_system: CozyFloorSystem = null
 var room_graph: CozyRoomGraph = null
 var nav_by_room: Dictionary = {}   ## room id -> CozyLocalNav
 
+## Why the last plan failed, for diagnosis. Empty when it succeeded.
+var last_failure := ""
+
 
 func _init(fs: CozyFloorSystem, rg: CozyRoomGraph, navs: Dictionary) -> void:
 	floor_system = fs
@@ -33,12 +36,17 @@ func plan(from: Vector3, to: Vector3) -> PackedVector3Array:
 	var a_id := _norm(from_room.id if from_room != null else "")
 	var b_id := _norm(to_room.id if to_room != null else "")
 
+	last_failure = ""
 	if a_id == b_id:
 		return _local(from, to, a_id)
 
 	var route := room_graph.find_route(a_id, b_id)
 	if route.is_empty():
-		return out   # Unreachable is a legitimate answer.
+		# Unreachable is a legitimate answer — but say WHICH pair was
+		# unreachable, so a transient failure can be diagnosed rather than
+		# guessed at.
+		last_failure = "%s -> %s (no graph route)" % [a_id, b_id]
+		return out
 
 	var cursor := from
 	var cursor_room := a_id

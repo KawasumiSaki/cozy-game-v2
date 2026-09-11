@@ -75,7 +75,7 @@
 | V2-22 | NPC data model | ✅ |
 | V2-23 | Job / Task | ✅ simplified |
 | V2-24 | Cross-floor work | ✅ |
-| V2-25 | Schedule & needs | ⬜ |
+| V2-25 | Schedule & needs | ✅ |
 
 ### Phase 6 — Persistence
 | ID | Block | Status |
@@ -126,6 +126,8 @@
 | UI selection | Right-click probes what is under the cursor; the menu is built from that | Willow 2026-09-11 |
 | HP / stamina | Shown **only in dungeons**, never on the home HUD | Willow 2026-09-11 |
 | Passion | Scales EXPERIENCE (x1/x2/x4), never speed; aversion means not assignable | 愿景 §10 |
+| Schedule | Resolves to an ACTIVITY, then to an interaction-point TYPE — never to an object | doc #115 |
+| Traits | Change how FAST a value moves, not where it lands | this project |
 
 ---
 
@@ -136,25 +138,29 @@ Stated plainly so it is not rediscovered later.
 1. **Terrain height is not displaced into the mesh.** The field carries it and
    DIG/FILL change it, but rendering is still flat. Needs a subdivided grid per
    chunk.
-2. **Openings do not create Portals.** Door and stair portals are still
-   registered as fixtures, so walling up a doorway would not remove its portal.
+2. ~~Openings do not create Portals~~ — **fixed in V2-25**: a door portal is
+   derived from the wall's DOOR opening, and the hand-written `door_south`
+   fixture is gone. `no route` failures dropped from 2017 to 1.
 3. **The asset library scans with DirAccess.** Works in the editor and in
    headless runs; an exported build would need the definitions declared as
    resources or bundled into a manifest first.
 4. ~~Terrain has no biome concept~~ — solved by ART-11 (`CozyBiome`, derived).
-5. **UI is PC only.** No touch input exists (0 handlers). Willow: mobile later.
-6. **Scatter does not follow terrain edits.** Digging does not re-scatter the
+5. **Outdoor navigation is a straight line.** `_world_navigator._local()` falls
+   back to a direct line when a room is outdoors, so a route can cut through a
+   building. Not triggered yet — residents stayed indoors — but it is real.
+6. **UI is PC only.** No touch input exists (0 handlers). Willow: mobile later.
+7. **Scatter does not follow terrain edits.** Digging does not re-scatter the
    plants on the patch. A full rebuild costs 138 ms, so hooking it to edits
    needs a chunk-scoped rebuild first; the trade-off is recorded in ART-11.
-7. **Roofs go to rooms with nothing above them** (corrected from "top floor",
+8. **Roofs go to rooms with nothing above them** (corrected from "top floor",
    which left one-storey outbuildings bare). A non-rectangular room still falls
    back to flat; the plan reports that rather than applying it silently.
-8. **Outlines emit walls and one doorway only.** Windows and automatic stairs
+9. **Outlines emit walls and one doorway only.** Windows and automatic stairs
    are not built, self-intersecting outlines are not guarded against, and a roof
    does not regenerate when the room polygon under it changes.
-9. **Trait effects are mostly inert.** `mood_aura` and friends are stored but
+10. **Trait effects are partly live.** `mood_aura` and friends are stored but
    nothing consumes them yet — they need V2-25's needs system.
-10. **The wall assembler does not tile roofs** — ART-12's idea applied to roofs
+11. **The wall assembler does not tile roofs** — ART-12's idea applied to roofs
    is not built.
 
 ---
