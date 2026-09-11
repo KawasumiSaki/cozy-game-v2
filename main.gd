@@ -51,6 +51,7 @@ const TOOLS: Array[String] = ["wall", "research_table", "chest", "bed", "chair"]
 var camera: CozyCameraRig = null
 var player: CozyCharacter = null
 var npc: CozyNpcAgent = null
+var occlusion: CozyOcclusion = null
 var hud: Label = null
 
 var building: CozyBuildingSystem = null
@@ -79,6 +80,7 @@ var _house: Node3D = null
 var _is_headless := false
 var _build_test_done := false
 var _npc_test_done := false
+var _occlusion_test_done := false
 
 
 func _ready() -> void:
@@ -499,11 +501,14 @@ func _build_camera() -> void:
 	var occ := CozyOcclusion.new()
 	add_child(occ)
 	occ.camera = camera
+	# Order matters: index 0 is the character the camera follows, and only that
+	# one drives fading by default. See CozyOcclusion.watch_non_followed.
 	occ.targets = [player, npc]
 	# Walls and roofs both fade — a roof that cannot fade hides the player.
 	occ.fadables = []
 	occ.fadables.append_array(building.wall_views)
 	occ.fadables.append_array(roofs)
+	occlusion = occ
 
 
 # ---------------------------------------------------------------- HUD
@@ -720,6 +725,11 @@ func _handle_move_keys() -> void:
 ## Headless staged tests, run once each at fixed frames.
 func _run_headless_stages() -> void:
 	var f := Engine.get_physics_frames()
+	# Early, while the player is still out in the open with nothing in front
+	# of them — the only moment the occlusion answer is unambiguous.
+	if not _occlusion_test_done and f > 60:
+		_occlusion_test_done = true
+		_check_occlusion()
 	if not _build_test_done and f > AUTOPILOT_DONE_FRAME:
 		_build_test_done = true
 		_run_live_rebuild_test()
@@ -1019,6 +1029,27 @@ func _check_openings() -> void:
 		print("[cozyv2]   %-22s %-5s  [%s]" % [
 			label, "solid" if is_solid else "open", "OK" if ok else "FAIL"])
 	print("[cozyv2] openings  [%s]" % ("OK" if all_ok else "FAIL"))
+
+
+## Occlusion (doc #57). The camera follows the player, so only geometry that
+## blocks the PLAYER may fade.
+##
+## The check is on the CAUSE, not the count. Being outdoors is not the same as
+## having a clear view: with the camera pitched 55 degrees and sitting on the
+## far side of the house, the line of sight to a player standing outside really
+## does pass through the roof, and fading it is correct. What must never happen
+## is fading for a character the camera is not following.
+func _check_occlusion() -> void:
+	if occlusion == null:
+		print("[cozyv2] occlusion: NOT BUILT  [FAIL]")
+		return
+	var others := occlusion.faded_for_others()
+	var total := occlusion.faded_count()
+	var outdoors := floor_system.room_at(player.global_position) == null
+	print("[cozyv2] occlusion, player %s: %s, %d for non-followed  [%s]" % [
+		"outdoors" if outdoors else "indoors",
+		occlusion.debug_summary(), others,
+		"OK" if others == 0 else "FAIL, faded on someone else's behalf"])
 
 
 func _check_room_at(pos: Vector3, expected: String) -> void:
