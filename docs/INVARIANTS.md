@@ -170,6 +170,44 @@ change, check the test.
 
 ---
 
+## A `to_dict()` that never passes through a serializer is not a save format
+
+Three separate bugs hid behind one function that looked finished (V2-26):
+
+1. `CozyBuildingState.to_dict()` stored walls only, so a load dropped every slab
+   and every stair. Rooms survived — they are derived from walls — so the world
+   would have looked nearly right while nobody could reach the first floor.
+2. `JSON.stringify` does not understand `PackedInt32Array` / `PackedFloat32Array`
+   / `PackedByteArray` and silently writes each as a **String**. The field then
+   reads back as a string and cannot be assigned to the array it came from.
+3. `_sync_views` matched views to states by **id** and never re-pointed
+   `v.state`. That was safe only while state objects were never replaced.
+
+The through-line: an in-memory round trip (`b.from_dict(a.to_dict())`) exercises
+none of it. It hands back live objects, so the assignment succeeds and the
+assertion goes green while the file on disk is unreadable. **A round trip that
+never touches a file proves nothing about saving.** Write it to disk and read it
+back, or the check is decoration.
+
+Corollary: anything reachable from a save file must be represented with JSON's
+own types — plain Array, Dictionary, String, number, bool. Packed arrays and
+Vector types are not among them.
+
+## Object identity is not id identity
+
+`_sync_views` / `_sync_group` reconcile runtime views against state by **id**.
+That is only equivalent to matching by object as long as state objects are never
+replaced — appended and removed is fine, replaced is not.
+
+A load replaces every state object while keeping its ids, which is the first
+thing in this project to break the assumption. When a view keeps a reference to
+a state no longer in `state.walls`, it refreshes from geometry that no longer
+tracks edits, and it looks completely normal.
+
+So: re-point the view's state before refreshing it, and guard the re-assignment
+on object identity so the ordinary path stays a no-op (doc #32 — local edits
+rebuild locally).
+
 ## A declared capability with no consumer is not a feature
 
 `chest` advertised a `store` interaction point from Phase 4, and `CozyJobDefs`
@@ -233,11 +271,15 @@ log (`02-开发日志/游戏开发日志.md`).
 | 13 | "anything above" tested by centroid alone; the stairwell fooled it | outline assertion |
 | 14 | VFX phase from `def_id` → two campfires in lockstep | VFX assertion |
 | 15 | Per-frame panel refresh re-derived its input from its own output → schedule text corroded 60×/s | panel idempotence assertion |
+| 16 | `BuildingState.to_dict()` stored walls only → a load dropped every slab and stair | save/load round-trip |
+| 17 | `JSON.stringify` wrote `PackedByteArray` as a String → the file was unreadable while the in-memory round trip passed | pushing the dict through a real serializer |
+| 18 | `_sync_views` matched by id and never re-pointed `v.state` → views refreshed from replaced state | wall-connection (corner) assertion, after a live load |
 
-**Fourteen of the fifteen were found by an assertion, not by looking at the
+**Seventeen of the eighteen were found by an assertion, not by looking at the
 screen.** Several were invisible in a still frame. That is the whole argument
 for the assertion discipline in `03-流程/更新方案.md`.
 
-Bug 15 was never once rendered on screen — nothing instantiated the widget that
-had it. It was written, it imported cleanly, and it sat on disk as a `class_name`
-with no callers. **Parsing is not working.**
+Bugs 15 and 16 share a shape worth naming: **both lived in code that had never
+once been executed.** Bug 15 was in a widget nothing instantiated; bug 16 was in
+a function nothing called, whose only test never let it touch a file. Neither was
+reachable by looking at the game, because neither had ever run in it.

@@ -179,23 +179,44 @@ func set_buildability(lx: int, lz: int, b: int) -> bool:
 
 ## Facts only — material indices, heights, buildability (doc #63).
 ## The generated surface is never saved; it is rebuilt from this.
+##
+## The packed arrays are converted to PLAIN arrays on purpose. `JSON.stringify`
+## does not understand `PackedInt32Array` / `PackedFloat32Array` /
+## `PackedByteArray` and silently writes each as a STRING — which then reads back
+## as a string and cannot be assigned to the field it came from.
+##
+## An in-memory round trip cannot see that: `to_dict()` hands back the live
+## packed array, the assignment succeeds, and the assertion goes green while the
+## file on disk is unreadable. That is exactly how this went unnoticed until
+## V2-26 put the dict through a real serializer.
 func to_dict() -> Dictionary:
 	return {
 		"chunk_x": chunk_x,
 		"chunk_z": chunk_z,
 		"cells": CELLS,
 		"cell_size": CELL_SIZE,
-		"material": _material,
-		"height": _height,
-		"buildability": _build,
+		"material": Array(_material),
+		"height": Array(_height),
+		"buildability": Array(_build),
 	}
 
 
+## Sizes are checked before copying. A truncated or corrupt file must not leave a
+## half-filled chunk — that would be a chunk that looks loaded and is wrong.
 static func from_dict(d: Dictionary) -> CozyTerrainChunk:
 	var c := CozyTerrainChunk.new(int(d.get("chunk_x", 0)), int(d.get("chunk_z", 0)))
-	c._material = d.get("material", c._material)
-	c._height = d.get("height", c._height)
-	c._build = d.get("buildability", c._build)
+	var m: Array = d.get("material", [])
+	var h: Array = d.get("height", [])
+	var b: Array = d.get("buildability", [])
+	if m.size() == c._material.size():
+		for i in m.size():
+			c._material[i] = int(m[i])
+	if h.size() == c._height.size():
+		for i in h.size():
+			c._height[i] = float(h[i])
+	if b.size() == c._build.size():
+		for i in b.size():
+			c._build[i] = int(b[i])
 	c.dirty = true
 	return c
 

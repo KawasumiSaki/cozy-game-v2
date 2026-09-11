@@ -75,7 +75,7 @@ Expect `exit=0`, no `ERROR`/`WARNING`, and every assertion `[OK]`.
 ## Before changing any subsystem's behaviour
 
 Read `docs/INVARIANTS.md`. It lists the rules that assertions **cannot** derive —
-sixteen invariants and fifteen bugs this project has already paid for. The code
+eighteen invariants and eighteen bugs this project has already paid for. The code
 can pass every test while violating them, and it will look fine until it isn't.
 
 Thirteen of those fourteen bugs were found by an assertion, not by looking at the

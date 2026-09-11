@@ -80,7 +80,7 @@
 ### Phase 6 — Persistence
 | ID | Block | Status |
 |---|---|---|
-| V2-26 | Save / load | ⬜ |
+| V2-26 | Save / load | ✅ JSON facts to `user://`, F5/F9; no save slots yet |
 
 ### UI — interface
 | ID | Block | Status |

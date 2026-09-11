@@ -146,7 +146,22 @@ func floor_ids() -> Array[int]:
 	return out
 
 
-## Facts only — the shape a save file will take (doc #64).
+## Facts only — the shape a save file takes (doc #64).
+##
+## WALLS, SLABS and STAIRS are all AUTHORED state: a slab is a floor someone drew,
+## a stair is a route someone placed. All three have to be stored, and for a long
+## time only walls were — which meant a load silently dropped the floors and the
+## staircase. Nothing caught it because nothing consumed this function.
+##
+## ROOFS are deliberately absent. They are generated from the rooms, so storing
+## them would be storing a derived result and would let the file disagree with
+## the generator (doc #63 / #68).
+##
+## `seed_val` is absent for the same reason: it is `hash(id)`, so it returns for
+## free on load and storing it would create a second source of truth.
+##
+## The id counters come along. Ids are minted as `"wall_%03d" % _next_wall_id`,
+## so a load that reset the counter would immediately mint ids that already exist.
 func to_dict() -> Dictionary:
 	var ws: Array = []
 	for w in walls:
@@ -167,10 +182,94 @@ func to_dict() -> Dictionary:
 			"thickness": w.thickness,
 			"material_id": w.material_id,
 			"floor_id": w.floor_id,
-			"seed": w.seed_val,
 			"openings": ops,
 		})
-	return {"walls": ws, "next_wall_id": _next_wall_id}
+
+	var ss: Array = []
+	for s in slabs:
+		ss.append({
+			"id": s.id,
+			"center": [s.center.x, s.center.y, s.center.z],
+			"size": [s.size.x, s.size.y, s.size.z],
+			"material_id": s.material_id,
+			"floor_id": s.floor_id,
+		})
+
+	var ts: Array = []
+	for t in stairs:
+		ts.append({
+			"id": t.id,
+			"start": [t.start.x, t.start.y, t.start.z],
+			"end": [t.end.x, t.end.y, t.end.z],
+			"width": t.width,
+			"material_id": t.material_id,
+			"floor_from": t.floor_from,
+			"floor_to": t.floor_to,
+			"steps": t.steps,
+		})
+
+	return {
+		"walls": ws,
+		"slabs": ss,
+		"stairs": ts,
+		"next_wall_id": _next_wall_id,
+		"next_slab_id": _next_slab_id,
+		"next_stair_id": _next_stair_id,
+		"next_roof_id": _next_roof_id,
+	}
+
+
+## Rebuild in place, so `building.state` keeps its identity and every existing
+## connection to its `changed` signal stays valid. Roofs are cleared rather than
+## restored — the roof generator refills them from the rooms.
+func from_dict(d: Dictionary) -> void:
+	walls.clear()
+	slabs.clear()
+	stairs.clear()
+	roofs.clear()
+
+	for wd in d.get("walls", []):
+		var a: Array = wd["start"]
+		var b: Array = wd["end"]
+		var w := CozyWallState.create(String(wd["id"]),
+			Vector3(a[0], a[1], a[2]), Vector3(b[0], b[1], b[2]),
+			float(wd.get("height", 3.0)), float(wd.get("thickness", 0.25)),
+			String(wd.get("material_id", "wood")), int(wd.get("floor_id", 0)))
+		for od in wd.get("openings", []):
+			var kind := String(od.get("kind", "door"))
+			var off := float(od.get("offset", 0.0))
+			var wid := float(od.get("width", 1.0))
+			var head := float(od.get("head", 2.1))
+			if kind == "window":
+				w.add_opening(CozyOpening.window(off, wid,
+					float(od.get("sill", 0.9)), head))
+			else:
+				w.add_opening(CozyOpening.door(off, wid, head))
+		walls.append(w)
+
+	for sd in d.get("slabs", []):
+		var c: Array = sd["center"]
+		var z: Array = sd["size"]
+		slabs.append(CozySlabState.create(String(sd["id"]),
+			Vector3(c[0], c[1], c[2]), Vector3(z[0], z[1], z[2]),
+			String(sd.get("material_id", "stone")), int(sd.get("floor_id", 0))))
+
+	for td in d.get("stairs", []):
+		var p: Array = td["start"]
+		var q: Array = td["end"]
+		var t := CozyStairState.create(String(td["id"]),
+			Vector3(p[0], p[1], p[2]), Vector3(q[0], q[1], q[2]),
+			float(td.get("width", 3.0)), String(td.get("material_id", "wood")))
+		t.floor_from = int(td.get("floor_from", 0))
+		t.floor_to = int(td.get("floor_to", 1))
+		t.steps = int(td.get("steps", 8))
+		stairs.append(t)
+
+	_next_wall_id = int(d.get("next_wall_id", walls.size() + 1))
+	_next_slab_id = int(d.get("next_slab_id", slabs.size() + 1))
+	_next_stair_id = int(d.get("next_stair_id", stairs.size() + 1))
+	_next_roof_id = int(d.get("next_roof_id", 1))
+	changed.emit()
 
 
 func describe() -> String:

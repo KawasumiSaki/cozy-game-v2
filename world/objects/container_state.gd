@@ -67,3 +67,17 @@ func sorted_ids() -> Array:
 
 func describe() -> String:
 	return "%s  %.0f/%.0f" % [inventory.describe(), stored(), capacity]
+
+
+# ---------------------------------------------------------------- serialise
+
+func to_dict() -> Dictionary:
+	return {"capacity": capacity, "items": inventory.items.duplicate()}
+
+
+static func from_dict(d: Dictionary) -> CozyContainerState:
+	var c := CozyContainerState.new()
+	c.capacity = float(d.get("capacity", DEFAULT_CAPACITY))
+	for k in d.get("items", {}):
+		c.inventory.add(String(k), float(d["items"][k]))
+	return c

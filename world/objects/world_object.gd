@@ -166,3 +166,42 @@ func free_points_of_type(t: String) -> Array[CozyInteractionPoint]:
 
 func describe() -> String:
 	return "%s@(%.1f,%.1f)" % [def_id, global_position.x, global_position.z]
+
+
+# ---------------------------------------------------------------- serialise
+
+## Facts only (doc #68): what it is, where it is, and what is inside it.
+##
+## The mesh, the collider, the material and the interaction points are all
+## rebuilt by `setup()` from the definition, so storing them would be storing
+## derived results — and would let the file disagree with the definition.
+func to_dict() -> Dictionary:
+	var d := {
+		"def_id": def_id,
+		"floor_index": floor_index,
+		"position": [global_position.x, global_position.y, global_position.z],
+		"yaw": rotation.y,
+	}
+	if container != null:
+		d["container"] = container.to_dict()
+	return d
+
+
+## Apply saved facts to an object that is ALREADY in the tree.
+##
+## Deliberately not a static factory. `setup()` builds VFX whose phase comes from
+## the object's world position, and `to_global()` on a node outside the tree
+## returns the identity transform and logs an engine error — twelve of them, once
+## per object, before this was a method. `_place_object` has the same ordering
+## requirement for the same reason: add first, then set up, then re-phase.
+func apply_dict(d: Dictionary) -> void:
+	setup(String(d.get("def_id", "")), int(d.get("floor_index", 0)))
+	var p: Array = d.get("position", [0.0, 0.0, 0.0])
+	global_position = Vector3(p[0], p[1], p[2])
+	rotation.y = float(d.get("yaw", 0.0))
+	# `setup()` built a container with the definition's capacity; the saved one
+	# replaces it wholesale, so contents and capacity can never drift apart.
+	if container != null and d.has("container"):
+		container = CozyContainerState.from_dict(d["container"])
+	refresh_points()
+	refresh_vfx_phase()

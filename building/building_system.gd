@@ -195,7 +195,15 @@ func _sync_group(states: Array, views: Array, id_of: Callable,
 		have[id_of.call(v.state)] = v
 
 	for s in states:
-		if have.has(id_of.call(s)):
+		var key = id_of.call(s)
+		if have.has(key):
+			# Same reload problem as `_sync_views`. Guarded on object identity so
+			# the ordinary path stays a no-op — rebuilding every slab and stair
+			# view on every regenerate would break doc #32's "local edits rebuild
+			# locally".
+			var v = have[key]
+			if v.state != s:
+				assign.call(v, s)
 			continue
 		var v = make_view.call()
 		_view_root.add_child(v)
@@ -223,6 +231,14 @@ func _sync_views(dirty: Dictionary) -> void:
 
 	for ws in state.walls:
 		if have.has(ws.id):
+			# Re-point BEFORE refreshing. Matching by id is not the same as
+			# matching by object: a load REPLACES every wall state while keeping
+			# its id (V2-26), and a view that kept the old reference would refresh
+			# from a state no longer in `state.walls` — geometry that silently
+			# stops tracking edits. Until a load existed, state objects were only
+			# appended and removed, so id identity implied object identity and
+			# this line was never needed.
+			have[ws.id].state = ws
 			if dirty.has(ws.id):
 				have[ws.id].refresh()
 		else:

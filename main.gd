@@ -1260,6 +1260,17 @@ func _unhandled_input(event: InputEvent) -> void:
 				_say("outline cancelled")
 				_update_hud()
 				return
+		# Save / load. Godot's own editor uses F5/F9 for run and stop, so the
+		# muscle memory is already there; these are the obvious keys, and a save
+		# system with no way to invoke it would be one more capability with no
+		# consumer.
+		if event.keycode == KEY_F5:
+			save_game()
+			return
+		if event.keycode == KEY_F9:
+			load_game()
+			return
+
 		# Debug escape hatch (doc E.1.1 allows a fixed OR strictly controlled
 		# camera; free rotation is barred as a gameplay feature). Anything seen
 		# at a non-locked angle is out of spec, so do not author art from it.
@@ -1414,6 +1425,7 @@ func _report() -> void:
 	_check_camera()
 	_check_ui()
 	_check_container()
+	_check_save_load()
 	_check_assets()
 	_check_scatter()
 	_check_nav()
@@ -2162,6 +2174,239 @@ func _check_container() -> void:
 	# Leave the world as it was found.
 	c.inventory.items.clear()
 	pack.items.clear()
+
+
+# ---------------------------------------------------------------- save / load
+
+## The whole world, as facts (doc #63). Everything derived is excluded on
+## purpose: meshes, room polygons, portals, navigation grids and paths are all
+## rebuilt on load by the generators that built them the first time.
+func _world_to_dict() -> Dictionary:
+	var objs: Array = []
+	for o in objects:
+		if is_instance_valid(o):
+			objs.append(o.to_dict())
+	var npcs: Array = []
+	if npc != null and npc.npc_state != null:
+		npcs.append(npc.npc_state.to_dict())
+	return {
+		"terrain": terrain.to_dict(),
+		"building": building.state.to_dict(),
+		"objects": objs,
+		"npcs": npcs,
+		"clock": {"day": clock.day, "hour": clock.hour},
+	}
+
+
+## Rebuild the world from facts. The order below is the order the world is built
+## in the first place (see `_ready`), which is the only reason it works: terrain
+## before building, building before rooms, rooms before roofs.
+func _apply_world(d: Dictionary) -> void:
+	if d.is_empty():
+		return
+
+	terrain.from_dict(d.get("terrain", {}))
+	terrain_renderer.rebuild_all()
+
+	# Roofs are cleared by `from_dict` rather than restored — `_build_roofs`
+	# refills them below from the rooms it just re-derived.
+	building.state.from_dict(d.get("building", {}))
+
+	for o in objects:
+		if is_instance_valid(o):
+			o.queue_free()
+	objects.clear()
+	for od in d.get("objects", []):
+		# Add first, exactly as `_place_object` does: setup() phases VFX from the
+		# world position, which does not exist until the node is parented.
+		var o := CozyWorldObject.new()
+		add_child(o)
+		o.apply_dict(od)
+		objects.append(o)
+
+	var npcs: Array = d.get("npcs", [])
+	if npc != null and not npcs.is_empty():
+		npc.npc_state = CozyNpcState.from_dict(npcs[0])
+
+	var c: Dictionary = d.get("clock", {})
+	if not c.is_empty():
+		clock.day = int(c.get("day", 1))
+		clock.hour = float(c.get("hour", CozyTimeSystem.START_HOUR))
+
+	building.regenerate()
+	# This re-derives rooms, portals, the room graph and BOTH navigation layers,
+	# and re-links the agent's navigator and object list at the end of it.
+	_rebuild_spatial()
+	_build_roofs()
+	# Walls and roofs are new nodes now, so the occlusion lists still point at
+	# the ones that were freed.
+	_refresh_occlusion_fadables()
+	_update_hud()
+
+
+func save_game(path := CozySaveManager.DEFAULT_PATH) -> bool:
+	var ok := CozySaveManager.save_world(_world_to_dict(), path)
+	_say("saved" if ok else "save FAILED (see the log)", not ok)
+	return ok
+
+
+func load_game(path := CozySaveManager.DEFAULT_PATH) -> bool:
+	var d := CozySaveManager.load_world(path)
+	if d.is_empty():
+		_say("no readable save at %s" % path, true)
+		return false
+	_apply_world(d)
+	_say("loaded")
+	return true
+
+
+## Save / load (V2-26).
+##
+## Two separate claims need proving, and they fail independently:
+##   1. the FACTS survive the round trip (serialisation)
+##   2. the DERIVED layers come back from those facts (regeneration)
+## A save system can pass the first and fail the second, which is precisely what
+## doc #63's "store facts, not results" rule exists to avoid.
+##
+## It also EXECUTES the load path on the live world and then puts the world back.
+## A load that is written but never run is the "declared capability with no
+## consumer" shape this project has now paid for twice — the chest's unanswered
+## `store` point (V2-21) and the orphaned resident panel (UI-02).
+func _check_save_load() -> void:
+	# Seed the chest first. A round trip that only ever carries an EMPTY container
+	# proves nothing about contents: the check has to have something to lose.
+	var chest := _first_object("chest")
+	if chest != null and chest.container != null:
+		chest.container.inventory.items.clear()
+		chest.container.inventory.add("wood", 12.0)
+		chest.container.inventory.add("stone", 4.0)
+
+	var before := _world_to_dict()
+	var path := "user://selfcheck.json"
+
+	# (0) It has to actually reach the disk. A serialiser that only ever runs in
+	# memory would pass every check below while writing a file nothing can read.
+	var wrote := CozySaveManager.save_world(before, path)
+	if not wrote:
+		print("[cozyv2] save/load: could not write %s  [FAIL]" % path)
+		return
+	var loaded := CozySaveManager.load_world(path)
+	if loaded.is_empty():
+		print("[cozyv2] save/load: wrote %s but could not read it back  [FAIL]" % path)
+		return
+	print("[cozyv2] save/load: %d byte(s) survived the disk  [OK]" % [
+		FileAccess.get_file_as_string(path).length()])
+
+	# (1) Terrain.
+	var t := CozyTerrainSystem.new()
+	t.from_dict(loaded.get("terrain", {}))
+	var terrain_ok := t.describe() == terrain.describe()
+	print("[cozyv2] save/load terrain: %s  [%s]" % [
+		t.describe(), "OK" if terrain_ok else "FAIL"])
+
+	# (2) Building — the reason this block exists.
+	# Walls, SLABS and STAIRS are all authored state. Until this block to_dict
+	# stored only walls, so a load silently dropped the floors and the staircase,
+	# and nothing caught it because nothing consumed the function.
+	var b := CozyBuildingState.new()
+	b.from_dict(loaded.get("building", {}))
+	var openings := 0
+	for w in b.walls:
+		openings += w.openings.size()
+	var live_openings := 0
+	for w in building.state.walls:
+		live_openings += w.openings.size()
+	var building_ok := b.walls.size() == building.state.walls.size() \
+		and b.slabs.size() == building.state.slabs.size() \
+		and b.stairs.size() == building.state.stairs.size() \
+		and openings == live_openings
+	print("[cozyv2] save/load building: %d wall(s) / %d slab(s) / %d stair(s) / %d opening(s)  [%s]" % [
+		b.walls.size(), b.slabs.size(), b.stairs.size(), openings,
+		"OK" if building_ok else "FAIL"])
+
+	# (3) Objects, and the contents of the container inside one.
+	var live_objs: Array = before.get("objects", [])
+	var back_objs: Array = loaded.get("objects", [])
+	var object_ok := back_objs.size() == live_objs.size() and not back_objs.is_empty()
+	var container_note := "no container"
+	if object_ok:
+		for i in back_objs.size():
+			var a: Dictionary = live_objs[i]
+			var z: Dictionary = back_objs[i]
+			if String(a.get("def_id", "")) != String(z.get("def_id", "")):
+				object_ok = false
+			if a.has("container") != z.has("container"):
+				object_ok = false
+			elif a.has("container"):
+				var ca: Dictionary = a["container"]
+				var cz: Dictionary = z["container"]
+				container_note = "%s/%.0f" % [
+					JSON.stringify(cz.get("items", {})), float(cz.get("capacity", 0.0))]
+				if absf(float(ca.get("capacity", 0.0))
+						- float(cz.get("capacity", 0.0))) > 0.001:
+					object_ok = false
+				if JSON.stringify(ca.get("items", {})) \
+						!= JSON.stringify(cz.get("items", {})):
+					object_ok = false
+	print("[cozyv2] save/load objects: %d object(s), container %s  [%s]" % [
+		back_objs.size(), container_note, "OK" if object_ok else "FAIL"])
+
+	# (4) The resident.
+	var live_npc: CozyNpcState = npc.npc_state
+	var npcs: Array = loaded.get("npcs", [])
+	var npc_ok := false
+	var npc_note := "no resident in the file"
+	if not npcs.is_empty() and live_npc != null:
+		var n := CozyNpcState.from_dict(npcs[0])
+		npc_ok = n.id == live_npc.id and n.display_name == live_npc.display_name \
+			and n.job_id == live_npc.job_id \
+			and absf(n.hunger - live_npc.hunger) < 0.001 \
+			and absf(n.energy - live_npc.energy) < 0.001 \
+			and n.skill("research") == live_npc.skill("research")
+		npc_note = "%s \"%s\" %s" % [n.id, n.display_name, n.job_id]
+	print("[cozyv2] save/load resident: %s  [%s]" % [
+		npc_note, "OK" if npc_ok else "FAIL"])
+
+	print("[cozyv2] save/load round-trip: terrain=%s building=%s object=%s npc=%s  [%s]" % [
+		str(terrain_ok), str(building_ok), str(object_ok), str(npc_ok),
+		"OK" if terrain_ok and building_ok and object_ok and npc_ok else "FAIL"])
+
+	# The terrain system is a Node3D and nothing else will free it. The building
+	# state is RefCounted — calling free() on it is an engine error, so it is
+	# released simply by going out of scope.
+	t.free()
+
+	# (5) Now run the real load path against the live world. Everything above
+	# proves the serialisers; only this proves the generators rebuild from facts.
+	var walls_before := building.state.wall_count()
+	var objs_before := objects.size()
+	var rooms_before := floor_system.all_rooms().size()
+
+	_apply_world(loaded)
+	var applied := building.state.wall_count() == walls_before \
+		and objects.size() == objs_before \
+		and floor_system.all_rooms().size() == rooms_before \
+		and npc.npc_state != null and npc.npc_state.id == live_npc.id \
+		and building.state.stairs.size() > 0
+	print("[cozyv2] save/load applied live: %d wall(s), %d slab(s), %d stair(s), %d room(s), %d object(s)  [%s]" % [
+		building.state.wall_count(), building.state.slabs.size(),
+		building.state.stairs.size(), floor_system.all_rooms().size(), objects.size(),
+		"OK" if applied else "FAIL"])
+
+	# (6) Put the world back and prove THAT round trip too — a check that leaves
+	# the scene different from how it found it corrupts every check after it.
+	_apply_world(before)
+	var restored := building.state.wall_count() == walls_before \
+		and objects.size() == objs_before \
+		and floor_system.all_rooms().size() == rooms_before
+	print("[cozyv2] save/load restores the world it found: %d wall(s), %d object(s)  [%s]" % [
+		building.state.wall_count(), objects.size(),
+		"OK" if restored else "FAIL"])
+
+	CozySaveManager.erase(path)
+	var chest2 := _first_object("chest")
+	if chest2 != null and chest2.container != null:
+		chest2.container.inventory.items.clear()
 
 
 ## Camera lock (V2.1 doc E.1.1). Free rotation is barred as a gameplay feature
