@@ -54,6 +54,7 @@ var npc: CozyNpcAgent = null
 var hud: Label = null
 
 var building: CozyBuildingSystem = null
+var terrain: CozyTerrainSystem = null
 var roofs: Array[CozyRoof] = []
 var objects: Array[CozyWorldObject] = []
 
@@ -83,6 +84,7 @@ func _ready() -> void:
 	if _is_headless:
 		print("[cozyv2] headless self-check start")
 	_build_environment()
+	_build_terrain()
 	_build_ground()
 	# The building system owns BuildingState and generates every wall view from
 	# it (doc #18). Nothing else in this file is allowed to create a wall node.
@@ -119,6 +121,20 @@ func _build_environment() -> void:
 	sun.light_color = Color(1.0, 0.97, 0.90)
 	sun.shadow_enabled = true
 	add_child(sun)
+
+
+# ---------------------------------------------------------------- terrain
+
+## The terrain field spans the playable area, centred on the house.
+##
+## Created before the building system but not yet consulted BY it: gating
+## construction on buildability is the next block (doc #12). This block is the
+## data layer — cells, chunks, materials — and its self-check.
+func _build_terrain() -> void:
+	terrain = CozyTerrainSystem.new()
+	add_child(terrain)
+	terrain.setup(64.0, 64.0,
+		Vector2(HOUSE_W * 0.5 - 32.0, HOUSE_D * 0.5 - 32.0))
 
 
 func _build_ground() -> void:
@@ -668,9 +684,62 @@ func _report() -> void:
 	_check_route("room_1_0", "room_1_0", "(no route)")
 
 	_check_nav()
+	_check_terrain()
 	_check_wall_connection()
 	_check_openings()
 	_check_npc_route_plan()
+
+
+## Terrain data layer (V2.1 doc #5–#11).
+##
+## Proves the four things the doc asks of this block: cells carry material and
+## buildability, clearing converts Grass -> Soil and unlocks building, edits
+## mark a dirty region rather than the whole world, and the field round-trips
+## through its save shape with no generated surface involved.
+func _check_terrain() -> void:
+	if terrain == null:
+		print("[cozyv2] terrain NOT BUILT  [FAIL]")
+		return
+	print("[cozyv2] %s" % terrain.describe())
+
+	# A point well inside the field and clear of the house.
+	var tx := 20.0
+	var tz := 20.0
+
+	var m0 := terrain.material_id_at(tx, tz)
+	var b0 := terrain.buildability_at(tx, tz)
+	print("[cozyv2] terrain default: %s / %s  [%s]" % [
+		m0, CozyBuildability.name_of(b0),
+		"OK" if m0 == "grass" and b0 == CozyBuildability.NATURAL else "FAIL"])
+
+	# doc #10 — "clean a patch of lawn": Grass -> Soil, and the ground becomes
+	# buildable. This is the step the whole terrain phase exists to enable.
+	var changed := terrain.set_material_at(tx, tz, "soil")
+	var m1 := terrain.material_id_at(tx, tz)
+	var b1 := terrain.buildability_at(tx, tz)
+	print("[cozyv2] terrain cleared: %s -> %s, %s -> %s  [%s]" % [
+		m0, m1, CozyBuildability.name_of(b0), CozyBuildability.name_of(b1),
+		"OK" if changed and m1 == "soil" and CozyBuildability.accepts_building(b1) else "FAIL"])
+
+	# doc #33 — one cell edited must dirty exactly one chunk, not the world.
+	var dirty := terrain.dirty_chunks()
+	print("[cozyv2] terrain dirty region: %d chunk(s) of %d  [%s]" % [
+		dirty.size(), terrain.chunk_count(),
+		"OK" if dirty.size() == 1 else "FAIL, expected 1"])
+
+	# doc #63 — save facts, not meshes. Round-trip must restore the field.
+	var restored := CozyTerrainSystem.new()
+	restored.from_dict(terrain.to_dict())
+	var m2 := restored.material_id_at(tx, tz)
+	var b2 := restored.buildability_at(tx, tz)
+	var same := restored.chunk_count() == terrain.chunk_count()
+	print("[cozyv2] terrain round-trip: %s / %s, %d chunks  [%s]" % [
+		m2, CozyBuildability.name_of(b2), restored.chunk_count(),
+		"OK" if m2 == m1 and b2 == b1 and same else "FAIL"])
+	# This instance was never added to the tree, so nothing else will free it.
+	restored.free()
+
+	terrain.clear_dirty()
 
 
 ## Can an agent standing on the ground floor obtain a route to a work point on
