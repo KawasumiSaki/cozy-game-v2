@@ -19,10 +19,12 @@ var walls: Array[CozyWallState] = []
 ## had no way to find out where the floors were.
 var slabs: Array[CozySlabState] = []
 var stairs: Array[CozyStairState] = []
+var roofs: Array[CozyRoofState] = []
 
 var _next_wall_id := 1
 var _next_slab_id := 1
 var _next_stair_id := 1
+var _next_roof_id := 1
 
 
 func add_wall(a: Vector3, b: Vector3, height := 3.0, thickness := 0.25,
@@ -53,6 +55,24 @@ func add_stair(start: Vector3, end: Vector3, width := 3.0,
 	stairs.append(s)
 	changed.emit()
 	return s
+
+
+func add_roof(room_id: String, poly: PackedVector2Array, base_y: float,
+		style := CozyRoofState.Style.GABLE, material := "brick",
+		floor_id := 0) -> CozyRoofState:
+	var r := CozyRoofState.create("roof_%03d" % _next_roof_id, room_id, poly,
+		base_y, style, material, floor_id)
+	_next_roof_id += 1
+	roofs.append(r)
+	changed.emit()
+	return r
+
+
+func roof(id: String) -> CozyRoofState:
+	for r in roofs:
+		if r.id == id:
+			return r
+	return null
 
 
 func slab(id: String) -> CozySlabState:
@@ -154,5 +174,5 @@ func to_dict() -> Dictionary:
 
 
 func describe() -> String:
-	return "%d wall(s), %d slab(s), %d stair(s), %.1f m3" % [
-		walls.size(), slabs.size(), stairs.size(), total_volume()]
+	return "%d wall(s), %d slab(s), %d stair(s), %d roof(s), %.1f m3" % [
+		walls.size(), slabs.size(), stairs.size(), roofs.size(), total_volume()]

@@ -11,7 +11,7 @@ extends RefCounted
 ## and the existing drag-to-place prototype is explicitly only a test tool until
 ## it goes through here (doc #75, Phase 3).
 
-enum Kind { DRAW_WALL, REMOVE_WALL, ADD_OPENING, ADD_SLAB, ADD_STAIR }
+enum Kind { DRAW_WALL, REMOVE_WALL, ADD_OPENING, ADD_SLAB, ADD_STAIR, ADD_ROOF }
 
 var kind: Kind = Kind.DRAW_WALL
 
@@ -27,9 +27,12 @@ var thickness := 0.25
 var material_id := "wood"
 var floor_id := 0
 
-## ADD_SLAB / ADD_STAIR parameters
+## ADD_SLAB / ADD_STAIR / ADD_ROOF parameters
 var size := Vector3.ONE
 var width := 3.0
+var room_id := ""
+var polygon := PackedVector2Array()
+var roof_style := CozyRoofState.Style.GABLE
 
 ## Openings to cut into the wall as it is created. Carried on the intent so a
 ## wall and its doorway are one atomic edit — the wall's id does not exist until
@@ -83,6 +86,22 @@ static func add_stair(p_start: Vector3, p_end: Vector3, p_width := 3.0,
 	i.b = p_end
 	i.width = p_width
 	i.material_id = p_material
+	return i
+
+
+## A roof over a room's footprint (doc #31). The generator derives the ridge
+## and slopes from `polygon`, so nothing here is a placed prefab.
+static func add_roof(p_room_id: String, p_polygon: PackedVector2Array,
+		p_base_y: float, p_style := CozyRoofState.Style.GABLE,
+		p_material := "brick", p_floor := 0) -> CozyBuildingIntent:
+	var i := CozyBuildingIntent.new()
+	i.kind = Kind.ADD_ROOF
+	i.room_id = p_room_id
+	i.polygon = p_polygon
+	i.a = Vector3(0.0, p_base_y, 0.0)
+	i.roof_style = p_style
+	i.material_id = p_material
+	i.floor_id = p_floor
 	return i
 
 

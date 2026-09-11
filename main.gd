@@ -59,7 +59,6 @@ var terrain: CozyTerrainSystem = null
 var terrain_renderer: CozyTerrainRenderer = null
 var assets: CozyAssetLibrary = null
 var scatter: CozyVegetationScatter = null
-var roofs: Array[CozyRoof] = []
 var objects: Array[CozyWorldObject] = []
 
 var floor_system: CozyFloorSystem = null
@@ -116,9 +115,11 @@ func _ready() -> void:
 	building.inventory.add("plaster", 100.0)
 
 	_build_house()
-	_build_roof()
 	_place_initial_furniture()
 	_rebuild_spatial()
+	# Roofs come after room detection: the generator needs the room polygon and
+	# the floor elevations, and neither exists until _rebuild_spatial has run.
+	_build_roofs()
 	_build_scatter()
 	_build_characters()
 	_build_camera()
@@ -317,18 +318,30 @@ func _build_house() -> void:
 		well_d, "wood"))
 
 
-## A flat roof slab. Simple on purpose — see the class note. Its job right now
-## is to occlude and fade, not to look like a real roof.
-func _build_roof() -> void:
-	var roof := CozyRoof.new()
-	add_child(roof)
-	roof.setup(Vector3(HOUSE_W + 0.8, 0.2, HOUSE_D + 0.8))
-	roof.global_position = Vector3(HOUSE_W * 0.5, FLOOR_H * 2.0 + 0.1, HOUSE_D * 0.5)
-	roofs.append(roof)
+## Roofs generated from the top floor's rooms (V2.1 doc #31).
+##
+## Nothing here is a prefab: the polygon comes from room detection, the
+## elevation from the floor system, and CozyRoofGenerator derives the ridge,
+## slopes and gables from those. Move a wall and the roof follows.
+##
+## This is what the slabs-and-stairs migration unblocked — before it, there was
+## no way to ask where the floors were or how high the building went.
+func _build_roofs() -> void:
+	var floors := building.state.floor_ids()
+	if floors.is_empty():
+		return
+	var top: int = floors[floors.size() - 1]
+	# The roof sits ON the top floor's walls, so its eave line is one floor
+	# height above the top floor's own elevation.
+	var base_y := floor_system.elevation_of(top + 1)
+
+	var intents: Array = []
+	for r in floor_system.rooms_on(top):
+		intents.append(CozyBuildingIntent.add_roof(r.id, r.polygon, base_y,
+			CozyRoofState.Style.GABLE, "brick", top + 1))
+	building.submit_many(intents)
 
 
-## The ONLY route by which this scene adds a wall. It returns the STATE, not a
-## node — callers read facts, they never reach into generated geometry.
 func _add_wall(a: Vector3, b: Vector3, mat_id := "wood", floor_id := 0) -> CozyWallState:
 	return building.submit(
 		CozyBuildingIntent.draw_wall(a, b, FLOOR_H, WALL_T, mat_id, floor_id))
@@ -515,7 +528,7 @@ func _build_camera() -> void:
 	# Walls and roofs both fade — a roof that cannot fade hides the player.
 	occ.fadables = []
 	occ.fadables.append_array(building.wall_views)
-	occ.fadables.append_array(roofs)
+	occ.fadables.append_array(building.roof_views)
 	occlusion = occ
 
 
@@ -621,7 +634,7 @@ func _refresh_occlusion_fadables() -> void:
 		if c is CozyOcclusion:
 			c.fadables = []
 			c.fadables.append_array(building.wall_views)
-			c.fadables.append_array(roofs)
+			c.fadables.append_array(building.roof_views)
 
 
 func _update_preview() -> void:
@@ -804,7 +817,42 @@ func _report() -> void:
 	_check_openings()
 	_check_wall_assembly()
 	_check_building_state()
+	_check_roofs()
 	_check_npc_route_plan()
+
+
+## Roofs (V2.1 doc #31). Derived from the room polygon rather than placed, and
+## they must fade (doc #57) or the player disappears the moment they go inside.
+func _check_roofs() -> void:
+	var rs := building.roof_views
+	if rs.is_empty():
+		print("[cozyv2] roof: NONE GENERATED  [FAIL]")
+		return
+
+	var r: CozyRoof = rs[0]
+	var st := r.state
+	var plan_ridge := r.ridge()
+
+	# A gable over a rectangle must produce exactly one ridge line.
+	print("[cozyv2] roof over %s: style=%s, %d face(s), ridge=%d  [%s]" % [
+		st.room_id, r.style_name(), r.face_count(), plan_ridge.size(),
+		"OK" if r.face_count() >= 4 and plan_ridge.size() == 2 else "FAIL"])
+
+	# It must sit above the floor it caps, not through it.
+	var top_slab_y := 0.0
+	for sl in building.state.slabs:
+		top_slab_y = maxf(top_slab_y, sl.surface_y())
+	print("[cozyv2] roof eave y=%.1f above top floor y=%.1f  [%s]" % [
+		st.base_y, top_slab_y,
+		"OK" if st.base_y > top_slab_y else "FAIL, roof inside the building"])
+
+	# doc #57 — a roof that cannot fade hides the player.
+	var before := r._fade
+	r.set_fade(0.22)
+	var faded := not is_equal_approx(r._fade, before)
+	r.set_fade(1.0)
+	print("[cozyv2] roof fade: responds=%s  [%s]" % [
+		str(faded), "OK" if faded else "FAIL, roof cannot fade"])
 
 
 ## Doc #18 — BuildingState owns floors and stairs, not only walls.

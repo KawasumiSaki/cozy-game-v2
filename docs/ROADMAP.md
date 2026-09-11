@@ -59,7 +59,7 @@
 | V2-14 | Building intent (outline → structure) | 🚧 prototype only |
 | V2-15 | Wall connection solver | ✅ |
 | V2-16 | Openings (door / window) | ✅ |
-| V2-17 | Roof generator | ⬜ |
+| V2-17 | Roof generator | ✅ |
 
 ### Phase 4 — Object & interaction
 | ID | Block | Status |
@@ -124,19 +124,20 @@
 
 Stated plainly so it is not rediscovered later.
 
-1. **Slabs and stairs are not in BuildingState.** Doc §18 lists Floor and Stair
-   alongside Wall. They are still emitted directly by the scene. This blocks
-   V2-17, because a roof generator needs to know where the floors are.
-2. **Terrain height is not displaced into the mesh.** The field carries it and
+1. **Terrain height is not displaced into the mesh.** The field carries it and
    DIG/FILL change it, but rendering is still flat. Needs a subdivided grid per
    chunk.
-3. **Openings do not create Portals.** Door and stair portals are still
+2. **Openings do not create Portals.** Door and stair portals are still
    registered as fixtures, so walling up a doorway would not remove its portal.
-4. **The asset library scans with DirAccess.** Works in the editor and in
+3. **The asset library scans with DirAccess.** Works in the editor and in
    headless runs; an exported build would need the definitions declared as
    resources or bundled into a manifest first.
-5. **Terrain has no biome concept** — only materials. ART-11's scatter rules
-   need biomes to query against.
+4. ~~Terrain has no biome concept~~ — solved by ART-11 (`CozyBiome`, derived).
+5. **Scatter does not follow terrain edits.** Digging does not re-scatter the
+   plants on the patch. A full rebuild costs 138 ms, so hooking it to edits
+   needs a chunk-scoped rebuild first; the trade-off is recorded in ART-11.
+6. **Roofs are generated for the top floor only**, and a non-rectangular room
+   falls back to flat. The fallback is reported in the plan, not silent.
 
 ---
 

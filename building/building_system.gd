@@ -23,6 +23,7 @@ var wall_views: Array[CozyWall] = []
 ## place to add tracking.
 var slab_views: Array[CozySlab] = []
 var stair_views: Array[CozyStair] = []
+var roof_views: Array[CozyRoof] = []
 
 ## Optional terrain gate (doc #12). When set, a DRAW_WALL intent must be
 ## approved by the ground before it may change state. The rule lives HERE, not
@@ -101,6 +102,10 @@ func submit_many(intents: Array) -> CozyWallState:
 			CozyBuildingIntent.Kind.ADD_STAIR:
 				state.add_stair(intent.a, intent.b, intent.width, intent.material_id)
 
+			CozyBuildingIntent.Kind.ADD_ROOF:
+				state.add_roof(intent.room_id, intent.polygon, intent.a.y,
+					intent.roof_style, intent.material_id, intent.floor_id)
+
 	regenerate(touched)
 	return result
 
@@ -168,6 +173,8 @@ func _sync_structures() -> void:
 		func(): return CozySlab.new(), func(v, s): v.setup_from(s))
 	_sync_group(state.stairs, stair_views, func(s): return s.id,
 		func(): return CozyStair.new(), func(v, s): v.setup_from(s))
+	_sync_group(state.roofs, roof_views, func(s): return s.id,
+		func(): return CozyRoof.new(), func(v, s): v.setup_from(s))
 
 
 func _sync_group(states: Array, views: Array, id_of: Callable,
