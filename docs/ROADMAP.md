@@ -82,6 +82,11 @@
 |---|---|---|
 | V2-26 | Save / load | ⬜ |
 
+### UI — interface
+| ID | Block | Status |
+|---|---|---|
+| UI-01 | Interface basics (HUD / build palette / right-click select) | ✅ |
+
 ### Phase 7-8 — Frozen
 | ID | Block | Status |
 |---|---|---|
@@ -117,6 +122,8 @@
 | Everything else | Pixel sprite / billboard by default | doc E.1.4 |
 | Art | Placeholder only; nothing real committed | doc §58.1 |
 | Language | Code and comments in English | Willow 2026-09-11 |
+| UI tool grouping | By OPERATION, not by resulting object — a Door is a wall opening, not a tool | doc #24 |
+| UI selection | Right-click probes what is under the cursor; the menu is built from that | Willow 2026-09-11 |
 
 ---
 
@@ -133,16 +140,17 @@ Stated plainly so it is not rediscovered later.
    headless runs; an exported build would need the definitions declared as
    resources or bundled into a manifest first.
 4. ~~Terrain has no biome concept~~ — solved by ART-11 (`CozyBiome`, derived).
-5. **Scatter does not follow terrain edits.** Digging does not re-scatter the
+5. **UI is PC only.** No touch input exists (0 handlers). Willow: mobile later.
+6. **Scatter does not follow terrain edits.** Digging does not re-scatter the
    plants on the patch. A full rebuild costs 138 ms, so hooking it to edits
    needs a chunk-scoped rebuild first; the trade-off is recorded in ART-11.
-6. **Roofs go to rooms with nothing above them** (corrected from "top floor",
+7. **Roofs go to rooms with nothing above them** (corrected from "top floor",
    which left one-storey outbuildings bare). A non-rectangular room still falls
    back to flat; the plan reports that rather than applying it silently.
-7. **Outlines emit walls and one doorway only.** Windows and automatic stairs
+8. **Outlines emit walls and one doorway only.** Windows and automatic stairs
    are not built, self-intersecting outlines are not guarded against, and a roof
    does not regenerate when the room polygon under it changes.
-8. **The wall assembler does not tile roofs** — ART-12's idea applied to roofs
+9. **The wall assembler does not tile roofs** — ART-12's idea applied to roofs
    is not built.
 
 ---

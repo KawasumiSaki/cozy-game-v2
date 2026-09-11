@@ -196,6 +196,109 @@ static func make_tree_texture(seed_val := 4) -> ImageTexture:
 	return _outline(img, Color(0.14, 0.22, 0.12, 1.0))
 
 
+## ---------------------------------------------------------------- UI icons
+##
+## 16x16, procedural, placeholder like everything else. Each one must be
+## distinguishable at a glance IN SILHOUETTE ALONE — an icon that only reads by
+## its colour stops working the moment two materials share a palette, which
+## wood / brick / plaster already do.
+
+static func make_material_icon(id: String, base: Color) -> ImageTexture:
+	const S := 16
+	var img := Image.create(S, S, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var dark := base.darkened(0.35)
+	var light := base.lightened(0.18)
+
+	match id:
+		"wood":
+			# A log seen end-on: a disc with two growth rings.
+			_fill_rect(img, 2, 4, 13, 11, dark)
+			_fill_rect(img, 3, 5, 12, 10, base)
+			_ring(img, 7, 8, 3, light)
+			_ring(img, 7, 8, 1, dark)
+		"stone", "brick":
+			# Stacked blocks, offset like a wall.
+			_fill_rect(img, 2, 4, 13, 7, base)
+			_fill_rect(img, 2, 9, 13, 11, dark)
+			_fill_rect(img, 7, 4, 8, 7, dark)
+			_fill_rect(img, 4, 9, 5, 11, base)
+		_:
+			# Anything else: a simple faceted chunk.
+			_fill_rect(img, 4, 5, 11, 12, base)
+			_fill_rect(img, 6, 3, 9, 5, light)
+			_fill_rect(img, 4, 11, 11, 12, dark)
+	return _outline(img, Color(0.11, 0.09, 0.13, 1.0))
+
+
+static func make_tool_icon(tool: String) -> ImageTexture:
+	const S := 16
+	var img := Image.create(S, S, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var ink := Color(0.90, 0.87, 0.80)
+	var shade := Color(0.55, 0.52, 0.47)
+
+	match tool:
+		"wall":
+			# A course of bricks — solid, laid.
+			_fill_rect(img, 1, 5, 14, 8, ink)
+			_fill_rect(img, 1, 9, 14, 12, shade)
+			_fill_rect(img, 7, 5, 8, 8, shade)
+			_fill_rect(img, 4, 9, 5, 12, ink)
+		"outline":
+			# A drawn rectangle — hollow, by intent.
+			_rect_outline(img, 2, 4, 13, 12, ink)
+		"research_table":
+			_fill_rect(img, 1, 6, 14, 8, ink)          # top
+			_fill_rect(img, 3, 9, 4, 13, shade)        # legs
+			_fill_rect(img, 11, 9, 12, 13, shade)
+		"chest":
+			_fill_rect(img, 2, 6, 13, 13, ink)
+			_fill_rect(img, 2, 9, 13, 10, shade)
+			_fill_rect(img, 7, 8, 8, 11, shade)        # lock
+		"bed":
+			_fill_rect(img, 1, 5, 14, 13, ink)
+			_fill_rect(img, 2, 5, 6, 8, shade)         # pillow
+			_fill_rect(img, 1, 11, 14, 13, shade)
+		"chair":
+			_fill_rect(img, 4, 4, 11, 8, ink)          # back
+			_fill_rect(img, 2, 9, 13, 11, ink)         # seat
+			_fill_rect(img, 3, 11, 4, 14, shade)
+			_fill_rect(img, 11, 11, 12, 14, shade)
+		"campfire":
+			_fill_rect(img, 2, 11, 13, 13, shade)      # logs
+			_fill_rect(img, 6, 4, 9, 11, Color(0.95, 0.72, 0.30))
+			_fill_rect(img, 7, 7, 8, 11, Color(0.98, 0.88, 0.55))
+		_:
+			_rect_outline(img, 3, 3, 12, 12, ink)
+	return _outline(img, Color(0.11, 0.09, 0.13, 1.0))
+
+
+static func _fill_rect(img: Image, x0: int, y0: int, x1: int, y1: int, c: Color) -> void:
+	for y in range(y0, y1 + 1):
+		for x in range(x0, x1 + 1):
+			if x >= 0 and y >= 0 and x < img.get_width() and y < img.get_height():
+				img.set_pixel(x, y, c)
+
+
+static func _rect_outline(img: Image, x0: int, y0: int, x1: int, y1: int, c: Color) -> void:
+	for x in range(x0, x1 + 1):
+		_fill_rect(img, x, y0, x, y0, c)
+		_fill_rect(img, x, y1, x, y1, c)
+	for y in range(y0, y1 + 1):
+		_fill_rect(img, x0, y, x0, y, c)
+		_fill_rect(img, x1, y, x1, y, c)
+
+
+static func _ring(img: Image, cx: int, cy: int, r: int, c: Color) -> void:
+	for a in 32:
+		var t := TAU * float(a) / 32.0
+		var x := cx + int(round(cos(t) * float(r)))
+		var y := cy + int(round(sin(t) * float(r)))
+		if x >= 0 and y >= 0 and x < img.get_width() and y < img.get_height():
+			img.set_pixel(x, y, c)
+
+
 ## VFX frame sets (doc E.18). Placeholder like everything else — real VFX come
 ## from the asset library later. Each set is a short loop of 32x32 frames.
 

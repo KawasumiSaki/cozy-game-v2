@@ -41,6 +41,28 @@ static func clear_polygon(poly: PackedVector2Array) -> CozyTerrainIntent:
 	return i
 
 
+static func dig_brush(center: Vector2, p_radius := 2.0,
+		p_depth := 0.25) -> CozyTerrainIntent:
+	var i := CozyTerrainIntent.new()
+	i.operation = Op.DIG
+	i.shape = Shape.CIRCLE
+	i.points = PackedVector2Array([center])
+	i.radius = p_radius
+	i.depth = p_depth
+	return i
+
+
+static func fill_brush(center: Vector2, p_radius := 2.0,
+		p_depth := 0.25) -> CozyTerrainIntent:
+	var i := CozyTerrainIntent.new()
+	i.operation = Op.FILL
+	i.shape = Shape.CIRCLE
+	i.points = PackedVector2Array([center])
+	i.radius = p_radius
+	i.depth = p_depth
+	return i
+
+
 static func clear_brush(center: Vector2, p_radius := 2.0) -> CozyTerrainIntent:
 	var i := CozyTerrainIntent.new()
 	i.operation = Op.CLEAR

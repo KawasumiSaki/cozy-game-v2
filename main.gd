@@ -45,15 +45,32 @@ const NPC_CHECK_FRAME := 900
 
 const DEBUG_PHYSICS_PROBE := false
 
-## Build tools: "wall" drags a segment, everything else places furniture.
-const TOOLS: Array[String] = ["wall", "outline", "research_table", "chest",
-	"bed", "chair", "campfire"]
+## Tools, grouped by what the OPERATION is.
+##
+## Doc #24 is the reason a Door is not here: an opening is a property of a wall,
+## not a thing you place. Neither is a roof or a foundation — those are DERIVED
+## from what you draw. A palette listing "Wall / Door / Roof" as siblings would
+## quietly undo V2-16 and V2-17.
+##
+## The terrain tools make an existing system reachable for the first time:
+## CozyTerrainIntent has had CLEAR/DIG/FILL since V2-11 with no way to invoke it.
+const TERRAIN_TOOLS: Array[String] = ["dig", "fill", "clear"]
+const BUILD_TOOLS: Array[String] = ["outline", "wall"]
+const PLACE_TOOLS: Array[String] = ["research_table", "chest", "bed", "chair",
+	"campfire"]
+const TOOL_GROUPS: Array = [BUILD_TOOLS, TERRAIN_TOOLS, PLACE_TOOLS]
+const TOOLS: Array[String] = ["outline", "wall", "dig", "fill", "clear",
+	"research_table", "chest", "bed", "chair", "campfire"]
+
+## Brush radius for terrain tools, metres.
+const TERRAIN_BRUSH := 2.5
 
 var camera: CozyCameraRig = null
 var player: CozyCharacter = null
 var npc: CozyNpcAgent = null
 var occlusion: CozyOcclusion = null
-var hud: Label = null
+var hud: CozyHud = null
+var menu: CozyContextMenu = null
 
 var building: CozyBuildingSystem = null
 var terrain: CozyTerrainSystem = null
@@ -71,7 +88,11 @@ var _nav_by_room: Dictionary = {}
 var _rooms_by_floor: Dictionary = {}
 
 var build_mode := false
-var last_build_message := ""
+## Feedback shown in the HUD strip. Timed, so a confirmation clears itself and a
+## refusal does not sit on screen forever after the situation has changed.
+var _hud_message := ""
+var _hud_message_warn := false
+var _hud_message_until := 0.0
 var tool_idx := 0
 var _drag_active := false
 var _drag_start := Vector3.ZERO
@@ -82,6 +103,7 @@ var _preview: MeshInstance3D = null
 var _outline_points := PackedVector2Array()
 var _outline_preview: MeshInstance3D = null
 
+var _clock := 0.0
 var _is_headless := false
 var _build_test_done := false
 var _npc_test_done := false
@@ -590,17 +612,24 @@ func _build_camera() -> void:
 # ---------------------------------------------------------------- HUD
 
 func _build_hud() -> void:
-	var layer := CanvasLayer.new()
-	add_child(layer)
+	hud = CozyHud.new()
+	add_child(hud)
+	hud.set_tool_groups(TOOL_GROUPS)
+	hud.tool_selected.connect(_on_hud_tool_selected)
 
-	hud = Label.new()
-	hud.position = Vector2(8, 6)
-	hud.add_theme_font_size_override("font_size", 11)
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.0, 0.0, 0.0, 0.45)
-	sb.set_content_margin_all(6)
-	hud.add_theme_stylebox_override("normal", sb)
-	layer.add_child(hud)
+	menu = CozyContextMenu.new()
+	add_child(menu)
+	menu.action_chosen.connect(_on_menu_action)
+
+
+## The HUD is now the single place a tool can be chosen, so a click and the TAB
+## key go through the same path rather than two that can drift apart.
+func _on_hud_tool_selected(i: int) -> void:
+	tool_idx = i
+	if not build_mode:
+		build_mode = true
+	_cancel_outline()
+	_update_hud()
 
 
 # ---------------------------------------------------------------- build interaction
@@ -638,6 +667,12 @@ func _begin_drag() -> void:
 	var p := _mouse_ground_point()
 	if not is_finite(p.x):
 		return
+	if _is_terrain_tool():
+		# A brush, not a drag-shape: terrain edits are repeated small strokes and
+		# making the player define a polygon for every one would be miserable.
+		_apply_terrain_brush(p)
+		return
+
 	match _current_tool():
 		"wall":
 			_drag_start = _snap(p)
@@ -659,6 +694,14 @@ func _begin_drag() -> void:
 
 
 func _update_drag() -> void:
+	# Terrain keeps painting while the button is held. The scatter is NOT
+	# rebuilt per stroke — that costs 138 ms and would stutter — only the
+	# terrain surface, and the scatter catches up once on release.
+	if _is_terrain_tool():
+		var tp := _mouse_ground_point()
+		if is_finite(tp.x):
+			_apply_terrain_brush(tp)
+		return
 	if not _drag_active:
 		return
 	var p := _mouse_ground_point()
@@ -668,6 +711,11 @@ func _update_drag() -> void:
 
 
 func _end_drag() -> void:
+	# Releasing after terrain strokes is when the plants catch up. One rebuild
+	# for the whole stroke rather than one per frame.
+	if _is_terrain_tool():
+		_rebuild_spatial_after_terrain()
+		return
 	# An outline is committed with Enter, so releasing the mouse does nothing.
 	if _current_tool() == "outline":
 		return
@@ -685,9 +733,8 @@ func _end_drag() -> void:
 	# The terrain gate lives in the building system, so a refusal shows up as
 	# "nothing was added". Report it rather than silently doing nothing.
 	if building.last_rejection != "":
-		last_build_message = "refused: %s" % building.last_rejection
+		_say("refused: %s" % building.last_rejection, true, 5.0)
 	else:
-		last_build_message = ""
 		_rebuild_spatial(building.last_dirty)
 		_refresh_occlusion_fadables()
 	_update_hud()
@@ -727,6 +774,209 @@ func _clear_preview() -> void:
 		_preview = null
 
 
+# ---------------------------------------------------------------- context menu
+
+## What is under the cursor, and what can be done with it.
+##
+## The menu is built from the PROBE, not from a fixed list: offering "remove
+## wall" over open ground would be an action that silently does nothing, and
+## that is worse than not offering it.
+func _probe_at_mouse() -> Dictionary:
+	var mp := get_viewport().get_mouse_position()
+	var from := camera.project_ray_origin(mp)
+	var dir := camera.project_ray_normal(mp)
+	var q := PhysicsRayQueryParameters3D.create(from, from + dir * 500.0)
+	q.collide_with_areas = false
+	var hit := camera.get_world_3d().direct_space_state.intersect_ray(q)
+	if hit.is_empty():
+		return {"kind": "ground", "point": _mouse_ground_point()}
+	var owner_node := _owner_of(hit["collider"])
+	return {"kind": _kind_of(owner_node), "node": owner_node, "point": hit["position"]}
+
+
+## Walk up from a collider to the thing that owns it. Every generated view
+## (wall, slab, roof, stair, object) keeps its colliders as children, so this is
+## the one place that has to know the shape of that.
+func _owner_of(n: Node) -> Node:
+	var cur := n
+	while cur != null:
+		if cur is CozyWall or cur is CozySlab or cur is CozyRoof or cur is CozyStair \
+				or cur is CozyWorldObject or cur is CozyCharacter:
+			return cur
+		cur = cur.get_parent()
+	return n
+
+
+func _kind_of(n: Node) -> String:
+	if n is CozyWall:
+		return "wall"
+	if n is CozySlab:
+		return "slab"
+	if n is CozyRoof:
+		return "roof"
+	if n is CozyStair:
+		return "stair"
+	if n is CozyWorldObject:
+		return "object"
+	if n is CozyNpcAgent:
+		return "npc"
+	if n is CozyCharacter:
+		return "player"
+	return "unknown"
+
+
+func _open_context_menu(at: Vector2) -> void:
+	var probe := _probe_at_mouse()
+	var kind: String = probe["kind"]
+	var entries: Array = []
+	var target := {"title": kind.capitalize(), "kind": kind, "node": probe.get("node"),
+		"point": probe.get("point", Vector3.ZERO)}
+
+	match kind:
+		"ground":
+			# The terrain entry is the point of this whole menu: the terrain
+			# system has existed since V2-11 with no way to reach it.
+			var cell := terrain.cell_at(probe["point"].x, probe["point"].z)
+			target["title"] = "Ground" + (" · %s" % cell.material_id if cell else "")
+			entries.append({"id": "terrain_edit", "label": "Terrain edit",
+				"hint": "dig / fill / clear the land under the cursor"})
+			if cell:
+				entries.append({"id": "terrain_clear", "label": "Clear here",
+					"hint": "one brush stroke of CLEAR, exactly as the tool would do"})
+		"wall":
+			var ws: CozyWallState = probe["node"].state
+			target["title"] = "Wall · %s" % ws.material_id
+			entries.append({"id": "info", "label": "Info"})
+			entries.append({"id": "remove", "label": "Remove wall"})
+		"object":
+			var o: CozyWorldObject = probe["node"]
+			target["title"] = CozyObjectDefs.display_name(o.def_id)
+			entries.append({"id": "info", "label": "Info"})
+			entries.append({"id": "remove", "label": "Remove"})
+		_:
+			entries.append({"id": "info", "label": "Info"})
+
+	menu.open_for(entries, at, target)
+
+
+func _on_menu_action(id: String, target: Variant) -> void:
+	match id:
+		"terrain_edit":
+			build_mode = true
+			_on_hud_tool_selected(TOOLS.find("dig"))
+			_say("terrain edit: pick Dig / Fill / Clear, then click the ground")
+		"terrain_clear":
+			var pt: Vector3 = target["point"]
+			terrain.apply_intent(CozyTerrainIntent.clear_brush(Vector2(pt.x, pt.z),
+				TERRAIN_BRUSH))
+			terrain_renderer.rebuild_dirty()
+			_rebuild_spatial_after_terrain()
+			_say("cleared")
+		"remove":
+			_remove_target(target)
+		"info":
+			_show_info(target)
+
+
+func _remove_target(target: Variant) -> void:
+	var node = target.get("node")
+	if node is CozyWall:
+		building.submit(CozyBuildingIntent.remove_wall(node.state.id))
+		_rebuild_spatial(building.last_dirty)
+		_build_roofs()
+		_refresh_occlusion_fadables()
+		_say("wall removed")
+	elif node is CozyWorldObject:
+		objects.erase(node)
+		node.queue_free()
+		_rebuild_spatial()
+		_say("removed")
+	_update_hud()
+
+
+func _show_info(target: Variant) -> void:
+	var node = target.get("node")
+	var lines: Array = []
+	if node is CozyWall:
+		var ws: CozyWallState = node.state
+		lines.append("%s · floor %d" % [ws.id, ws.floor_id])
+		lines.append("%.1f m · %.2f m3 · %d block(s)" % [
+			ws.length(), ws.volume(), node.block_count()])
+		lines.append("%d opening(s)" % ws.openings.size())
+	elif node is CozySlab:
+		var ss: CozySlabState = node.state
+		lines.append("%s · floor %d" % [ss.id, ss.floor_id])
+		lines.append("%.1f x %.1f m, surface y=%.1f" % [
+			ss.size.x, ss.size.z, ss.surface_y()])
+	elif node is CozyRoof:
+		lines.append("%s over %s" % [node.state.id, node.state.room_id])
+		lines.append("style %s · %d face(s)" % [node.style_name(), node.face_count()])
+	elif node is CozyStair:
+		var st: CozyStairState = node.state
+		lines.append("%s · floor %s" % [st.id, st.floor_span()])
+		lines.append("%.1f deg over %.1f m" % [rad_to_deg(st.slope_angle()), st.run()])
+	elif node is CozyWorldObject:
+		lines.append(node.def_id)
+		lines.append("%d interaction point(s)" % node.interaction_points.size())
+		for pt in node.interaction_points:
+			lines.append("  %s" % pt.describe())
+	elif node is CozyNpcAgent:
+		lines.append(node.status_line())
+		lines.append("floor %d" % node.current_floor(FLOOR_H))
+	elif node is CozyCharacter:
+		lines.append(node.display_name)
+		lines.append("floor %d" % node.current_floor(FLOOR_H))
+	else:
+		var pt: Vector3 = target.get("point", Vector3.ZERO)
+		var cell := terrain.cell_at(pt.x, pt.z)
+		if cell:
+			lines.append("material %s · %s" % [cell.material_id,
+				CozyBuildability.name_of(cell.buildability)])
+			lines.append("height %.2f" % cell.height)
+			var biome := CozyBiome.classify(terrain, _building_points(), pt.x, pt.z,
+				scatter.world_seed)
+			lines.append("biome %s" % biome)
+	hud.show_info(String(target.get("title", "")), lines)
+
+
+# ---------------------------------------------------------------- terrain tools
+
+func _is_terrain_tool() -> bool:
+	return TERRAIN_TOOLS.has(_current_tool())
+
+
+## Paint one brush stroke of the current terrain operation at a world point.
+##
+## The operation comes from the tool name, so adding "road" later is a row in
+## TERRAIN_TOOLS plus a brush radius — the intent already exists.
+func _apply_terrain_brush(world: Vector3) -> void:
+	var centre := Vector2(world.x, world.z)
+	var intent: CozyTerrainIntent = null
+	match _current_tool():
+		"dig":
+			intent = CozyTerrainIntent.dig_brush(centre, TERRAIN_BRUSH, 0.25)
+		"fill":
+			intent = CozyTerrainIntent.fill_brush(centre, TERRAIN_BRUSH, 0.25)
+		_:
+			intent = CozyTerrainIntent.clear_brush(centre, TERRAIN_BRUSH)
+	if intent == null:
+		return
+	if terrain.apply_intent(intent)["touched"] > 0:
+		terrain_renderer.rebuild_dirty()
+
+
+## Called once when a terrain stroke finishes: everything downstream of the
+## ground catches up in a single pass.
+func _rebuild_spatial_after_terrain() -> void:
+	# Rooms, portals, navigation and the roof all depend on buildability, which
+	# the terrain just changed.
+	_rebuild_spatial()
+	_build_roofs()
+	scatter.building_points = _building_points()
+	scatter.rebuild()
+	_update_hud()
+
+
 # ---------------------------------------------------------------- outline
 
 ## Finish the current outline and turn it into a building (doc #17 / #86).
@@ -736,7 +986,7 @@ func _clear_preview() -> void:
 ## the doc's "intent in, structure out" chain, and none of it is special-cased.
 func _finish_outline() -> void:
 	if _outline_points.size() < 3:
-		last_build_message = "outline needs at least 3 points"
+		_say("outline needs at least 3 points", true)
 		_cancel_outline()
 		_update_hud()
 		return
@@ -754,9 +1004,9 @@ func _finish_outline() -> void:
 
 	_cancel_outline()
 	if added == 0:
-		last_build_message = "refused: %s" % building.last_rejection
+		_say("refused: %s" % building.last_rejection, true, 5.0)
 	else:
-		last_build_message = "built %d wall(s) from outline" % added
+		_say("built %d wall(s) from outline" % added)
 		_rebuild_spatial(building.last_dirty)
 		_build_roofs()
 		_refresh_occlusion_fadables()
@@ -815,7 +1065,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.keycode == KEY_ESCAPE:
 			if build_mode and _outline_points.size() > 0:
 				_cancel_outline()
-				last_build_message = "outline cancelled"
+				_say("outline cancelled")
 				_update_hud()
 				return
 		# Debug escape hatch (doc E.1.1 allows a fixed OR strictly controlled
@@ -828,6 +1078,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				camera.free_look = true
 			_update_hud()
 			return
+
+	# Right-click is the world's selection gesture. It works in every mode,
+	# including while building, because "what is that?" is always a fair
+	# question and taking the player out of build mode to ask it would be worse.
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT \
+			and event.pressed:
+		_open_context_menu(get_viewport().get_mouse_position())
+		return
 
 	if build_mode:
 		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
@@ -845,6 +1103,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(delta: float) -> void:
+	_clock += delta
+	_expire_message()
 	_handle_camera_keys(delta)
 
 	if _is_headless:
@@ -954,6 +1214,7 @@ func _report() -> void:
 	_check_route("room_1_0", "room_1_0", "(no route)")
 
 	_check_camera()
+	_check_ui()
 	_check_assets()
 	_check_scatter()
 	_check_nav()
@@ -1489,6 +1750,75 @@ func _check_assets() -> void:
 		grassland.size(), "OK" if grassland.size() == 2 else "FAIL, expected 2"])
 
 
+## The interface (built 2026-09-11).
+##
+## Four things, each of which was broken or absent before:
+##   1. every tool has a button, and a click and the TAB key share one path
+##   2. the terrain tools are REACHABLE — they had no UI at all, so the whole
+##      terrain system built in V2-10/V2-11 could not be invoked from the game
+##   3. the context menu offers what is actually under the cursor
+##   4. colliders resolve back to their owning object, which is what makes (3)
+##      possible at all
+func _check_ui() -> void:
+	if hud == null or menu == null:
+		print("[cozyv2] ui: NOT BUILT  [FAIL]")
+		return
+
+	print("[cozyv2] hud: %d panel(s), %d tool button(s) for %d tool(s)  [%s]" % [
+		hud.panel_count(), hud.tool_button_count(), TOOLS.size(),
+		"OK" if hud.tool_button_count() == TOOLS.size() and hud.panel_count() >= 3 else "FAIL"])
+
+	# (2) Reachability, through the same call a button click makes.
+	var dig_i := TOOLS.find("dig")
+	hud.select_tool(dig_i)
+	var reached := build_mode and _is_terrain_tool() and tool_idx == dig_i
+	print("[cozyv2] terrain tools reachable from the HUD: %s  [%s]" % [
+		_current_tool(), "OK" if reached else "FAIL, tool did not switch"])
+
+	# (4) A collider must walk back to the view that owns it. Without this the
+	# context menu cannot tell a wall from a slab from the ground.
+	var probe_ok := true
+	var checked := 0
+	for ws in building.state.walls:
+		var v: CozyWall = null
+		for cand in building.wall_views:
+			if cand.state.id == ws.id:
+				v = cand
+				break
+		if v == null or v.bodies().is_empty():
+			continue
+		checked += 1
+		if _kind_of(_owner_of(v.bodies()[0])) != "wall":
+			probe_ok = false
+		if checked >= 3:
+			break
+	print("[cozyv2] context probe: %d wall collider(s) resolved to their wall  [%s]" % [
+		checked, "OK" if probe_ok and checked > 0 else "FAIL"])
+
+	# (3) The ground menu is the entry point for terrain editing, so its
+	# presence is the thing worth asserting — not merely that a menu opened.
+	menu.open_for([
+		{"id": "terrain_edit", "label": "Terrain edit"},
+		{"id": "terrain_clear", "label": "Clear here"},
+	], Vector2(40, 40), {"title": "Ground"})
+	var labels := menu.entry_labels()
+	var has_terrain := labels.has("Terrain edit")
+	print("[cozyv2] context menu on ground: %s  [%s]" % [
+		str(labels), "OK" if has_terrain and labels.size() == 2 else "FAIL"])
+	menu.hide()
+
+	# (4) The info panel is where selecting something lands.
+	hud.show_info("Wall", ["test line"])
+	var shown := hud.info_visible() and hud.info_title_text() == "Wall"
+	hud.clear_info()
+	var hidden := not hud.info_visible()
+	print("[cozyv2] info panel: shows=%s hides=%s  [%s]" % [
+		str(shown), str(hidden), "OK" if shown and hidden else "FAIL"])
+
+	# Leave the scene on the wall tool so the demo opens in a neutral state.
+	hud.select_tool(TOOLS.find("outline"))
+
+
 ## Camera lock (V2.1 doc E.1.1). Free rotation is barred as a gameplay feature
 ## because every pixel asset is authored for exactly ONE observation direction.
 ## The lock therefore has to actually hold — being the default is not enough.
@@ -1598,21 +1928,41 @@ func _check_route(from_id: String, to_id: String, expect: String) -> void:
 # ---------------------------------------------------------------- HUD text
 
 func _update_hud() -> void:
+	if hud == null:
+		return
+
 	var p := player.global_position
 	var room := floor_system.room_at(p) if floor_system != null else null
+
 	var mode := "MOVE"
 	if build_mode:
-		mode = "BUILD [%s]  TAB cycles" % _current_tool()
-	if build_mode and _current_tool() == "outline":
-		mode += "  click corners, ENTER to build, ESC to cancel  [%d pt]" % _outline_points.size()
-	if last_build_message != "":
-		mode += "\n!" + last_build_message
-	var cam := "CAM FIXED %.0f/%.0f  (L to unlock)" % [camera.yaw_deg, camera.pitch_deg]
-	if camera.free_look:
-		cam = "CAM FREE (debug)  (L to relock)"
-	hud.text = "CozyVale V2\n%s\n%s\nWASD move | wheel zoom | B build\npos %.1f,%.1f,%.1f  floor %d  room %s\nwalls %d  objects %d  rooms %d\nNPC: %s" % [
-		mode, cam, p.x, p.y, p.z, player.current_floor(FLOOR_H),
+		mode = "BUILD  \u00b7  %s" % _current_tool()
+		if _current_tool() == "outline":
+			mode += "   [%d pt \u00b7 ENTER build \u00b7 ESC cancel]" % _outline_points.size()
+	hud.set_mode(mode, build_mode)
+
+	hud.set_camera("CAM %.0f/%.0f" % [camera.yaw_deg, camera.pitch_deg], camera.free_look)
+
+	hud.set_context("floor %d  %s    %s" % [
+		player.current_floor(FLOOR_H),
 		(room.id if room != null else "outdoors"),
-		building.state.wall_count(), objects.size(),
-		floor_system.all_rooms().size() if floor_system != null else 0,
-		npc.status_line() if npc != null else "-"]
+		(npc.status_line() if npc != null else "-")])
+
+	if building.inventory != null:
+		hud.set_resources(building.inventory.items)
+
+	hud.set_message(_hud_message, _hud_message_warn)
+
+
+## Show feedback for a few seconds. Refusals go through here too, because the
+## one message the player must not miss is the one explaining why nothing
+## happened when they clicked.
+func _say(text: String, warn := false, seconds := 3.0) -> void:
+	_hud_message = text
+	_hud_message_warn = warn
+	_hud_message_until = _clock + seconds
+
+
+func _expire_message() -> void:
+	if _hud_message != "" and _clock > _hud_message_until:
+		_hud_message = ""
