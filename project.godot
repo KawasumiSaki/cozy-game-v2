@@ -17,6 +17,9 @@ window/size/viewport_width=640
 window/size/viewport_height=360
 window/stretch/mode="viewport"
 window/stretch/aspect="keep"
+; Integer-only scaling: never land on a fractional scale factor, which would
+; resample the pixel grid and produce uneven, blurry pixels.
+window/stretch/scale_mode="integer"
 
 [rendering]
 

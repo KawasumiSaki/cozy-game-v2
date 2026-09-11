@@ -16,6 +16,7 @@ extends RefCounted
 var floor_height := 3.0
 
 var _rooms: Array[CozyRoom] = []
+var _portals: Array[CozyPortal] = []
 
 
 func floor_index_at(y: float) -> int:
@@ -63,6 +64,48 @@ func room_at(pos: Vector3) -> CozyRoom:
 	return null
 
 
+# ---------------------------------------------------------------- portals
+
+func add_portal(p: CozyPortal) -> void:
+	_portals.append(p)
+
+
+func all_portals() -> Array[CozyPortal]:
+	return _portals
+
+
+func portals_on(floor_index: int) -> Array[CozyPortal]:
+	var out: Array[CozyPortal] = []
+	for p in _portals:
+		if p.a_floor == floor_index or p.b_floor == floor_index:
+			out.append(p)
+	return out
+
+
+## Portals that connect two specific rooms — the edge set for the room graph.
+func portals_between(room_a_id: String, room_b_id: String) -> Array[CozyPortal]:
+	var out: Array[CozyPortal] = []
+	for p in _portals:
+		var fwd := p.a_room == room_a_id and p.b_room == room_b_id
+		var rev := p.a_room == room_b_id and p.b_room == room_a_id
+		if fwd or rev:
+			out.append(p)
+	return out
+
+
+## Fill in each portal's floors and rooms by asking the spatial model where its
+## endpoints actually land. Call this AFTER rooms have been detected — this is
+## what implements doc #29 ("a Door knows room_a and room_b").
+func resolve_portals() -> void:
+	for p in _portals:
+		p.a_floor = floor_index_at(p.a_position.y)
+		p.b_floor = floor_index_at(p.b_position.y)
+		var ra := room_at(p.a_position)
+		var rb := room_at(p.b_position)
+		p.a_room = ra.id if ra != null else ""
+		p.b_room = rb.id if rb != null else ""
+
+
 func describe() -> String:
 	var lines: Array[String] = []
 	for fi in floor_indices():
@@ -70,4 +113,8 @@ func describe() -> String:
 		lines.append("  floor %d (y=%.1f): %d room(s)" % [fi, elevation_of(fi), rs.size()])
 		for r in rs:
 			lines.append("    - " + r.describe())
+	if not _portals.is_empty():
+		lines.append("  portals: %d" % _portals.size())
+		for p in _portals:
+			lines.append("    - " + p.describe())
 	return "\n".join(lines)

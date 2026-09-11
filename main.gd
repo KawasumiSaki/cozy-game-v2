@@ -35,6 +35,7 @@ var npc: CozyCharacter = null
 var walls: Array[CozyWall] = []
 var hud: Label = null
 var floor_system: CozyFloorSystem = null
+var room_graph: CozyRoomGraph = null
 
 var _is_headless := false
 
@@ -205,6 +206,24 @@ func _detect_rooms() -> void:
 		for i in polys.size():
 			floor_system.add_room(CozyRoom.new("room_%d_%d" % [fi, i], fi, polys[i]))
 
+	# ---- Portals (V2-07) ----
+	# A door and a staircase are the SAME abstraction to the routing system:
+	# something that joins space A to space B (doc #8.5). Registering them as
+	# portals is what stops floor changes from needing bespoke NPC code (#112).
+	floor_system.add_portal(CozyPortal.new("door_south", CozyPortal.Kind.DOOR,
+		Vector3(3.25, 0.05, -1.0), Vector3(3.25, 0.05, 1.0)))
+	floor_system.add_portal(CozyPortal.new("stair_main", CozyPortal.Kind.STAIR,
+		Vector3(5.3, 0.05, 4.5), Vector3(7.6, FLOOR_H + 0.05, 4.5)))
+
+	# Now that rooms exist, ask the spatial model which room each side lands in.
+	floor_system.resolve_portals()
+
+	# ---- Room graph (V2-08) ----
+	# Rooms are nodes, portals are edges. This is the macro half of navigation
+	# (doc #41): it answers "which rooms must I cross?" without any geometry.
+	room_graph = CozyRoomGraph.new()
+	room_graph.build(floor_system)
+
 
 ## Doorways are physically open, but topologically they CLOSE a room — a door
 ## separates two spaces while remaining passable (doc #29: a Door knows both
@@ -226,6 +245,38 @@ func _report_rooms() -> void:
 	_check_room_at(Vector3(4.0, 0.1, 3.0), "room_0_0")            # inside, ground floor
 	_check_room_at(Vector3(4.0, FLOOR_H + 0.1, 3.0), "room_1_0")  # same xz, upper floor
 	_check_room_at(Vector3(4.0, 0.1, -6.0), "outdoors")           # outside the footprint
+
+	# Portals must resolve to the rooms their endpoints land in (doc #29).
+	_check_portal("door_south", "", "room_0_0")        # outside <-> ground floor
+	_check_portal("stair_main", "room_0_0", "room_1_0")  # ground floor <-> upper floor
+
+	# Room graph must produce cross-floor routes with no geometry involved.
+	_check_route(CozyRoomGraph.OUTDOORS, "room_1_0",
+		"door_south[door] -> stair_main[stair]")
+	_check_route("room_0_0", "room_1_0", "stair_main[stair]")
+	_check_route("room_1_0", "room_1_0", "(no route)")
+
+
+func _check_route(from_id: String, to_id: String, expect: String) -> void:
+	var got := room_graph.route_description(room_graph.find_route(from_id, to_id))
+	print("[cozyv2] route %-10s -> %-10s : %s  [%s]" % [
+		CozyRoomGraph.display_name(from_id), CozyRoomGraph.display_name(to_id), got,
+		"OK" if got == expect else "FAIL, expected " + expect])
+
+
+func _check_portal(pid: String, expect_a: String, expect_b: String) -> void:
+	for p in floor_system.all_portals():
+		if p.id != pid:
+			continue
+		var got_a := p.a_room if p.a_room != "" else "outdoors"
+		var got_b := p.b_room if p.b_room != "" else "outdoors"
+		var ok := got_a == (expect_a if expect_a != "" else "outdoors") \
+			and got_b == (expect_b if expect_b != "" else "outdoors")
+		print("[cozyv2] portal %-12s %s <-> %s  [%s]" % [
+			pid, got_a, got_b,
+			"OK" if ok else "FAIL, expected %s/%s" % [expect_a, expect_b]])
+		return
+	print("[cozyv2] portal %s NOT FOUND  [FAIL]" % pid)
 
 
 func _check_room_at(pos: Vector3, expected: String) -> void:

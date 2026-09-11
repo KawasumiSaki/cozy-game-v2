@@ -21,6 +21,31 @@ Only the axis label changes. All spatial code follows this mapping.
 
 ---
 
+## Render style (locked decision, 2026-09-11)
+
+**Characters are NOT 3D. This is a 3D-render-to-2D look — HD-2D / 3D-to-2D.**
+
+Confirmed by Willow: the world is genuinely 3D underneath, but everything the
+player sees is pixel art. Think Tiny Glade / RimWorld presentation, not a
+fully-modelled 3D RPG.
+
+What that means concretely:
+
+| Layer | Reality |
+|---|---|
+| Position, floors, collision, line-of-sight | **Real 3D** |
+| Wall / slab geometry | **Real 3D meshes + 3D colliders** |
+| Lighting and shadows | **Real 3D** |
+| Camera | **3D, orthographic** (no perspective convergence) |
+| Characters | **2D pixel sprites** (billboards fixed to Y) |
+| Surfaces | **Pixel-art textures, nearest-neighbour, no smoothing** |
+| Output | 640×360, **integer-scaled** to the window |
+
+So "3D rendering that looks 2D" is the target, and it is already what the code
+does. No rework was needed when this was confirmed.
+
+---
+
 ## Current state
 
 **Phase 0 technical spike — COMPLETE and verified.**
@@ -57,6 +82,24 @@ Doorways are physically open but topologically **close** a room — a door
 separates two spaces while staying passable (doc #29). Detection therefore
 bridges the opening.
 
+**Portals and macro routing** (V2-07, V2-08):
+
+```
+portals: 2
+  - door_south [door]  f0/outdoors <-> f0/room_0_0     (a door does not change floor)
+  - stair_main [stair] f0/room_0_0 <-> f1/room_1_0     (a stair does)
+
+route outdoors -> room_1_0 : door_south[door] -> stair_main[stair]  [OK]
+route room_0_0 -> room_1_0 : stair_main[stair]                      [OK]
+route room_1_0 -> room_1_0 : (no route)                             [OK]
+```
+
+The last block is the important one: **standing outside the house, the room
+graph derives "go through the door, then up the stairs" using topology alone** —
+no geometry, no per-floor special-casing. That is doc #41's macro route, and the
+prerequisite for the NPC reaching a second-floor machine (#112) without any
+`if npc_is_textile_worker: go_upstairs()`.
+
 Run it yourself:
 ```bash
 godot --headless --path ~/cozy-game-v2 --quit-after 900
@@ -80,8 +123,8 @@ godot --headless --path ~/cozy-game-v2 --quit-after 900
 |---|---|---|---|---|
 | V2-05 | Floor system | Elevation registry; floor as a first-class spatial layer | S | ✅ 09-11 |
 | V2-06 | Room detection | Closed regions auto-derived from the wall graph | M | ✅ 09-11 |
-| V2-07 | Portal | Door / stair / elevator unified as a space connector | S | ⬜ |
-| V2-08 | Room graph | Macro routing: room → portal → room, across floors | M | ⬜ |
+| V2-07 | Portal | Door / stair / elevator unified as a space connector | S | ✅ 09-11 |
+| V2-08 | Room graph | Macro routing: room → portal → room, across floors | M | ✅ 09-11 |
 | V2-09 | Local navigation | Navmesh per room; furniture updates it | M | ⬜ |
 
 ### Phase 2 — Terrain
@@ -144,7 +187,11 @@ systems** (doc #179). Space → terrain → building → object → interaction 
 | V2-00…04 | Phase 0 spike | ✅ done |
 | V2-05 | Floor system | ✅ done |
 | V2-06 | Room detection | ✅ done — walls now mean something |
-| V2-07 | Portal | ⬜ not reached; carried to next session |
+| V2-07 | Portal | ✅ done |
+| V2-08 | Room graph | ✅ done — cross-floor routing works |
+
+Next session: **V2-09 local navigation** (navmesh per room, updated when
+furniture moves), then Phase 4 Object / InteractionPoint.
 
 Reaching V2-06 today means the world stops being "a box you can walk in" and
 starts having **rooms that the system understands** — which is the prerequisite
