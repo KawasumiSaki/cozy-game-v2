@@ -56,7 +56,7 @@
 ### Phase 3 — Building
 | ID | Block | Status |
 |---|---|---|
-| V2-14 | Building intent (outline → structure) | 🚧 prototype only |
+| V2-14 | Building intent (outline → structure) | ✅ |
 | V2-15 | Wall connection solver | ✅ |
 | V2-16 | Openings (door / window) | ✅ |
 | V2-17 | Roof generator | ✅ |
@@ -136,8 +136,14 @@ Stated plainly so it is not rediscovered later.
 5. **Scatter does not follow terrain edits.** Digging does not re-scatter the
    plants on the patch. A full rebuild costs 138 ms, so hooking it to edits
    needs a chunk-scoped rebuild first; the trade-off is recorded in ART-11.
-6. **Roofs are generated for the top floor only**, and a non-rectangular room
-   falls back to flat. The fallback is reported in the plan, not silent.
+6. **Roofs go to rooms with nothing above them** (corrected from "top floor",
+   which left one-storey outbuildings bare). A non-rectangular room still falls
+   back to flat; the plan reports that rather than applying it silently.
+7. **Outlines emit walls and one doorway only.** Windows and automatic stairs
+   are not built, self-intersecting outlines are not guarded against, and a roof
+   does not regenerate when the room polygon under it changes.
+8. **The wall assembler does not tile roofs** — ART-12's idea applied to roofs
+   is not built.
 
 ---
 

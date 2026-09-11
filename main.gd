@@ -46,7 +46,8 @@ const NPC_CHECK_FRAME := 900
 const DEBUG_PHYSICS_PROBE := false
 
 ## Build tools: "wall" drags a segment, everything else places furniture.
-const TOOLS: Array[String] = ["wall", "research_table", "chest", "bed", "chair"]
+const TOOLS: Array[String] = ["wall", "outline", "research_table", "chest",
+	"bed", "chair", "campfire"]
 
 var camera: CozyCameraRig = null
 var player: CozyCharacter = null
@@ -77,11 +78,16 @@ var _drag_start := Vector3.ZERO
 var _drag_end := Vector3.ZERO
 var _preview: MeshInstance3D = null
 
+## Points collected while drawing a building outline (world x, z).
+var _outline_points := PackedVector2Array()
+var _outline_preview: MeshInstance3D = null
+
 var _is_headless := false
 var _build_test_done := false
 var _npc_test_done := false
 var _occlusion_test_done := false
 var _vfx_test_done := false
+var _outline_test_done := false
 
 
 func _ready() -> void:
@@ -326,19 +332,68 @@ func _build_house() -> void:
 ##
 ## This is what the slabs-and-stairs migration unblocked — before it, there was
 ## no way to ask where the floors were or how high the building went.
-func _build_roofs() -> void:
-	var floors := building.state.floor_ids()
-	if floors.is_empty():
-		return
-	var top: int = floors[floors.size() - 1]
-	# The roof sits ON the top floor's walls, so its eave line is one floor
-	# height above the top floor's own elevation.
-	var base_y := floor_system.elevation_of(top + 1)
+func _has_roof_for(room_id: String) -> bool:
+	for r in building.state.roofs:
+		if r.room_id == room_id:
+			return true
+	return false
 
+
+## Is there a floor slab above this room?
+##
+## The rule for "does this room need a roof" is NOT "is it on the highest floor".
+## A one-storey outbuilding on floor 0 is topmost for its own footprint and must
+## be roofed; the floor-based version of this rule left exactly that case bare.
+## What matters is whether anything covers it.
+func _has_cover_above(room: CozyRoom) -> bool:
+	var room_y := floor_system.elevation_of(room.floor_index)
+
+	# Sample the interior, not just the centroid. A single centre point decides
+	# wrongly whenever the middle of a room happens to fall in an opening above
+	# it — this project has a stairwell hole, and the ground-floor room beside
+	# it was being given a roof it does not want.
+	var samples: Array[Vector2] = [room.centroid]
+	for pt in room.polygon:
+		# Pull each vertex toward the centre so a point sitting exactly on the
+		# wall line does not decide the answer either way.
+		samples.append(pt.lerp(room.centroid, 0.35))
+
+	var covered := 0
+	for q in samples:
+		for sl in building.state.slabs:
+			if sl.surface_y() <= room_y + 0.01:
+				continue
+			if sl.footprint().has_point(q):
+				covered += 1
+				break
+
+	# Mostly covered counts as covered: a room under a floor is an interior
+	# room, and one open corner does not change that.
+	return covered * 2 >= samples.size()
+
+
+## Roofs generated from the rooms that have nothing above them (doc #31).
+##
+## Nothing here is a prefab: the polygon comes from room detection, the
+## elevation from the floor system, and CozyRoofGenerator derives the ridge,
+## slopes and gables from those. Move a wall and the roof follows.
+##
+## This is what the slabs-and-stairs migration unblocked — before it, there was
+## no way to ask where the floors were or how high the building went.
+func _build_roofs() -> void:
+	# Idempotent: this runs again whenever the building changes, and a second
+	# pass must not stack another roof on a room that already has one.
 	var intents: Array = []
-	for r in floor_system.rooms_on(top):
+	for r in floor_system.all_rooms():
+		if _has_roof_for(r.id) or _has_cover_above(r):
+			continue
+		# The eave line sits on top of this room's own walls, one floor height
+		# above its floor — not at the top of the building.
+		var base_y := floor_system.elevation_of(r.floor_index + 1)
 		intents.append(CozyBuildingIntent.add_roof(r.id, r.polygon, base_y,
-			CozyRoofState.Style.GABLE, "brick", top + 1))
+			CozyRoofState.Style.GABLE, "brick", r.floor_index + 1))
+	if intents.is_empty():
+		return
 	building.submit_many(intents)
 
 
@@ -583,16 +638,24 @@ func _begin_drag() -> void:
 	var p := _mouse_ground_point()
 	if not is_finite(p.x):
 		return
-	if _is_wall_tool():
-		_drag_start = _snap(p)
-		_drag_end = _drag_start
-		_drag_active = true
-		_update_preview()
-	else:
-		# Furniture is a single click, not a drag.
-		_place_object(_current_tool(), p.x, p.z, _build_floor_index())
-		_rebuild_spatial()
-		_update_hud()
+	match _current_tool():
+		"wall":
+			_drag_start = _snap(p)
+			_drag_end = _drag_start
+			_drag_active = true
+			_update_preview()
+		"outline":
+			# Each click drops a corner. The outline is finished with Enter,
+			# not with the mouse, so a mis-click does not commit a building.
+			var sp := _snap(p)
+			_outline_points.append(Vector2(sp.x, sp.z))
+			_update_outline_preview()
+			_update_hud()
+		_:
+			# Furniture is a single click, not a drag.
+			_place_object(_current_tool(), p.x, p.z, _build_floor_index())
+			_rebuild_spatial()
+			_update_hud()
 
 
 func _update_drag() -> void:
@@ -605,6 +668,9 @@ func _update_drag() -> void:
 
 
 func _end_drag() -> void:
+	# An outline is committed with Enter, so releasing the mouse does nothing.
+	if _current_tool() == "outline":
+		return
 	if not _drag_active:
 		return
 	_drag_active = false
@@ -661,6 +727,72 @@ func _clear_preview() -> void:
 		_preview = null
 
 
+# ---------------------------------------------------------------- outline
+
+## Finish the current outline and turn it into a building (doc #17 / #86).
+##
+## The generator emits WALL INTENTS and a doorway; everything else follows on
+## its own — rooms come from the wall graph, the roof from the rooms. That is
+## the doc's "intent in, structure out" chain, and none of it is special-cased.
+func _finish_outline() -> void:
+	if _outline_points.size() < 3:
+		last_build_message = "outline needs at least 3 points"
+		_cancel_outline()
+		_update_hud()
+		return
+
+	var floor_id := _build_floor_index()
+	var base_y := floor_system.elevation_of(floor_id)
+	var hint := Vector2(player.global_position.x, player.global_position.z)
+
+	var intents := CozyOutlineGenerator.plan(_outline_points, base_y, FLOOR_H,
+		WALL_T, "wood", floor_id, hint)
+
+	var before := building.state.wall_count()
+	building.submit_many(intents)
+	var added := building.state.wall_count() - before
+
+	_cancel_outline()
+	if added == 0:
+		last_build_message = "refused: %s" % building.last_rejection
+	else:
+		last_build_message = "built %d wall(s) from outline" % added
+		_rebuild_spatial(building.last_dirty)
+		_build_roofs()
+		_refresh_occlusion_fadables()
+	_update_hud()
+
+
+func _cancel_outline() -> void:
+	_outline_points = PackedVector2Array()
+	if _outline_preview != null:
+		_outline_preview.queue_free()
+		_outline_preview = null
+
+
+## Draw the collected corners, plus a rubber-band segment to the cursor.
+func _update_outline_preview() -> void:
+	if _outline_preview == null:
+		_outline_preview = MeshInstance3D.new()
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.35, 0.85, 1.0)
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_outline_preview.material_override = mat
+		add_child(_outline_preview)
+
+	var y := floor_system.elevation_of(_build_floor_index()) + 0.15
+	var im := ImmediateMesh.new()
+	im.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
+	for pt in _outline_points:
+		im.surface_add_vertex(Vector3(pt.x, y, pt.y))
+	var mouse := _mouse_ground_point()
+	if is_finite(mouse.x) and _outline_points.size() > 0:
+		var sp := _snap(mouse)
+		im.surface_add_vertex(Vector3(sp.x, y, sp.z))
+	im.surface_end()
+	_outline_preview.mesh = im
+
+
 # ---------------------------------------------------------------- input
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -676,6 +808,16 @@ func _unhandled_input(event: InputEvent) -> void:
 			tool_idx = (tool_idx + 1) % TOOLS.size()
 			_update_hud()
 			return
+		if event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER:
+			if build_mode and _current_tool() == "outline":
+				_finish_outline()
+				return
+		if event.keycode == KEY_ESCAPE:
+			if build_mode and _outline_points.size() > 0:
+				_cancel_outline()
+				last_build_message = "outline cancelled"
+				_update_hud()
+				return
 		# Debug escape hatch (doc E.1.1 allows a fixed OR strictly controlled
 		# camera; free rotation is barred as a gameplay feature). Anything seen
 		# at a non-locked angle is out of spec, so do not author art from it.
@@ -768,6 +910,9 @@ func _run_headless_stages() -> void:
 	if not _vfx_test_done and f > 120:
 		_vfx_test_done = true
 		_check_vfx()
+	if not _outline_test_done and f > 1500:
+		_outline_test_done = true
+		_check_outline_build()
 	if not _build_test_done and f > AUTOPILOT_DONE_FRAME:
 		_build_test_done = true
 		_run_live_rebuild_test()
@@ -819,6 +964,63 @@ func _report() -> void:
 	_check_building_state()
 	_check_roofs()
 	_check_npc_route_plan()
+
+
+## Doc #86 — the whole chain, end to end.
+##
+## The doc's "第一个完整 Terrain → Building Demo": clear the ground, express an
+## outline, and let the system produce the structure. Nothing here is
+## special-cased — rooms come from the wall graph and the roof from the rooms,
+## exactly as they do for the hand-built house.
+func _check_outline_build() -> void:
+	# Somewhere clear of the house, on ground that has to be made ready first.
+	var cx := 17.0
+	var cz := 13.0
+	var hw := 2.6
+	var hd := 2.0
+	var poly := PackedVector2Array([
+		Vector2(cx - hw, cz - hd), Vector2(cx + hw, cz - hd),
+		Vector2(cx + hw, cz + hd), Vector2(cx - hw, cz + hd)])
+
+	# 1. Terrain first — doc #12 refuses a building on uncleared ground, so the
+	#    test has to clear it exactly the way the player would.
+	var plot := PackedVector2Array([
+		Vector2(cx - hw - 1.0, cz - hd - 1.0), Vector2(cx + hw + 1.0, cz - hd - 1.0),
+		Vector2(cx + hw + 1.0, cz + hd + 1.0), Vector2(cx - hw - 1.0, cz + hd + 1.0)])
+	terrain.apply_intent(CozyTerrainIntent.clear_polygon(plot))
+	terrain_renderer.rebuild_dirty()
+
+	# 2. Outline -> intents.
+	var before_walls := building.state.wall_count()
+	var before_rooms := floor_system.all_rooms().size()
+	var before_roofs := building.state.roofs.size()
+
+	var intents := CozyOutlineGenerator.plan(poly, 0.0, FLOOR_H, WALL_T,
+		"wood", 0, Vector2(cx, cz - hd - 3.0))
+	building.submit_many(intents)
+
+	# 3. Everything downstream re-derives on its own.
+	_rebuild_spatial(building.last_dirty)
+	_build_roofs()
+
+	var d_walls := building.state.wall_count() - before_walls
+	var d_rooms := floor_system.all_rooms().size() - before_rooms
+	var d_roofs := building.state.roofs.size() - before_roofs
+
+	print("[cozyv2] outline build: %d pt(s) -> +%d wall(s), +%d room(s), +%d roof(s)  [%s]" % [
+		poly.size(), d_walls, d_rooms, d_roofs,
+		"OK" if d_walls == 4 and d_rooms == 1 and d_roofs == 1 else "FAIL, expected 4/1/1"])
+
+	# The generated room must be the size that was drawn, which proves the
+	# walls landed where the outline said rather than merely that some appeared.
+	var found := false
+	var want_area := (hw * 2.0) * (hd * 2.0)
+	for r in floor_system.all_rooms():
+		if r.floor_index == 0 and is_equal_approx(r.area, want_area):
+			found = true
+			break
+	print("[cozyv2] outline room area: %.1f m2 expected %.1f  [%s]" % [
+		want_area, want_area, "OK" if found else "FAIL, no room of that size"])
 
 
 ## Roofs (V2.1 doc #31). Derived from the room polygon rather than placed, and
@@ -1401,6 +1603,8 @@ func _update_hud() -> void:
 	var mode := "MOVE"
 	if build_mode:
 		mode = "BUILD [%s]  TAB cycles" % _current_tool()
+	if build_mode and _current_tool() == "outline":
+		mode += "  click corners, ENTER to build, ESC to cancel  [%d pt]" % _outline_points.size()
 	if last_build_message != "":
 		mode += "\n!" + last_build_message
 	var cam := "CAM FIXED %.0f/%.0f  (L to unlock)" % [camera.yaw_deg, camera.pitch_deg]
