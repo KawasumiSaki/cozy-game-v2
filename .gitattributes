@@ -1,0 +1,20 @@
+# Normalise line endings: text files are stored as LF in the repo.
+# Without this, Windows checkouts rewrite every file to CRLF and every diff
+# shows as a whole-file change.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ogg binary
+*.wav binary
+*.ttf binary
+
+# Godot text formats
+*.tscn text
+*.tres text
+*.godot text
+*.gd text
+*.import text
