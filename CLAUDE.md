@@ -4,6 +4,26 @@ A pixel-art life sim over a **real 3D spatial core**. Godot 4.7.2, GDScript.
 
 ---
 
+## Resuming: the user says one line, you run the whole loop
+
+If the user opens a session and says **"继续做这个项目"**, **"接着做"**, or names a
+block, **do not ask what to do**. Run this loop yourself:
+
+```
+read 00-目录.md            -> where things stand, what is next
+read the current block note -> deliverables, DoD, code, current state, assertions
+run the baseline self-check -> if it is red, fix THAT first; do not stack work
+do the next step in 当前站位
+follow the finish protocol (five places)
+report: what changed, decisions, bugs hit, assertion output, next step
+```
+
+**Stop and ask only** when: art direction or assets are involved, when a change
+affects how the game *feels* (camera, controls), or when the doc's hard rules
+conflict with the code. Everything else — decide it and report.
+
+---
+
 ## Read these two files before doing anything
 
 ```
