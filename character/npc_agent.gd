@@ -32,7 +32,13 @@ var npc_state: CozyNpcState = null
 var job_id := "researcher"
 var job_point_type := "work"   ## What kind of interaction this agent seeks.
 
-var state: State = State.IDLE
+## The agent's own finite state machine — NOT the resident's data.
+##
+## Named `fsm_state` rather than `state` because `npc_state` sits three lines
+## above it holding the resident, and `main.gd` legitimately reads `.state` off a
+## WALL (`CozyWallState`). Copying that line for an NPC yields an int here: no
+## error, no crash, just a blank panel (see INVARIANTS).
+var fsm_state: State = State.IDLE
 
 ## The clock, so the agent knows what KIND of thing it should be doing (#115).
 ## Without one it falls back to its job, which keeps it usable in a test.
@@ -109,7 +115,7 @@ func current_activity() -> String:
 
 
 func _physics_process(delta: float) -> void:
-	match state:
+	match fsm_state:
 		State.IDLE:
 			_idle_timer -= delta
 			if _idle_timer <= 0.0:
@@ -178,7 +184,7 @@ func _acquire_job() -> void:
 	_path_i = 0
 	_stuck_time = 0.0
 	_last_pos = global_position
-	state = State.GOING
+	fsm_state = State.GOING
 	last_status = "walking"
 
 
@@ -235,7 +241,7 @@ func _arrive() -> void:
 
 	_target_point.occupy(self)
 	_work_left = _target_point.duration
-	state = State.WORKING
+	fsm_state = State.WORKING
 	last_status = "working"
 
 
@@ -268,7 +274,7 @@ func _finish_work() -> void:
 			npc_state.train(skill_id,
 				maxi(1, int(round(npc_state.passion_multiplier(skill_id)))))
 
-	state = State.IDLE
+	fsm_state = State.IDLE
 	_idle_timer = 0.8
 	if haul != "":
 		last_status = "%s | completed %d" % [haul, completions]
@@ -326,7 +332,7 @@ func _abandon_job() -> void:
 	_target_point = null
 	_target_object = null
 	_path = PackedVector3Array()
-	state = State.IDLE
+	fsm_state = State.IDLE
 	_idle_timer = 0.5
 
 
@@ -343,6 +349,6 @@ func debug_line() -> String:
 	if _path_i < _path.size():
 		wp = _path[_path_i]
 	return "npc %s pos=(%.2f,%.2f,%.2f) wp=%d/%d -> (%.2f,%.2f,%.2f) stuck=%.1f want=%s act=%s why=%s" % [
-		State.keys()[state], global_position.x, global_position.y, global_position.z,
+		State.keys()[fsm_state], global_position.x, global_position.y, global_position.z,
 		_path_i, _path.size(), wp.x, wp.y, wp.z, _stuck_time,
 		want_point_type(), current_activity(), last_status]

@@ -168,6 +168,14 @@ func _ready() -> void:
 	_build_hud()
 	_report()
 
+	# Deliberately after _report(): pass 1 wants to write a world that has already
+	# been through every check, and pass 2 wants its own checks printed first.
+	if _is_headless:
+		if _has_arg("--cozy-save-on-exit"):
+			_cross_process_save()
+		elif _has_arg("--cozy-load-first"):
+			_cross_process_verify()
+
 
 func _build_clock() -> void:
 	clock = CozyTimeSystem.new()
@@ -1244,6 +1252,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			tool_idx = (tool_idx + 1) % TOOLS.size()
 			_update_hud()
 			return
+		# Tool hotkeys — the same ones the palette prints on its buttons. They go
+		# through the HUD's own selection path, so a key and a click cannot drift.
+		if event.keycode >= KEY_0 and event.keycode <= KEY_9:
+			var i := CozyHud.index_for_hotkey(event.keycode - KEY_0)
+			if i >= 0 and i < TOOLS.size():
+				_on_hud_tool_selected(i)
+				return
 		if event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER:
 			if build_mode and _current_tool() == "outline":
 				_finish_outline()
@@ -2033,6 +2048,26 @@ func _check_ui() -> void:
 
 	_check_npc_panel()
 
+	# The clock and the tool hotkeys — both "declared but never shown". The clock
+	# has had hh_mm()/season() since Phase 0 with nothing displaying them, and
+	# `set_tools` carried a comment claiming the hotkey was printed while nothing
+	# printed it.
+	_update_hud()
+	var clock_ok := hud.clock_text().begins_with("Day ")
+	print("[cozyv2] hud clock: \"%s\"  [%s]" % [
+		hud.clock_text(), "OK" if clock_ok else "FAIL, nothing is showing the time"])
+
+	var keys_ok := true
+	var distinct := {}
+	for i in TOOLS.size():
+		var k := hud.tool_hotkey_text(i)
+		if k == "" or CozyHud.index_for_hotkey(int(k)) != i:
+			keys_ok = false
+		distinct[k] = true
+	print("[cozyv2] hud tool hotkeys: %d tool(s), %d distinct key(s) shown  [%s]" % [
+		TOOLS.size(), distinct.size(),
+		"OK" if keys_ok and distinct.size() == TOOLS.size() else "FAIL"])
+
 	# Leave the scene on the wall tool so the demo opens in a neutral state.
 	hud.select_tool(TOOLS.find("outline"))
 
@@ -2242,6 +2277,108 @@ func _apply_world(d: Dictionary) -> void:
 	# the ones that were freed.
 	_refresh_occlusion_fadables()
 	_update_hud()
+
+
+## Cross-process save check (V2-26 debt 21).
+##
+## Everything in `_check_save_load` happens inside ONE process, and that cannot
+## answer the question that actually matters: does the game come back after being
+## CLOSED and reopened? So this runs in two passes, driven from the shell:
+##
+##     godot --headless ... --quit-after 2 -- --cozy-save-on-exit
+##     godot --headless ... --quit-after 2 -- --cozy-load-first
+##
+## Pass 2 starts from a freshly built default world — the state a real launch is
+## in — so it tests the real path and not a warm one. That is the part a
+## single-process check structurally cannot reach: whether `_ready()`'s default
+## build can be displaced by a load.
+const XPROC_PATH := "user://crossprocess.json"
+
+## What pass 1 writes and pass 2 looks for. Deliberately not round numbers, so a
+## default world that coincidentally matches cannot pass.
+const XPROC_HUNGER := 37.0
+const XPROC_ENERGY := 61.0
+const XPROC_DAY := 4
+const XPROC_WOOD := 9.0
+
+## Where pass 1 puts its marker wall. Checked by position rather than by counting
+## walls: the assertion suite runs before this and mutates the default world (a
+## T-junction check adds a divider), so a wall COUNT is not a stable baseline.
+const XPROC_MARK_A := Vector3(11.0, 0.0, 11.0)
+const XPROC_MARK_B := Vector3(13.0, 0.0, 11.0)
+
+
+func _has_arg(flag: String) -> bool:
+	return OS.get_cmdline_user_args().has(flag)
+
+
+## Pass 1: build something a default world does not have, then write it.
+func _cross_process_save() -> void:
+	if npc != null and npc.npc_state != null:
+		npc.npc_state.hunger = XPROC_HUNGER
+		npc.npc_state.energy = XPROC_ENERGY
+	clock.day = XPROC_DAY
+	var chest := _first_object("chest")
+	if chest != null and chest.container != null:
+		chest.container.inventory.items.clear()
+		chest.container.inventory.add("wood", XPROC_WOOD)
+	# A wall somewhere the homestead does not build one, so the building facts
+	# have to have survived too — not just the numbers.
+	#
+	# The terrain gate (doc #12) refuses to build on uncleared ground and says so:
+	# "11,11 is natural (grass)". Clearing it first is what the terrain tool would
+	# do, and it means this check now carries a TERRAIN edit across the process
+	# boundary as well as a building one.
+	terrain.apply_intent(CozyTerrainIntent.clear_brush(
+		Vector2(XPROC_MARK_A.x, XPROC_MARK_A.z), TERRAIN_BRUSH))
+	terrain_renderer.rebuild_dirty()
+	_rebuild_spatial_after_terrain()
+	var marker := _add_wall(XPROC_MARK_A, XPROC_MARK_B, "wood", 0)
+	if marker == null:
+		print("[cozyv2] cross-process: marker wall REFUSED at %s -> %s  [FAIL]" % [
+			XPROC_MARK_A, building.last_rejection])
+	_rebuild_spatial()
+	_build_roofs()
+	var wrote := save_game(XPROC_PATH)
+	print("[cozyv2] cross-process PASS 1 wrote: %d wall(s), npc %d/%d, day %d, wood %.0f  [%s]" % [
+		building.state.wall_count(), int(XPROC_HUNGER), int(XPROC_ENERGY),
+		XPROC_DAY, XPROC_WOOD, "OK" if wrote else "FAIL, could not write"])
+
+
+## Pass 2: fresh process, fresh default world, then load over it.
+func _cross_process_verify() -> void:
+	var fresh_walls := building.state.wall_count()
+	var fresh_hunger := npc.npc_state.hunger if npc != null and npc.npc_state != null else -1.0
+	var d := CozySaveManager.load_world(XPROC_PATH)
+	if d.is_empty():
+		print("[cozyv2] cross-process PASS 2: nothing readable at %s  [FAIL]" % XPROC_PATH)
+		return
+	_apply_world(d)
+
+	var st: CozyNpcState = npc.npc_state
+	var chest := _first_object("chest")
+	var wood := -1.0
+	if chest != null and chest.container != null:
+		wood = chest.container.inventory.count("wood")
+
+	# Found by position, not by count — see XPROC_MARK_A.
+	var marker := false
+	for ws in building.state.walls:
+		if ws.start.distance_to(XPROC_MARK_A) < 0.01 \
+				and ws.end.distance_to(XPROC_MARK_B) < 0.01:
+			marker = true
+
+	var ok := st != null \
+		and absf(st.hunger - XPROC_HUNGER) < 0.001 \
+		and absf(st.energy - XPROC_ENERGY) < 0.001 \
+		and clock.day == XPROC_DAY \
+		and absf(wood - XPROC_WOOD) < 0.001 \
+		and marker
+	print("[cozyv2] cross-process PASS 2 loaded over a fresh world (fresh: %d wall(s), hunger %d): npc %d/%d, day %d, wood %.0f, marker wall=%s  [%s]" % [
+		fresh_walls, int(fresh_hunger),
+		int(st.hunger) if st != null else -1, int(st.energy) if st != null else -1,
+		clock.day, wood, str(marker),
+		"OK" if ok else "FAIL, the reopened game did not match"])
 
 
 func save_game(path := CozySaveManager.DEFAULT_PATH) -> bool:
@@ -2706,6 +2843,12 @@ func _update_hud() -> void:
 	hud.set_mode(mode, build_mode)
 
 	hud.set_camera("CAM %.0f/%.0f" % [camera.yaw_deg, camera.pitch_deg], camera.free_look)
+
+	# The clock, finally visible. The resident's entire day is scheduled off it —
+	# they sleep at 22:00 and eat at 12:00 — and the player had no way to tell
+	# what time it was.
+	hud.set_clock("Day %d  %s  %s" % [
+		clock.day, clock.hh_mm(), clock.season().capitalize()])
 
 	hud.set_context("floor %d  %s    %s" % [
 		player.current_floor(FLOOR_H),

@@ -28,6 +28,7 @@ const BOTTOM_H := CozyUiTheme.BAR_H
 
 var _tools: Array[String] = []
 var _tool_buttons: Array[Button] = []
+var _tool_hotkey_labels: Array[Label] = []
 var _selected := 0
 
 var _resources_box: HBoxContainer = null
@@ -36,6 +37,7 @@ var _resource_icons: Dictionary = {}
 
 var _mode_label: Label = null
 var _camera_label: Label = null
+var _clock_label: Label = null
 var _message_label: Label = null
 var _context_label: Label = null
 
@@ -119,6 +121,10 @@ func _build_top() -> void:
 
 	_mode_label = _mk_label(CozyUiTheme.TEXT_STRONG)
 	_camera_label = _mk_label(CozyUiTheme.TEXT_DIM)
+	# The clock has existed since Phase 0 (`CozyTimeSystem.hh_mm()` / `season()`)
+	# and was never shown anywhere — the resident's whole day turns on it, and the
+	# player could not see what time it was.
+	_clock_label = _mk_label(CozyUiTheme.TEXT)
 
 	# Feedback right-aligned: it must never sit under the button just pressed.
 	var spacer := Control.new()
@@ -129,6 +135,7 @@ func _build_top() -> void:
 
 	row.add_child(_mode_label)
 	row.add_child(_camera_label)
+	row.add_child(_clock_label)
 	row.add_child(spacer)
 	row.add_child(_message_label)
 	add_child(bar)
@@ -225,8 +232,9 @@ func set_tools(tools: Array[String], groups: Array = []) -> void:
 		b.add_theme_color_override("font_color", CozyUiTheme.TEXT)
 		b.add_theme_color_override("font_hover_color", CozyUiTheme.TEXT_STRONG)
 
-		# Icon + label, with the hotkey shown. A palette that hides its shortcuts
-		# teaches nobody the shortcuts.
+		# Icon + label + hotkey. A palette that hides its shortcuts teaches nobody
+		# the shortcuts — and this comment claimed the hotkey was shown for as long
+		# as the palette existed, while nothing printed it (debt 14).
 		var inner := HBoxContainer.new()
 		inner.add_theme_constant_override("separation", 4)
 		inner.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -242,6 +250,13 @@ func set_tools(tools: Array[String], groups: Array = []) -> void:
 		name_label.add_theme_font_size_override("font_size", CozyUiTheme.FONT_SIZE_SMALL)
 		name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		inner.add_child(name_label)
+		var key_label := Label.new()
+		key_label.text = hotkey_name(i)
+		key_label.add_theme_font_size_override("font_size", CozyUiTheme.FONT_SIZE_SMALL)
+		key_label.add_theme_color_override("font_color", CozyUiTheme.TEXT_DIM)
+		key_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		inner.add_child(key_label)
+		_tool_hotkey_labels.append(key_label)
 		b.add_child(inner)
 
 		b.pressed.connect(_on_tool_pressed.bind(i))
@@ -249,6 +264,31 @@ func set_tools(tools: Array[String], groups: Array = []) -> void:
 		_tool_buttons.append(b)
 
 	_apply_selection()
+
+
+## Tools are numbered 1..9 then 0, so ten of them fit a row without a modifier.
+static func hotkey_name(index: int) -> String:
+	return str((index + 1) % 10)
+
+
+## Which tool index a digit key selects. 0 means the tenth tool, not the first.
+static func index_for_hotkey(digit: int) -> int:
+	return 9 if digit == 0 else digit - 1
+
+
+func set_clock(text: String) -> void:
+	if _clock_label != null:
+		_clock_label.text = text
+
+
+func clock_text() -> String:
+	return _clock_label.text if _clock_label != null else ""
+
+
+func tool_hotkey_text(i: int) -> String:
+	if i < 0 or i >= _tool_hotkey_labels.size():
+		return ""
+	return _tool_hotkey_labels[i].text
 
 
 func _tool_name(tool: String) -> String:
