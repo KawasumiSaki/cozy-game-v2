@@ -129,7 +129,7 @@ func refresh(st: CozyNpcState, hour: float, activity: String) -> void:
 		return
 
 	_title.text = st.display_name
-	_subtitle.text = "%s  ·  %s" % [st.job_name(), CozySchedule.activity_name(activity)]
+	_subtitle.text = "%s  -  %s" % [st.job_name(), CozySchedule.activity_name(activity)]
 
 	_set_meter("hunger", st.hunger)
 	_set_meter("energy", st.energy)

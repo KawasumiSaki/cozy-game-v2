@@ -1072,7 +1072,7 @@ func _open_context_menu(at: Vector2) -> void:
 			# The terrain entry is the point of this whole menu: the terrain
 			# system has existed since V2-11 with no way to reach it.
 			var cell := terrain.cell_at(probe["point"].x, probe["point"].z)
-			target["title"] = "Ground" + (" · %s" % cell.material_id if cell else "")
+			target["title"] = "Ground" + (" - %s" % cell.material_id if cell else "")
 			entries.append({"id": "terrain_edit", "label": "Terrain edit",
 				"hint": "dig / fill / clear the land under the cursor"})
 			if cell:
@@ -1080,7 +1080,7 @@ func _open_context_menu(at: Vector2) -> void:
 					"hint": "one brush stroke of CLEAR, exactly as the tool would do"})
 		"wall":
 			var ws: CozyWallState = probe["node"].state
-			target["title"] = "Wall · %s" % ws.material_id
+			target["title"] = "Wall - %s" % ws.material_id
 			entries.append({"id": "info", "label": "Info"})
 			entries.append({"id": "remove", "label": "Remove wall"})
 		"object":
@@ -1180,21 +1180,21 @@ func _show_info(target: Variant) -> void:
 	var lines: Array = []
 	if node is CozyWall:
 		var ws: CozyWallState = node.state
-		lines.append("%s · floor %d" % [ws.id, ws.floor_id])
-		lines.append("%.1f m · %.2f m3 · %d block(s)" % [
+		lines.append("%s - floor %d" % [ws.id, ws.floor_id])
+		lines.append("%.1f m - %.2f m3 - %d block(s)" % [
 			ws.length(), ws.volume(), node.block_count()])
 		lines.append("%d opening(s)" % ws.openings.size())
 	elif node is CozySlab:
 		var ss: CozySlabState = node.state
-		lines.append("%s · floor %d" % [ss.id, ss.floor_id])
+		lines.append("%s - floor %d" % [ss.id, ss.floor_id])
 		lines.append("%.1f x %.1f m, surface y=%.1f" % [
 			ss.size.x, ss.size.z, ss.surface_y()])
 	elif node is CozyRoof:
 		lines.append("%s over %s" % [node.state.id, node.state.room_id])
-		lines.append("style %s · %d face(s)" % [node.style_name(), node.face_count()])
+		lines.append("style %s - %d face(s)" % [node.style_name(), node.face_count()])
 	elif node is CozyStair:
 		var st: CozyStairState = node.state
-		lines.append("%s · floor %s" % [st.id, st.floor_span()])
+		lines.append("%s - floor %s" % [st.id, st.floor_span()])
 		lines.append("%.1f deg over %.1f m" % [rad_to_deg(st.slope_angle()), st.run()])
 	elif node is CozyWorldObject:
 		lines.append(node.def_id)
@@ -1211,7 +1211,7 @@ func _show_info(target: Variant) -> void:
 		var pt: Vector3 = target.get("point", Vector3.ZERO)
 		var cell := terrain.cell_at(pt.x, pt.z)
 		if cell:
-			lines.append("material %s · %s" % [cell.material_id,
+			lines.append("material %s - %s" % [cell.material_id,
 				CozyBuildability.name_of(cell.buildability)])
 			lines.append("height %.2f" % cell.height)
 			var biome := CozyBiome.classify(terrain, _building_points(), pt.x, pt.z,

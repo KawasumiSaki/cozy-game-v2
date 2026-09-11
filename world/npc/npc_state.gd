@@ -333,5 +333,5 @@ func describe() -> String:
 		if skill(id) > best:
 			best = skill(id)
 			top = id
-	return "%s · %s · %s %d · %d trait(s)" % [
+	return "%s - %s - %s %d - %d trait(s)" % [
 		display_name, job_name(), top, best, traits.size()]

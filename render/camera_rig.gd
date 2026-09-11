@@ -1,6 +1,6 @@
 class_name CozyCameraRig
 extends Camera3D
-## Fixed orthographic camera (V2.1 doc E.1.1 / E.1.2).
+## Fixed camera (V2.1 doc E.1.1 / E.1.2), narrow-FOV perspective as of 2026-09-12.
 ##
 ## ROTATION IS LOCKED. The camera always views the world from one angle, and
 ## the player cannot rotate it. That is not a stylistic preference — doc E.1.1
@@ -27,8 +27,27 @@ extends Camera3D
 ##     doc(x, y, z)  ->  godot(x, z, y)
 
 ## The locked viewing angle. Chosen once, here, so nothing else can drift.
-const FIXED_YAW := 45.0
-const FIXED_PITCH := 52.0
+##
+## CHANGED 2026-09-12, Willow's call: front-on and a little higher, instead of
+## the 45-degree oblique this started with. Tune these two numbers and nothing
+## else moves — the lock, the occlusion rays and the self-check all read here.
+const FIXED_YAW := 0.0
+const FIXED_PITCH := 40.0
+
+## Projection (2026-09-12, Willow's call — "B: perspective with a narrow FOV").
+##
+## ORTHOGRAPHIC was the original choice and the reason for it was sound: every
+## pixel asset is authored for ONE observation direction, and orthographic keeps
+## one texel equal to one screen pixel EVERYWHERE. Perspective breaks that — the
+## ratio is exact at one depth and drifts either side of it.
+##
+## A NARROW field of view keeps the break small enough to live with. At the
+## default zoom the frame spans about 17 degrees, so the density change across a
+## standing character is a fraction of a pixel. A wide lens (60-70) would look
+## more three-dimensional and would cost the pixel grid outright.
+##
+## Set this false to get back exactly what was there before.
+const USE_PERSPECTIVE := true
 
 ## Node the camera follows.
 var target: Node3D = null
@@ -55,16 +74,62 @@ var yaw_deg := FIXED_YAW
 var pitch_deg := FIXED_PITCH
 var follow_speed := 6.0
 
-const PITCH_MIN := 25.0
+## Debug free-look clamps. WIDE on purpose since 2026-09-12: pressing `L` and
+## then `R`/`F` is how the viewing angle gets chosen by eye, and a narrow clamp
+## would stop the search before it found the answer.
+const PITCH_MIN := 5.0
 const PITCH_MAX := 88.0
+
+## Narrowest and widest the field of view may get, degrees. The floor stops a
+## tight zoom degenerating into a long lens; the ceiling stops it drifting into
+## the wide-angle look that costs the pixel grid.
+const FOV_MIN := 8.0
+const FOV_MAX := 40.0
+
+
+## Where the chosen zoom step is remembered, so the game opens at the zoom the
+## player left it at.
+##
+## ZOOM IS REMEMBERED, THE ANGLE IS NOT, and the difference is deliberate. An
+## angle that drifted with the last session would silently invalidate every
+## pixel asset, which is why `FIXED_YAW` / `FIXED_PITCH` live in code. A zoom
+## step carries no such risk — doc E.1.1 permits limited zoom, and "opens where I
+## left it" is what a player expects of one.
+const ZOOM_PATH := "user://camera.json"
 
 
 func _ready() -> void:
-	projection = PROJECTION_ORTHOGONAL
-	size = ZOOM_STEPS[_zoom_idx]
+	projection = PROJECTION_PERSPECTIVE if USE_PERSPECTIVE else PROJECTION_ORTHOGONAL
 	near = 0.1
 	far = 400.0
+	_restore_zoom()
+	_apply_zoom()
 	lock_view()
+
+
+func _restore_zoom() -> void:
+	var d := CozySaveManager.load_world(ZOOM_PATH)
+	if d.is_empty():
+		return
+	_zoom_idx = clampi(int(d.get("zoom", _zoom_idx)), 0, ZOOM_STEPS.size() - 1)
+
+
+func _remember_zoom() -> void:
+	CozySaveManager.save_world({"zoom": _zoom_idx}, ZOOM_PATH)
+
+
+## Zoom, expressed the same way in BOTH projections.
+##
+## Under orthographic `size` IS the visible height. Under perspective `size` is
+## ignored and the field of view decides it — so the step is converted to the fov
+## that shows the SAME height at this distance. Deriving one from the other keeps
+## the projections interchangeable: flipping `USE_PERSPECTIVE` must not also
+## change the framing, or the comparison would be between two changes at once.
+func _apply_zoom() -> void:
+	var visible_h := ZOOM_STEPS[_zoom_idx]
+	size = visible_h
+	fov = clampf(rad_to_deg(2.0 * atan(visible_h * 0.5 / CAM_DISTANCE)),
+		FOV_MIN, FOV_MAX)
 
 
 ## Force the camera back to the locked angle.
@@ -98,12 +163,14 @@ func snap_to_target() -> void:
 
 func zoom_in() -> void:
 	_zoom_idx = maxi(0, _zoom_idx - 1)
-	size = ZOOM_STEPS[_zoom_idx]
+	_apply_zoom()
+	_remember_zoom()
 
 
 func zoom_out() -> void:
 	_zoom_idx = mini(ZOOM_STEPS.size() - 1, _zoom_idx + 1)
-	size = ZOOM_STEPS[_zoom_idx]
+	_apply_zoom()
+	_remember_zoom()
 
 
 ## Refused unless the debug unlock is on. Returns whether the angle moved, so
