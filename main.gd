@@ -231,8 +231,7 @@ func _build_scatter() -> void:
 	scatter = CozyVegetationScatter.new()
 	add_child(scatter)
 	scatter.setup(terrain, assets, 20260911)
-	scatter.building_points = _building_points()
-	scatter.rebuild()
+	_refresh_scatter()
 
 
 ## World positions of built things. A wall's NODE sits at the origin — its
@@ -278,7 +277,7 @@ func _prepare_starter_plot() -> void:
 		Vector2(-3.0, HOUSE_D + 3.0),
 	])
 	terrain.apply_intent(CozyTerrainIntent.clear_polygon(plot))
-	terrain_renderer.rebuild_dirty()
+	_rebuild_terrain_surface()
 
 
 ## The ground beyond the terrain field — the world does not stop at the field's
@@ -1092,7 +1091,7 @@ func _on_menu_action(id: String, target: Variant) -> void:
 			var pt: Vector3 = target["point"]
 			terrain.apply_intent(CozyTerrainIntent.clear_brush(Vector2(pt.x, pt.z),
 				TERRAIN_BRUSH))
-			terrain_renderer.rebuild_dirty()
+			_rebuild_terrain_surface()
 			_rebuild_spatial_after_terrain()
 			_say("cleared")
 		"remove":
@@ -1220,7 +1219,7 @@ func _apply_terrain_brush(world: Vector3) -> void:
 	if intent == null:
 		return
 	if terrain.apply_intent(intent)["touched"] > 0:
-		terrain_renderer.rebuild_dirty()
+		_rebuild_terrain_surface()
 
 
 ## Called once when a terrain stroke finishes: everything downstream of the
@@ -1230,9 +1229,42 @@ func _rebuild_spatial_after_terrain() -> void:
 	# the terrain just changed.
 	_rebuild_spatial()
 	_build_roofs()
-	scatter.building_points = _building_points()
-	scatter.rebuild()
+	_refresh_scatter()
 	_update_hud()
+
+
+## Chunks the terrain has touched since the last scatter rebuild.
+##
+## `terrain_renderer.rebuild_dirty()` calls `terrain.clear_dirty()`, and the
+## scatter runs after it — so without this ledger the scatter can never learn
+## what an edit touched and has to resample the whole field. That was debt 6's
+## performance half: one candidate per metre over 64 x 64 m, redone for a brush
+## stroke that moved a handful of cells.
+var _terrain_dirty_accum: Dictionary = {}
+
+
+## Take the dirty chunks BEFORE the renderer consumes them, then let it consume
+## them. Every terrain edit goes through here, so no caller can clear the set
+## behind the ledger's back.
+func _rebuild_terrain_surface() -> void:
+	for c in terrain.dirty_chunks():
+		_terrain_dirty_accum[c] = true
+	terrain_renderer.rebuild_dirty()
+
+
+## Bring the scatter level with the terrain: incrementally when the ledger knows
+## what changed, in full when it does not.
+##
+## The ledger is cleared HERE, beside the rebuild that consumes it. A ledger that
+## outlived its rebuild would point the NEXT edit at the wrong chunks, and the
+## result would look like ordinary vegetation that is subtly not the same field.
+func _refresh_scatter() -> void:
+	scatter.building_points = _building_points()
+	if _terrain_dirty_accum.is_empty():
+		scatter.rebuild()
+	else:
+		scatter.rebuild_dirty(_terrain_dirty_accum.keys())
+	_terrain_dirty_accum.clear()
 
 
 # ---------------------------------------------------------------- outline
@@ -1520,6 +1552,7 @@ func _report() -> void:
 	_check_wall_assembly()
 	_check_building_state()
 	_check_roofs()
+	_check_scatter_incremental()
 	_check_outline_guard()
 	_check_roof_follows_room()
 	_check_npc_route_plan()
@@ -1547,7 +1580,7 @@ func _check_outline_build() -> void:
 		Vector2(cx - hw - 1.0, cz - hd - 1.0), Vector2(cx + hw + 1.0, cz - hd - 1.0),
 		Vector2(cx + hw + 1.0, cz + hd + 1.0), Vector2(cx - hw - 1.0, cz + hd + 1.0)])
 	terrain.apply_intent(CozyTerrainIntent.clear_polygon(plot))
-	terrain_renderer.rebuild_dirty()
+	_rebuild_terrain_surface()
 
 	# 2. Outline -> intents.
 	var before_walls := building.state.wall_count()
@@ -1584,6 +1617,54 @@ func _check_outline_build() -> void:
 
 ## Roofs (V2.1 doc #31). Derived from the room polygon rather than placed, and
 ## they must fade (doc #57) or the player disappears the moment they go inside.
+## Scatter resamples only what changed (debt 6's performance half).
+##
+## The correctness half — plants following the terrain's height — is asserted in
+## `_check_terrain_surface`. This is the other half: an edit re-sampled the whole
+## 64 x 64 m field, one candidate per metre, to move a handful of cells.
+##
+## The check that matters is EQUIVALENCE, not speed. An incremental rebuild that
+## produces a different field from a full one is a worse bug than the slowness it
+## replaced, and it would look completely ordinary: the same kinds of plant in
+## slightly different places.
+func _check_scatter_incremental() -> void:
+	var snapshot := terrain.to_dict()
+	_refresh_scatter()
+	var full_fp := scatter.fingerprint()
+	var full_total := scatter.total_instances()
+
+	# One edit, the way a brush makes one. Clearing rather than digging on
+	# purpose: digging changes only the height, and the plants in that patch may
+	# not move enough for the fingerprint to notice — the check would then be
+	# comparing two identical fields and proving nothing. A material change
+	# alters which rules spawn, so the edit is guaranteed to be visible.
+	var px := terrain.origin.x + 8.0
+	var pz := terrain.origin.y + 8.0
+	terrain.apply_intent(CozyTerrainIntent.clear_brush(Vector2(px, pz), 3.0))
+	var touched := terrain.dirty_chunks().size()
+	_rebuild_terrain_surface()
+	_refresh_scatter()
+	var inc_fp := scatter.fingerprint()
+	var inc_total := scatter.total_instances()
+
+	# The same edit done the expensive way, as the reference.
+	scatter.rebuild()
+	var ref_fp := scatter.fingerprint()
+
+	var moved := inc_fp != full_fp
+	var same := inc_fp == ref_fp and inc_total == scatter.total_instances()
+	print("[cozyv2] scatter incremental rebuild: %d chunk(s) dirty, %d -> %d instance(s), moved=%s, matches a full rebuild=%s  [%s]" % [
+		touched, full_total, inc_total, str(moved), str(same),
+		"OK" if same and moved and touched > 0
+			else "FAIL, incremental differs from a full rebuild"])
+
+	# Put the field back, and prove the restore took too.
+	terrain.from_dict(snapshot)
+	_rebuild_terrain_surface()
+	_refresh_scatter()
+	_rebuild_spatial()
+
+
 ## The outline guard (debt 8). A crossed outline becomes walls that intersect
 ## mid-span, and room detection is then handed a non-planar graph — the
 ## T-junction failure again, which shows up only as a room that quietly does not
@@ -2014,8 +2095,8 @@ func _check_terrain_surface() -> void:
 
 	var touched: int = terrain.apply_intent(
 		CozyTerrainIntent.dig_brush(Vector2(px, pz), 2.5, 0.5))["touched"]
-	terrain_renderer.rebuild_dirty()
-	scatter.rebuild()
+	_rebuild_terrain_surface()
+	_refresh_scatter()
 
 	var dug := terrain_renderer.chunk_surface_range(coord)
 	var col := terrain_renderer.chunk_collision_min_y(coord)
@@ -2131,7 +2212,7 @@ func _check_scatter() -> void:
 	# rebuild is this cheap, added complexity buys nothing.
 	var fp1 := scatter.fingerprint()
 	var t0 := Time.get_ticks_usec()
-	scatter.rebuild()
+	_refresh_scatter()
 	var ms := float(Time.get_ticks_usec() - t0) / 1000.0
 	var fp2 := scatter.fingerprint()
 	print("[cozyv2] scatter deterministic: fingerprint %d vs %d  [%s]" % [
@@ -2535,7 +2616,7 @@ func _cross_process_save() -> void:
 	# boundary as well as a building one.
 	terrain.apply_intent(CozyTerrainIntent.clear_brush(
 		Vector2(XPROC_MARK_A.x, XPROC_MARK_A.z), TERRAIN_BRUSH))
-	terrain_renderer.rebuild_dirty()
+	_rebuild_terrain_surface()
 	_rebuild_spatial_after_terrain()
 	var marker := _add_wall(XPROC_MARK_A, XPROC_MARK_B, "wood", 0)
 	if marker == null:

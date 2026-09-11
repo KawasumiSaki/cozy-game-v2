@@ -18,8 +18,17 @@ extends Node3D
 ##
 ## The sprites are procedural placeholders (doc 58.1). Replacing them with real
 ## art changes the texture map below and nothing else.
+##
+## INCREMENTAL REBUILD (debt 6). The field is sampled per CHUNK and the samples
+## are kept, so a terrain edit resamples only the chunks it touched. Sampling is
+## the expensive half — one candidate per metre over the whole field — and it was
+## being redone in full for a brush stroke that moved a handful of cells.
 
 ## Metres between candidate points. Finer means denser and slower.
+##
+## Chunk sampling assumes this divides the chunk extent exactly; `_can_sample_per_chunk`
+## checks it and `rebuild_dirty` falls back to a full pass rather than answer
+## wrongly.
 const SAMPLE_STEP := 1.0
 
 ## World size of each placeholder sprite, metres. Real definitions will carry
@@ -55,6 +64,20 @@ var lowest_y := 0.0
 var sample_ms := 0.0
 var build_ms := 0.0
 
+## Per-chunk samples, keyed by chunk coord. Each entry is
+## `{assets: {asset_id -> items}, counts: {rule_id -> n}, cand: int, low: float}`.
+##
+## Everything derived — `_counts`, `_candidates`, `lowest_y`, the meshes — is
+## recomputed from THIS by `_finish()`. Keeping one source of truth is what makes
+## an incremental rebuild provably identical to a full one instead of merely
+## intended to be.
+var _by_chunk: Dictionary = {}
+
+## Resolved once per pass. The inner loop runs per candidate per rule, and
+## re-doing the dictionary lookups there is pure waste.
+var _rules: Array = []
+var _any_water := false
+
 
 func setup(p_terrain: CozyTerrainSystem, p_assets: CozyAssetLibrary,
 		p_seed := 20260911) -> void:
@@ -64,89 +87,161 @@ func setup(p_terrain: CozyTerrainSystem, p_assets: CozyAssetLibrary,
 
 
 ## Rebuild the whole field. Returns per-rule instance counts.
-##
-## Full rebuild rather than incremental: the field is one pass over the terrain
-## grid, and unlike rooms or nav grids it has no cheap way to know which cells
-## an edit affected. Chunk-level dirtiness would be the refinement; noted as
-## debt rather than pretended.
 func rebuild() -> Dictionary:
-	for c in get_children():
-		c.queue_free()
-	_meshes.clear()
+	var t0 := float(Time.get_ticks_usec()) / 1000.0
+	_by_chunk.clear()
+	_prepare()
+	if terrain != null:
+		for coord in _sorted_coords():
+			_by_chunk[coord] = _sample_chunk(coord)
+	sample_ms = float(Time.get_ticks_usec()) / 1000.0 - t0
+	return _finish()
+
+
+## Resample only the chunks an edit touched (doc #33), then rebuild the meshes.
+##
+## Rebuilding EVERY mesh afterwards rather than tracking which asset each chunk
+## fed is deliberate: mesh building is a few milliseconds against sampling's
+## hundred-plus, so the whole saving is in resampling, and a chunk-to-asset index
+## would be one more thing to keep correct for the remainder.
+##
+## Chunks already in `_by_chunk` keep their POSITION in it when replaced, so the
+## instance order — and therefore `fingerprint()` — is the same as a full
+## rebuild's. That equality is asserted rather than assumed.
+func rebuild_dirty(coords: Array) -> Dictionary:
+	if not _can_sample_per_chunk():
+		return rebuild()
+
+	var t0 := float(Time.get_ticks_usec()) / 1000.0
+	_prepare()
+	for coord in coords:
+		if terrain.chunks.has(coord):
+			_by_chunk[coord] = _sample_chunk(coord)
+	sample_ms = float(Time.get_ticks_usec()) / 1000.0 - t0
+	return _finish()
+
+
+## A fixed order, so the mesh instance order is reproducible run to run.
+func _sorted_coords() -> Array:
+	var coords: Array = terrain.chunks.keys()
+	coords.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		return a.x < b.x if a.x != b.x else a.y < b.y)
+	return coords
+
+
+func _prepare() -> void:
+	_any_water = false
+	if terrain != null:
+		for coord in terrain.chunks:
+			if (terrain.chunks[coord] as CozyTerrainChunk).has_water:
+				_any_water = true
+				break
+	_rules.clear()
+	for rule_id in CozyScatterRule.ids():
+		var res := CozyScatterRule.resolve(rule_id)
+		if not res.is_empty():
+			_rules.append(res)
+
+
+func _steps_per_chunk() -> int:
+	return maxi(1, int(round(terrain.chunk_extent() / SAMPLE_STEP)))
+
+
+## Chunk sampling reproduces the global grid only when a chunk holds a whole
+## number of sample steps. It does at 16 m / 1 m, and if that ever stops being
+## true the incremental path must not quietly place a different field.
+func _can_sample_per_chunk() -> bool:
+	if terrain == null or _rules.is_empty():
+		return false
+	var extent := terrain.chunk_extent()
+	return absf(float(_steps_per_chunk()) * SAMPLE_STEP - extent) < 0.0001
+
+
+## Sample one chunk onto the same grid the whole-field pass used to walk.
+##
+## Local indices are computed by COUNTING, not by dividing world coordinates:
+## `origin.x + 16.0 + 1.0` and `origin.x + 17.0` can differ in the last bit, and
+## a sample point that lands in the neighbouring cell would roll a different seed
+## and grow a different plant.
+func _sample_chunk(coord: Vector2i) -> Dictionary:
+	var entry := {"assets": {}, "counts": {}, "cand": 0, "low": 0.0}
+	if not _can_sample_per_chunk():
+		return entry
+
+	var assets_by_id: Dictionary = entry["assets"]
+	var counts: Dictionary = entry["counts"]
+	var extent := terrain.chunk_extent()
+	var steps := _steps_per_chunk()
+	var x0 := terrain.origin.x + float(coord.x) * extent
+	var z0 := terrain.origin.y + float(coord.y) * extent
+
+	for ix in steps:
+		var x := x0 + float(ix) * SAMPLE_STEP
+		for iz in steps:
+			var z := z0 + float(iz) * SAMPLE_STEP
+			entry["cand"] = int(entry["cand"]) + 1
+			var material := terrain.material_id_at(x, z)
+			if material == "water":
+				continue
+			var biome := CozyBiome.classify(terrain, building_points, x, z,
+				world_seed, _any_water)
+			var near_building := biome == CozyBiome.VILLAGE
+			# Global sample index, per doc E.21's seed hierarchy.
+			var lx := int(coord.x) * steps + ix
+			var lz := int(coord.y) * steps + iz
+
+			for res in _rules:
+				var rule_id: String = res["id"]
+				var seed_val := CozyArtSeed.for_cell(world_seed, coord, lx, lz, rule_id)
+				if not CozyScatterRule.spawns_resolved(res, biome, material,
+						near_building, seed_val):
+					continue
+				var asset_id: String = res["asset_id"]
+				var sc := CozyArtSeed.range_f(seed_val ^ 0x5bf03635,
+					res["scale_lo"], res["scale_hi"])
+				if not assets_by_id.has(asset_id):
+					assets_by_id[asset_id] = []
+				# On the ground, not at y=0 (debt 6). The field carries a height
+				# and DIG/FILL move it, so a fixed y would leave plants hanging
+				# over a hole or sunk in a mound — and it was the HEIGHT half of
+				# that debt, not the material half, that was ever wrong: this loop
+				# already re-read the terrain on every rebuild.
+				var gy := terrain.height_at(x, z)
+				entry["low"] = minf(float(entry["low"]), gy)
+				assets_by_id[asset_id].append({"pos": Vector3(x, gy, z), "scale": sc})
+				counts[rule_id] = int(counts.get(rule_id, 0)) + 1
+	return entry
+
+
+## Roll the per-chunk samples up into counts and meshes. Everything the rest of
+## the system reads is produced here, from `_by_chunk` alone.
+func _finish() -> Dictionary:
 	_counts.clear()
 	_candidates = 0
 	lowest_y = 0.0
 
-	if terrain == null:
-		return _counts
-
-	var _rebuild_t0 := float(Time.get_ticks_usec()) / 1000.0
-	var by_asset := {}     ## asset_id -> Array of {pos, scale}
-
-	# Asked once, not per sample point. See CozyBiome.classify.
-	var any_water := false
-	for coord in terrain.chunks:
-		if (terrain.chunks[coord] as CozyTerrainChunk).has_water:
-			any_water = true
-			break
-
-	# Resolve the rule tables once. The inner loop runs per candidate per rule,
-	# and re-doing the dictionary lookups there is pure waste.
-	var rules: Array = []
-	for rule_id in CozyScatterRule.ids():
-		var res := CozyScatterRule.resolve(rule_id)
-		if not res.is_empty():
-			rules.append(res)
-
-	var extent := terrain.chunk_extent()
-	var origin := terrain.origin
-	var x := origin.x
-	while x < origin.x + terrain.width_m:
-		var z := origin.y
-		while z < origin.y + terrain.depth_m:
-			_candidates += 1
-			var material := terrain.material_id_at(x, z)
-			if material != "water":
-				var biome := CozyBiome.classify(terrain, building_points, x, z,
-					world_seed, any_water)
-				var near_building := biome == CozyBiome.VILLAGE
-
-				# ChunkCoord + local cell, per doc E.21's seed hierarchy.
-				var ccoord := Vector2i(int(floor((x - origin.x) / extent)),
-					int(floor((z - origin.y) / extent)))
-				var lx := int(floor((x - origin.x) / SAMPLE_STEP))
-				var lz := int(floor((z - origin.y) / SAMPLE_STEP))
-
-				for res in rules:
-					var rule_id: String = res["id"]
-					var seed_val := CozyArtSeed.for_cell(world_seed, ccoord, lx, lz, rule_id)
-					if not CozyScatterRule.spawns_resolved(res, biome, material,
-							near_building, seed_val):
-						continue
-					var asset_id: String = res["asset_id"]
-					var sc := CozyArtSeed.range_f(seed_val ^ 0x5bf03635,
-						res["scale_lo"], res["scale_hi"])
-					if not by_asset.has(asset_id):
-						by_asset[asset_id] = []
-					# On the ground, not at y=0 (debt 6). The field carries a height
-					# and DIG/FILL move it, so a fixed y would leave plants hanging
-					# over a hole or sunk in a mound — and it is the HEIGHT half of
-					# that debt, not the material half, that was ever wrong: this
-					# loop already re-reads terrain on every rebuild.
-					var gy := terrain.height_at(x, z)
-					lowest_y = minf(lowest_y, gy)
-					by_asset[asset_id].append({
-						"pos": Vector3(x, gy, z), "scale": sc})
-					_counts[rule_id] = int(_counts.get(rule_id, 0)) + 1
-			z += SAMPLE_STEP
-		x += SAMPLE_STEP
-
 	var t_build := Time.get_ticks_usec()
+	var by_asset := {}     ## asset_id -> Array of {pos, scale}
+	for coord in _by_chunk:
+		var e: Dictionary = _by_chunk[coord]
+		_candidates += int(e["cand"])
+		lowest_y = minf(lowest_y, float(e["low"]))
+		var counts: Dictionary = e["counts"]
+		for rule_id in counts:
+			_counts[rule_id] = int(_counts.get(rule_id, 0)) + int(counts[rule_id])
+		var assets_by_id: Dictionary = e["assets"]
+		for asset_id in assets_by_id:
+			if not by_asset.has(asset_id):
+				by_asset[asset_id] = []
+			by_asset[asset_id].append_array(assets_by_id[asset_id])
+
+	for c in get_children():
+		c.queue_free()
+	_meshes.clear()
 	for asset_id in by_asset:
 		_build_multimesh(asset_id, by_asset[asset_id])
-	build_ms = float(Time.get_ticks_usec() - t_build) / 1000.0
-	sample_ms = float(t_build) / 1000.0 - _rebuild_t0
 
+	build_ms = float(Time.get_ticks_usec() - t_build) / 1000.0
 	return _counts
 
 
@@ -218,11 +313,20 @@ func sample_candidates() -> int:
 	return _candidates
 
 
+func cached_chunk_count() -> int:
+	return _by_chunk.size()
+
+
 ## A stable fingerprint of every instance position, for the determinism check.
 ##
 ## Counts alone are NOT enough. The wall assembler taught that lesson: a layout
 ## can be reordered while keeping the same total, and a count comparison would
 ## wave it through.
+##
+## It hashes POSITIONS, which is what makes it the right check for the incremental
+## rebuild as well: an incremental pass that placed the same plants in the same
+## places gives the same number, and one that quietly dropped or moved any gives a
+## different one.
 func fingerprint() -> int:
 	var h := 0
 	var ids: Array = _meshes.keys()
