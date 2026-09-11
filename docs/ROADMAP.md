@@ -67,7 +67,7 @@
 | V2-18 | WorldObject | ✅ basic |
 | V2-19 | Free placement | ✅ basic |
 | V2-20 | InteractionPoint | ✅ |
-| V2-21 | Containers | 🚧 store + capacity + hauler done; §39 items and §45 production chain remain |
+| V2-21 | Containers | 🚧 storage + item vocabulary (§35) + eating done; §45 production chain remains |
 
 ### Phase 5 — NPC
 | ID | Block | Status |
