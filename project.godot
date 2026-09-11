@@ -6,26 +6,35 @@ config_version=5
 [application]
 
 config/name="CozyVale V2"
-config/description="3D Spatial Core + Orthographic Camera + Pixel Art Surface"
+config/description="3D Spatial Core + Fixed Orthographic Camera + Pixel Art Surface"
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 
 [display]
 
-; 640x360 is half of 1280x720, so integer upscaling keeps pixels crisp.
-window/size/viewport_width=640
-window/size/viewport_height=360
-window/stretch/mode="viewport"
-window/stretch/aspect="keep"
-; Integer-only scaling: never land on a fractional scale factor, which would
-; resample the pixel grid and produce uneven, blurry pixels.
-window/stretch/scale_mode="integer"
+; NATIVE RESOLUTION, deliberately.
+;
+; Doc E.2 is explicit: "不强制所有画面最终缩到同一个极低分辨率再放大。第一版优先
+; 让资产本身具备正确像素密度，再根据实际截图决定是否增加全屏低分辨率后处理."
+;
+; Forcing the whole render through a 640x360 viewport also crushed the 3D
+; geometry — wall edges smeared and the camera's pixel framing stopped matching
+; what the assets were drawn for. Pixel size now comes from each asset's own
+; texel density (nearest filtering, low-resolution source textures), which is
+; what makes it survive at any window size.
+;
+; Full-screen pixelation stays available as an OPTIONAL post-process, to be
+; decided from actual screenshots rather than assumed up front.
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
 
 [rendering]
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
-; Pixel art: disable smoothing everywhere by default.
+; Nearest filtering everywhere: pixel art must never be smoothed (doc #35).
 textures/canvas_textures/default_texture_filter=0
 anti_aliasing/quality/msaa_3d=0
 anti_aliasing/quality/screen_space_aa=0

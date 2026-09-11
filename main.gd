@@ -655,6 +655,16 @@ func _unhandled_input(event: InputEvent) -> void:
 			tool_idx = (tool_idx + 1) % TOOLS.size()
 			_update_hud()
 			return
+		# Debug escape hatch (doc E.1.1 allows a fixed OR strictly controlled
+		# camera; free rotation is barred as a gameplay feature). Anything seen
+		# at a non-locked angle is out of spec, so do not author art from it.
+		if event.keycode == KEY_L:
+			if camera.free_look:
+				camera.lock_view()
+			else:
+				camera.free_look = true
+			_update_hud()
+			return
 
 	if build_mode:
 		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
@@ -694,7 +704,11 @@ func _process(delta: float) -> void:
 	_update_hud()
 
 
+## Rotation input is only meaningful under the debug unlock — the camera is
+## fixed by default (doc E.1.1), and rotate_by/pitch_by refuse otherwise.
 func _handle_camera_keys(delta: float) -> void:
+	if not camera.free_look:
+		return
 	if Input.is_key_pressed(KEY_Q):
 		camera.rotate_by(-100.0 * delta)
 	if Input.is_key_pressed(KEY_E):
@@ -770,6 +784,7 @@ func _report() -> void:
 	_check_route("room_0_0", "room_1_0", "stair_main[stair]")
 	_check_route("room_1_0", "room_1_0", "(no route)")
 
+	_check_camera()
 	_check_nav()
 	_check_terrain()
 	_check_wall_connection()
@@ -1031,6 +1046,32 @@ func _check_openings() -> void:
 	print("[cozyv2] openings  [%s]" % ("OK" if all_ok else "FAIL"))
 
 
+## Camera lock (V2.1 doc E.1.1). Free rotation is barred as a gameplay feature
+## because every pixel asset is authored for exactly ONE observation direction.
+## The lock therefore has to actually hold — being the default is not enough.
+func _check_camera() -> void:
+	var yaw0 := camera.yaw_deg
+	var pitch0 := camera.pitch_deg
+	var moved_yaw := camera.rotate_by(30.0)
+	var moved_pitch := camera.pitch_by(15.0)
+	var refused := not moved_yaw and not moved_pitch
+	var held := refused and is_equal_approx(camera.yaw_deg, yaw0) \
+		and is_equal_approx(camera.pitch_deg, pitch0)
+
+	print("[cozyv2] camera fixed at yaw %.0f / pitch %.0f: rotation refused=%s, is_locked=%s  [%s]" % [
+		yaw0, pitch0, str(refused), str(camera.is_locked()),
+		"OK" if held and camera.is_locked() else "FAIL"])
+
+	# The debug unlock must still work when deliberately asked for, and must be
+	# able to get back to spec.
+	camera.free_look = true
+	var unlocked := camera.rotate_by(10.0)
+	camera.lock_view()
+	print("[cozyv2] camera debug unlock: rotates=%s, relocks=%s  [%s]" % [
+		str(unlocked), str(camera.is_locked()),
+		"OK" if unlocked and camera.is_locked() else "FAIL"])
+
+
 ## Occlusion (doc #57). The camera follows the player, so only geometry that
 ## blocks the PLAYER may fade.
 ##
@@ -1091,8 +1132,11 @@ func _update_hud() -> void:
 		mode = "BUILD [%s]  TAB cycles" % _current_tool()
 	if last_build_message != "":
 		mode += "\n!" + last_build_message
-	hud.text = "CozyVale V2\n%s\nWASD move | Q/E rotate | R/F pitch | wheel zoom | B build\npos %.1f,%.1f,%.1f  floor %d  room %s\nwalls %d  objects %d  rooms %d\nNPC: %s" % [
-		mode, p.x, p.y, p.z, player.current_floor(FLOOR_H),
+	var cam := "CAM FIXED %.0f/%.0f  (L to unlock)" % [camera.yaw_deg, camera.pitch_deg]
+	if camera.free_look:
+		cam = "CAM FREE (debug)  (L to relock)"
+	hud.text = "CozyVale V2\n%s\n%s\nWASD move | wheel zoom | B build\npos %.1f,%.1f,%.1f  floor %d  room %s\nwalls %d  objects %d  rooms %d\nNPC: %s" % [
+		mode, cam, p.x, p.y, p.z, player.current_floor(FLOOR_H),
 		(room.id if room != null else "outdoors"),
 		building.state.wall_count(), objects.size(),
 		floor_system.all_rooms().size() if floor_system != null else 0,
