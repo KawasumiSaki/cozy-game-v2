@@ -145,9 +145,9 @@ Stated plainly so it is not rediscovered later.
    headless runs; an exported build would need the definitions declared as
    resources or bundled into a manifest first.
 4. ~~Terrain has no biome concept~~ — solved by ART-11 (`CozyBiome`, derived).
-5. **Outdoor navigation is a straight line.** `_world_navigator._local()` falls
-   back to a direct line when a room is outdoors, so a route can cut through a
-   building. Not triggered yet — residents stayed indoors — but it is real.
+5. ~~Outdoor navigation is a straight line~~ — **fixed**: the outdoors gets its
+   own (coarser) grid with building footprints as obstacles. Verified by
+   asserting no route point lands inside the house.
 6. **UI is PC only.** No touch input exists (0 handlers). Willow: mobile later.
 7. **Scatter does not follow terrain edits.** Digging does not re-scatter the
    plants on the patch. A full rebuild costs 138 ms, so hooking it to edits

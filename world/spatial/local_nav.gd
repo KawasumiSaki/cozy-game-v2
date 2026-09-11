@@ -14,7 +14,13 @@ extends RefCounted
 ## requirement — placing a table must change NPC routing. Marking cells is
 ## synchronous and cheap; rebaking a navmesh at runtime is neither.
 
-const CELL := 0.25   ## Metres per cell.
+const CELL := 0.25   ## Default metres per cell.
+
+## Actual cell size for this grid. A room is metre-scale so the default is
+## right; the OUTDOOR grid covers the whole terrain and is built much coarser,
+## because 0.25 m over 64 x 64 m is 65,536 cells — a startup cost paid for
+## precision nobody can see at that scale.
+var cell := CELL
 
 ## 4 orthogonal + 4 diagonal neighbours.
 const DIRS: Array[Vector2i] = [
@@ -33,13 +39,14 @@ var _obstacles: Array[Rect2] = []
 
 # ---------------------------------------------------------------- build
 
-func build(p_room: CozyRoom, obstacles: Array = []) -> void:
+func build(p_room: CozyRoom, obstacles: Array = [], p_cell := CELL) -> void:
 	room = p_room
+	cell = maxf(p_cell, 0.01)
 	_obstacles.clear()
 
 	var bb := _bounds(p_room.polygon)
 	_min = bb.position
-	_size = Vector2i(int(ceil(bb.size.x / CELL)) + 1, int(ceil(bb.size.y / CELL)) + 1)
+	_size = Vector2i(int(ceil(bb.size.x / cell)) + 1, int(ceil(bb.size.y / cell)) + 1)
 
 	_blocked = PackedByteArray()
 	_blocked.resize(_size.x * _size.y)
@@ -81,11 +88,11 @@ func blocked_cell_count() -> int:
 # ---------------------------------------------------------------- grid access
 
 func world_to_cell(p: Vector2) -> Vector2i:
-	return Vector2i(int(floor((p.x - _min.x) / CELL)), int(floor((p.y - _min.y) / CELL)))
+	return Vector2i(int(floor((p.x - _min.x) / cell)), int(floor((p.y - _min.y) / cell)))
 
 
 func cell_to_world(c: Vector2i) -> Vector2:
-	return Vector2(_min.x + (float(c.x) + 0.5) * CELL, _min.y + (float(c.y) + 0.5) * CELL)
+	return Vector2(_min.x + (float(c.x) + 0.5) * cell, _min.y + (float(c.y) + 0.5) * cell)
 
 
 func _in_bounds(c: Vector2i) -> bool:
@@ -189,11 +196,12 @@ func _reconstruct(came: Dictionary, goal: Vector2i) -> PackedVector2Array:
 	return out
 
 
-## Octile distance — admissible for 8-connected grids.
+## Octile distance — admissible for 8-connected grids. In cell units, so
+## the cell size cancels out and a coarse grid still measures correctly.
 func _heuristic(a: Vector2i, b: Vector2i) -> float:
 	var dx := absi(a.x - b.x)
 	var dy := absi(a.y - b.y)
-	return float(maxi(dx, dy)) + (SQRT2 - 1.0) * float(mini(dx, dy))
+	return (float(maxi(dx, dy)) + (SQRT2 - 1.0) * float(mini(dx, dy))) * cell
 
 
 ## Total walked distance of a path, for comparing routes.

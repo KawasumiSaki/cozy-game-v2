@@ -65,6 +65,13 @@ const TOOLS: Array[String] = ["outline", "wall", "dig", "fill", "clear",
 ## Brush radius for terrain tools, metres.
 const TERRAIN_BRUSH := 2.5
 
+## Cell size for the OUTDOOR navigation grid, metres.
+##
+## Coarser than a room's 0.25 m on purpose: this grid spans the whole terrain,
+## and 0.25 m over 64 x 64 m is 65,536 cells — a startup cost paid for precision
+## nobody can see at that scale. Half a metre still routes around a house.
+const OUTDOOR_CELL := 0.5
+
 var camera: CozyCameraRig = null
 var player: CozyCharacter = null
 var npc: CozyNpcAgent = null
@@ -553,13 +560,20 @@ func _rebuild_spatial(dirty: CozyDirtyRegion = null) -> void:
 	room_graph = CozyRoomGraph.new()
 	room_graph.build(floor_system)
 
+	# The outdoors gets a grid too, or the navigator falls back to a straight
+	# line outside and walks through the house.
+	_build_outdoor_nav()
+
 	# Local navigation per room, with furniture registered as obstacles.
 	# This is what makes moving a table change routing (doc #86).
 	#
 	# The nav grid is the expensive layer — one cell per 0.25 m — so this is
 	# where "local edit, local rebuild" actually pays. Rooms on untouched floors
 	# keep the grid they already have.
-	var alive := {}
+	# OUTDOORS is in `alive` even though it is not a room: the prune below
+	# removes every grid whose id is not listed, and the outdoor grid is keyed by
+	# a space no room has.
+	var alive := {CozyRoomGraph.OUTDOORS: true}
 	for r in floor_system.all_rooms():
 		alive[r.id] = true
 		if full or floors.has(r.floor_index):
@@ -575,6 +589,59 @@ func _rebuild_spatial(dirty: CozyDirtyRegion = null) -> void:
 	if npc != null and is_instance_valid(npc):
 		npc.navigator = world_navigator
 		npc.objects = objects
+
+
+## The outdoors has no room polygon — it is everything that is NOT a room — so
+## one is synthesised from the terrain bounds.
+##
+## Without this the navigator fell back to a straight line outside, and a
+## straight line from the front door to a campfire behind the house walked
+## through the west wall. That is not theoretical: it is what the schedule dose
+## (V2-25) exposed as `blocked, replanning`, and it is asserted below.
+func _build_outdoor_nav() -> void:
+	if terrain == null:
+		return
+	var poly := PackedVector2Array([
+		Vector2(terrain.origin.x, terrain.origin.y),
+		Vector2(terrain.origin.x + terrain.width_m, terrain.origin.y),
+		Vector2(terrain.origin.x + terrain.width_m, terrain.origin.y + terrain.depth_m),
+		Vector2(terrain.origin.x, terrain.origin.y + terrain.depth_m)])
+	var r := CozyRoom.new(CozyRoomGraph.OUTDOORS, 0, poly)
+	var nav := CozyLocalNav.new()
+	nav.build(r, _outdoor_obstacles(), OUTDOOR_CELL)
+	_nav_by_room[CozyRoomGraph.OUTDOORS] = nav
+
+
+## Everything built, as axis-aligned footprints the outdoor grid must route
+## around.
+##
+## A wall contributes its bounding box: exact for the axis-aligned walls this
+## project builds, conservative for a diagonal one. Over-blocking is the safe
+## direction — an agent walking a slightly longer way is a nuisance, an agent
+## walking through a wall is a defect.
+func _outdoor_obstacles() -> Array:
+	var out: Array = _static_obstacles_on_floor(0)
+
+	for ws in building.state.walls:
+		var a := ws.start
+		var b := ws.end
+		var pad := ws.thickness * 0.5
+		out.append(Rect2(
+			Vector2(minf(a.x, b.x) - pad, minf(a.z, b.z) - pad),
+			Vector2(absf(b.x - a.x) + pad * 2.0, absf(b.z - a.z) + pad * 2.0)))
+
+	for sl in building.state.slabs:
+		# Only ground-level slabs obstruct someone walking outside; an upper
+		# floor with open air under it does not.
+		if sl.surface_y() > FLOOR_H * 0.5:
+			continue
+		out.append(sl.footprint())
+
+	for o in objects:
+		if is_instance_valid(o) and o.floor_index == 0:
+			out.append(o.footprint_rect())
+
+	return out
 
 
 func _obstacles_on_floor(floor_index: int) -> Array:
@@ -1621,6 +1688,7 @@ func _check_npc_work() -> void:
 		npc.completions, npc.last_status, "OK" if ok else "FAIL, never finished work"])
 	_check_npc_state()
 	_check_schedule_and_needs()
+	_check_outdoor_nav()
 
 
 func _run_live_rebuild_test() -> void:
@@ -2067,6 +2135,42 @@ func _check_schedule_and_needs() -> void:
 	print("[cozyv2] trait effect is live: hunger plain=%d gourmet=%d  [%s]" % [
 		int(plain.hunger), int(gourmet.hunger),
 		"OK" if gourmet.hunger > plain.hunger else "FAIL, trait is inert"])
+
+
+## Outdoor navigation (the gap V2-25 exposed).
+##
+## Before this the navigator fell back to a straight line outdoors, so a route
+## from the front of the house to a point behind it walked THROUGH the house.
+## The schedule hit it and the NPC sat at `blocked, replanning`.
+##
+## Asserted three ways, because "a path exists" is the weakest of them and would
+## have passed even with the bug present.
+func _check_outdoor_nav() -> void:
+	var nav: CozyLocalNav = _nav_by_room.get(CozyRoomGraph.OUTDOORS)
+	if nav == null:
+		print("[cozyv2] outdoor nav: NOT BUILT  [FAIL]")
+		return
+
+	# In front of the door, to a point behind and west of the house. The straight
+	# line between them crosses the building.
+	var from := Vector2(3.25, -3.0)
+	var to := Vector2(-3.0, 8.0)
+	var path := nav.find_path(from, to)
+	var walked := CozyLocalNav.path_length(path)
+	var straight := from.distance_to(to)
+
+	# The decisive check: no waypoint may sit INSIDE the house. "A path exists"
+	# would have passed with the straight-line fallback still in place.
+	var inside := 0
+	for p in path:
+		if p.x > 0.5 and p.x < 7.5 and p.y > 0.5 and p.y < 5.5:
+			inside += 1
+
+	print("[cozyv2] outdoor route front->back: %.1f m walked vs %.1f m straight, %d pt(s) inside the house  [%s]" % [
+		walked, straight, inside,
+		"OK" if path.size() > 0 and inside == 0 and walked > straight * 1.15 else "FAIL"])
+	print("[cozyv2] outdoor grid: %d cell(s) at %.2f m, %d obstacle(s)" % [
+		nav.blocked_cell_count(), OUTDOOR_CELL, nav.obstacle_count()])
 
 
 func _check_room_at(pos: Vector3, expected: String) -> void:

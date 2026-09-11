@@ -76,6 +76,28 @@ collider's basis must be built as `Basis(Y, yaw) * Basis(Z, slope)` — setting
 only the yaw leaves a *horizontal* box, a ceiling to walk under rather than a
 ramp to walk up. That one is invisible in a still frame.
 
+## The outdoors needs a navigation grid too
+
+"Outdoors" is not a room and has no polygon, so it is tempting to treat it as
+open space and walk a straight line across it. That works until there is a
+building in the way: a route from the front door to a point behind the house
+went **through** the house, and the symptom was an NPC sitting at
+`blocked, replanning` with no hint of the cause.
+
+The outdoor grid is synthesised from the terrain bounds with the buildings
+registered as obstacles, and it is deliberately **coarser** (0.5 m against a
+room's 0.25 m): it spans the whole terrain, and 0.25 m over 64 x 64 m is 65,536
+cells — precision nobody can see at that scale, bought at startup cost.
+
+Two traps, both met:
+
+- **The prune loop erases it.** `_rebuild_spatial` drops every nav grid whose id
+  is not a live room, and the outdoor grid is keyed by a space no room has.
+  `OUTDOORS` has to be listed as alive.
+- **Wall footprints are bounding boxes.** Exact for the axis-aligned walls this
+  project builds, conservative for a diagonal one. Over-blocking is the safe
+  direction: a longer walk is a nuisance, walking through a wall is a defect.
+
 ## Everything procedural is deterministic
 
 Position, shading, scatter and VFX phase all come from `CozyArtSeed` —
