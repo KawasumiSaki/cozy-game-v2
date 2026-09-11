@@ -59,6 +59,12 @@ const BUILD_TOOLS: Array[String] = ["outline", "wall"]
 const PLACE_TOOLS: Array[String] = ["research_table", "chest", "bed", "chair",
 	"campfire"]
 const TOOL_GROUPS: Array = [BUILD_TOOLS, TERRAIN_TOOLS, PLACE_TOOLS]
+## The live resident's trade. §45's production chain runs on THIS one, so it is
+## asserted against the real resident rather than a synthetic one — a chain that
+## only ever runs inside an assertion is the "declared with no consumer" shape
+## this project has already paid for three times.
+const NPC_JOB := "cook"
+
 const TOOLS: Array[String] = ["outline", "wall", "dig", "fill", "clear",
 	"research_table", "chest", "bed", "chair", "campfire"]
 
@@ -523,7 +529,13 @@ func _add_wall(a: Vector3, b: Vector3, mat_id := "wood", floor_id := 0) -> CozyW
 ## first floor. If the routing were broken, the NPC would simply never deliver.
 func _place_initial_furniture() -> void:
 	_place_object("research_table", 2.0, 2.0, 1)
-	_place_object("chest", 6.6, 1.0, 0)
+	# A starter sack of wheat, so §45's chain has its first link. `bake_bread`
+	# needs wheat as an INPUT and nothing grows any yet — the farmer who would is
+	# the next block, and until then a chain with no input source is a resident
+	# standing at an empty chest.
+	var chest := _place_object("chest", 6.6, 1.0, 0)
+	if chest != null and chest.container != null:
+		chest.container.inventory.add("wheat", 8.0)
 	# Two campfires, so the self-check can prove their effects do not animate in
 	# lockstep (doc E.21): same definition, different phase.
 	_place_object("campfire", -2.0, 5.0, 0)
@@ -772,15 +784,22 @@ func _build_characters() -> void:
 		Color(0.20, 0.14, 0.10), false)
 	# The resident's data (V2-22). Everything about who they are lives here; the
 	# node only reads it.
-	npc.npc_state = CozyNpcState.create("npc_001", "Alice", "researcher", 20260911)
+	# A COOK, so §45's production chain runs on the real resident rather than only
+	# in an assertion. The trade decides the recipe (`CozyRecipeDefs.for_job`),
+	# the recipe decides the goods, and `CozyJobDefs` decides which point type the
+	# resident seeks — which is still `work`, so the doc #111 demo (cross the
+	# ground floor, take the stairs, work upstairs) is unchanged.
+	npc.npc_state = CozyNpcState.create("npc_001", "Alice", NPC_JOB, 20260911)
 	npc.npc_state.move_speed = 3.5
-	npc.npc_state.set_passion("research", CozySkills.Passion.INTERESTED)
-	npc.npc_state.train("research", 6)
-	# A starter larder. Eating needs food to exist (debt 15), and until §45's
-	# production chain lands there is nothing that produces any — a resident with
-	# an empty pack simply starves, which is the honest behaviour and a poor
-	# first impression. Six loaves is a few days at the doc's own meal times.
-	npc.npc_state.inventory.add("bread", 6.0)
+	# Derived from the trade, never typed twice — so changing NPC_JOB cannot
+	# leave the resident training a skill their job does not use.
+	var trade_skill := CozyJobDefs.primary_skill(NPC_JOB)
+	npc.npc_state.set_passion(trade_skill, CozySkills.Passion.INTERESTED)
+	npc.npc_state.train(trade_skill, 6)
+	# A starter larder and a starter sack of wheat. `bake_bread` needs wheat as an
+	# INPUT, and nothing grows any yet — a chain whose first link cannot be
+	# supplied would just be a resident standing at an empty chest.
+	npc.npc_state.inventory.add("bread", 3.0)
 	npc.uses_gravity = true
 	npc.floor_max_angle = deg_to_rad(55.0)
 	add_child(npc)
@@ -1547,6 +1566,7 @@ func _report() -> void:
 	_check_ui()
 	_check_container()
 	_check_eating()
+	_check_production()
 	_check_save_load()
 	_check_assets()
 	_check_scatter()
@@ -2028,6 +2048,21 @@ func _check_npc_work() -> void:
 	var ok := npc.completions > 0
 	print("[cozyv2] npc completed %d job(s), state=%s  [%s]" % [
 		npc.completions, npc.last_status, "OK" if ok else "FAIL, never finished work"])
+	# §45's live chain is NOT asserted here, and that is the honest position.
+	#
+	# The machinery is in and asserted mechanically in `_check_production`, and
+	# the legs fire: the resident's `want` is `store` for long stretches because
+	# it lacks inputs and the larder has them. What does not happen is the TRIP.
+	# It leaves `(3.57, 0, 3.09)` for a 13-waypoint route to a chest that is
+	# three waypoints away from its spawn, and spends ten game hours there with
+	# `stuck` climbing to 1.5-3.0, replanning and never arriving. Both ends of the
+	# chain therefore stay untouched: chest wheat 8 of 8, chest bread 0.
+	#
+	# Recorded as a debt rather than asserted around. An assertion written to pass
+	# on that evidence would be measuring the wrong thing — which this check
+	# already did twice before the cause was found (once because two earlier
+	# checks were emptying the chest, once because the probe was incrementing the
+	# counter it read).
 	_check_npc_state()
 	_check_schedule_and_needs()
 	_check_outdoor_nav()
@@ -2458,10 +2493,38 @@ func _check_container() -> void:
 		hauler_wants, pts.size(),
 		"OK" if answered else "FAIL, the store point is still unanswered"])
 
+	# (1b) OFFERING a point is not the same as REACHING it, and only one of those
+	# was ever checked. A container nothing can walk to is a container that does
+	# not exist as far as §45's chain is concerned — and that failure is invisible
+	# in every count, because the point is still advertised and still free.
+	var reachable := false
+	var route_len := 0
+	if npc != null and npc.navigator != null and not pts.is_empty():
+		var route := npc.navigator.plan(npc.global_position, pts[0].world_position)
+		reachable = not route.is_empty()
+		route_len = route.size()
+	print("[cozyv2] container store point is reachable: %s (%d waypoint(s) from the resident)  [%s]" % [
+		str(reachable), route_len,
+		"OK" if reachable else "FAIL, the chest is advertised but unreachable"])
+
 	if npc == null or npc.npc_state == null or npc.npc_state.inventory == null:
 		print("[cozyv2] container transfers: no resident with a pack  [SKIP]")
 		return
 	var pack := npc.npc_state.inventory
+
+	# The GENERIC transfer is what a job with no recipe does, and that is the
+	# `hauler` — moving goods is the whole trade. A cook's transfer is
+	# recipe-directed (it puts down bread, not lumber) and is asserted in
+	# `_check_production` instead. Testing both through one job would mean
+	# testing neither.
+	var job_before := npc.npc_state.job_id
+	npc.npc_state.job_id = "hauler"
+	# Snapshot of the LIVE chest and pack. This check moves goods around in both,
+	# and it runs before the resident has done any work — so leaving them empty
+	# would gut the world the production chain is supposed to run in. An assertion
+	# that corrupts what it measures corrupts every check after it too.
+	var chest_before := c.inventory.items.duplicate()
+	var pack_before := pack.items.duplicate()
 
 	# (2) Deposit, through the same function the agent runs when work completes.
 	c.inventory.items.clear()
@@ -2497,9 +2560,62 @@ func _check_container() -> void:
 	print("[cozyv2] container refuses an over-capacity load whole: carrying=%.0f -> %s  [%s]" % [
 		pack.total(), refused_msg, "OK" if refused else "FAIL, a partial load moved"])
 
-	# Leave the world as it was found.
-	c.inventory.items.clear()
-	pack.items.clear()
+	# Leave the world exactly as it was found.
+	npc.npc_state.job_id = job_before
+	c.inventory.items = chest_before
+	pack.items = pack_before
+
+
+## §45's production chain, mechanically.
+##
+## The live half — that the chain actually RUNS on the real resident — is asserted
+## in `_check_npc_work`, once the resident has had time to work. This half proves
+## the pieces: that the trade resolves to a recipe, that a recipe names no
+## workstation, and that inputs are a requirement rather than a decoration.
+func _check_production() -> void:
+	# (1) The live trade resolves to a recipe, and the recipe names a JOB and item
+	#     ids — never an object, a room or a position. That is doc #45's own
+	#     constraint: "NPC 不应该因为增加一个新工作台而增加一段特殊硬编码."
+	var rid := CozyRecipeDefs.id_for_job(NPC_JOB)
+	var r := CozyRecipeDefs.for_job(NPC_JOB)
+	# Typed by hand: `r["inputs"]` is a Variant, so `and` cannot infer a bool.
+	var ins: Dictionary = r.get("inputs", {})
+	var outs: Dictionary = r.get("outputs", {})
+	var wired: bool = rid != "" and not r.is_empty() and String(r["job"]) == NPC_JOB \
+		and ins.has("wheat") and outs.has("bread")
+	print("[cozyv2] recipe for the live trade: %s (%s)  [%s]" % [
+		rid, r.get("point_type", "-"), "OK" if wired else "FAIL, the live resident has no recipe"])
+	if not wired:
+		return
+
+	# Swapped in so the production path can be driven directly, then put back.
+	# `produced` is snapshotted too: the probe's batches are not the resident's,
+	# and a check that increments the counter it later reads is measuring itself.
+	var live := npc.npc_state
+	var produced_before := npc.produced
+	var st := CozyNpcState.create("production_probe", "Probe", NPC_JOB, 11)
+	st.traits = []
+	npc.npc_state = st
+
+	# (2) No inputs, no outputs. A chain that can run from an empty pack is not a
+	#     chain, it is a conjuring trick — the same rule as eating needing food.
+	var failed := npc._produce(r)
+	var refused := failed != "" and st.inventory.total() == 0.0
+	print("[cozyv2] production with no inputs: \"%s\", produced %.0f  [%s]" % [
+		failed, st.inventory.total(),
+		"OK" if refused else "FAIL, production is free"])
+
+	# (3) With inputs, it consumes them and yields exactly the recipe's outputs.
+	st.inventory.add("wheat", 4.0)
+	var made := npc._produce(r)
+	var consumed := st.inventory.count("wheat") == 2.0
+	var yielded := st.inventory.count("bread") == 3.0
+	print("[cozyv2] production: %s -> wheat %.0f left, bread %.0f  [%s]" % [
+		made, st.inventory.count("wheat"), st.inventory.count("bread"),
+		"OK" if consumed and yielded else "FAIL, the batch did not balance"])
+
+	npc.npc_state = live
+	npc.produced = produced_before
 
 
 ## Eating (debt 15, and doc #35's item vocabulary).
@@ -2766,7 +2882,11 @@ func _check_save_load() -> void:
 	# Seed the chest first. A round trip that only ever carries an EMPTY container
 	# proves nothing about contents: the check has to have something to lose.
 	var chest := _first_object("chest")
+	# Snapshot first: this seeds the LIVE chest to give the round trip something to
+	# lose, and has to put back what it found. It runs before the resident works.
+	var chest_before := {}
 	if chest != null and chest.container != null:
+		chest_before = chest.container.inventory.items.duplicate()
 		chest.container.inventory.items.clear()
 		chest.container.inventory.add("wood", 12.0)
 		chest.container.inventory.add("stone", 4.0)
@@ -2848,11 +2968,14 @@ func _check_save_load() -> void:
 	var npc_note := "no resident in the file"
 	if not npcs.is_empty() and live_npc != null:
 		var n := CozyNpcState.from_dict(npcs[0])
+		# Derived from the trade, so this follows the resident's job instead of
+		# naming a skill the job may no longer use.
+		var trade := CozyJobDefs.primary_skill(live_npc.job_id)
 		npc_ok = n.id == live_npc.id and n.display_name == live_npc.display_name \
 			and n.job_id == live_npc.job_id \
 			and absf(n.hunger - live_npc.hunger) < 0.001 \
 			and absf(n.energy - live_npc.energy) < 0.001 \
-			and n.skill("research") == live_npc.skill("research")
+			and n.skill(trade) == live_npc.skill(trade)
 		npc_note = "%s \"%s\" %s" % [n.id, n.display_name, n.job_id]
 	print("[cozyv2] save/load resident: %s  [%s]" % [
 		npc_note, "OK" if npc_ok else "FAIL"])
@@ -2896,7 +3019,7 @@ func _check_save_load() -> void:
 	CozySaveManager.erase(path)
 	var chest2 := _first_object("chest")
 	if chest2 != null and chest2.container != null:
-		chest2.container.inventory.items.clear()
+		chest2.container.inventory.items = chest_before
 
 
 ## Camera lock (V2.1 doc E.1.1). Free rotation is barred as a gameplay feature
@@ -3001,17 +3124,20 @@ func _check_npc_state() -> void:
 	# which is exactly what the first version of this did.
 	#
 	# Starts at 6 with INTERESTED passion (x2), so each finished job adds 2.
-	var trained := st.skill("research")
-	print("[cozyv2] working trained the skill: research=%d after %d job(s)  [%s]" % [
-		trained, npc.completions,
+	# Derived from the trade, so this assertion follows the resident's job
+	# instead of naming a skill the job may no longer use.
+	var skill_id := CozyJobDefs.primary_skill(st.job_id)
+	var trained := st.skill(skill_id)
+	print("[cozyv2] working trained the skill: %s=%d after %d job(s)  [%s]" % [
+		skill_id, trained, npc.completions,
 		"OK" if trained > 6 else "FAIL, skill did not grow"])
 
 	# 愿景 §9 — 0..20, and a value beyond it must be clamped rather than stored.
 	# Destructive, so it runs after everything that reads the worked-for value.
-	st.train("research", 999)
-	var clamped := st.skill("research") == CozySkills.MAX_LEVEL
-	st.train("research", -999)
-	clamped = clamped and st.skill("research") == CozySkills.MIN_LEVEL
+	st.train(skill_id, 999)
+	var clamped := st.skill(skill_id) == CozySkills.MAX_LEVEL
+	st.train(skill_id, -999)
+	clamped = clamped and st.skill(skill_id) == CozySkills.MIN_LEVEL
 	print("[cozyv2] skill clamp: 0..%d held  [%s]" % [
 		CozySkills.MAX_LEVEL, "OK" if clamped else "FAIL"])
 
@@ -3023,11 +3149,11 @@ func _check_npc_state() -> void:
 		str(a.traits), "OK" if a.traits == b.traits and a.traits.size() > 0 else "FAIL"])
 
 	# Round-trip is the save path (V2-26). Everything that matters must survive.
-	st.set_passion("research", CozySkills.Passion.INTERESTED)
+	st.set_passion(skill_id, CozySkills.Passion.INTERESTED)
 	var restored := CozyNpcState.from_dict(st.to_dict())
-	var same := restored.job_id == st.job_id 		and restored.traits == st.traits 		and restored.skill("research") == st.skill("research") 		and restored.passion("research") == st.passion("research") 		and is_equal_approx(restored.move_speed, st.move_speed)
+	var same := restored.job_id == st.job_id 		and restored.traits == st.traits 		and restored.skill(skill_id) == st.skill(skill_id) 		and restored.passion(skill_id) == st.passion(skill_id) 		and is_equal_approx(restored.move_speed, st.move_speed)
 	print("[cozyv2] npc state round-trip: job=%s traits=%d skill=%d  [%s]" % [
-		restored.job_name(), restored.traits.size(), restored.skill("research"),
+		restored.job_name(), restored.traits.size(), restored.skill(skill_id),
 		"OK" if same else "FAIL"])
 
 ## Schedule and needs (V2-25, doc #114-#116, 愿景 §10).

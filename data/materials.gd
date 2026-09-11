@@ -24,6 +24,9 @@ extends RefCounted
 ## rather than a nonsense answer.
 const KIND_MATERIAL := "material"
 const KIND_FOOD := "food"
+## Grown or gathered, consumed by a recipe, not eaten as it stands. A category
+## rather than a separate table, for the same reason food is one.
+const KIND_INGREDIENT := "ingredient"
 
 const MATERIALS := {
 	"wood": {
@@ -70,6 +73,13 @@ const MATERIALS := {
 		"kind": "food",
 		"color": Color(0.84, 0.68, 0.40),
 		"nourishment": 45.0,
+	},
+	# What `grow_crop` produces and `bake_bread` consumes (doc #45's chain). Not
+	# edible as it stands, which is why it is an ingredient and not food.
+	"wheat": {
+		"name": "Wheat",
+		"kind": "ingredient",
+		"color": Color(0.80, 0.72, 0.36),
 	},
 }
 

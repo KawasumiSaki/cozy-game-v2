@@ -48,6 +48,12 @@ var navigator: CozyWorldNavigator = null
 var objects: Array = []        ## CozyWorldObject list, refreshed by the caller.
 
 var completions := 0           ## Finished jobs — the visible payoff.
+
+## Batches actually produced (doc #45's "Produce Output"). Counted separately from
+## `completions` because they are different facts: a resident can finish a job and
+## produce nothing, and "did the chain ever yield anything" is the question that
+## a check on inputs alone cannot answer.
+var produced := 0
 var last_status := "spawning"
 
 var _target_point: CozyInteractionPoint = null
@@ -89,17 +95,98 @@ func want_point_type() -> String:
 
 	var urgent := npc_state.critical_need()
 	if urgent != "":
+		# A hungry resident whose pack is empty but whose larder is not goes to
+		# the larder FIRST. Eating needs food (debt 15), so sending them straight
+		# to a seat would have them sit and starve beside a full chest.
+		if urgent == "eat" and _pack_food() <= 0.0 and _larder_food() > 0.0:
+			return CozyObjectDefs.INTERACT_STORE
 		var urgent_point := CozySchedule.point_for(urgent)
 		if urgent_point != "":
 			return urgent_point
 
+	var base := npc_state.job_point_type()
 	if clock != null:
 		var activity := CozySchedule.activity_at(clock.hour)
 		var point := CozySchedule.point_for(activity)
 		if point != "":
-			return point
+			base = point
 
-	return npc_state.job_point_type()
+	# §45's container legs redirect WORK, and only work. A resident whose day
+	# says sleep still sleeps: the chain says where a worker goes between
+	# batches, not that production outranks the schedule.
+	if base == npc_state.job_point_type():
+		var production := _production_point_type()
+		if production != "":
+			return production
+
+	return base
+
+
+## §45's "Find Container" leg — why the chain wants the resident at a container.
+##
+## Two reasons, and they are the two ends of it:
+##   - the pack holds finished goods   ("Store")
+##   - the pack lacks inputs, and a larder could supply them
+##                                     ("Find Input → Take")
+##
+## A larder that CANNOT supply them is not a reason to go: without that check the
+## resident would walk to an empty chest, take nothing, and walk back forever.
+func _production_point_type() -> String:
+	var r := CozyRecipeDefs.for_job(npc_state.job_id)
+	if r.is_empty():
+		return ""
+	if _carrying_outputs(r):
+		return CozyObjectDefs.INTERACT_STORE
+	if _missing_inputs(r) and _larder_has_inputs(r):
+		return CozyObjectDefs.INTERACT_STORE
+	return ""
+
+
+func _carrying_outputs(r: Dictionary) -> bool:
+	for id in r["outputs"]:
+		if npc_state.inventory.count(String(id)) > 0.0:
+			return true
+	return false
+
+
+func _missing_inputs(r: Dictionary) -> bool:
+	for id in r["inputs"]:
+		if npc_state.inventory.count(String(id)) < float(r["inputs"][id]):
+			return true
+	return false
+
+
+func _larder_has_inputs(r: Dictionary) -> bool:
+	for o in objects:
+		if not is_instance_valid(o) or o.container == null:
+			continue
+		var enough := true
+		for id in r["inputs"]:
+			if o.container.inventory.count(String(id)) < float(r["inputs"][id]):
+				enough = false
+				break
+		if enough:
+			return true
+	return false
+
+
+func _pack_food() -> float:
+	var t := 0.0
+	if npc_state == null or npc_state.inventory == null:
+		return 0.0
+	for id in CozyMaterials.food_ids():
+		t += npc_state.inventory.count(String(id))
+	return t
+
+
+func _larder_food() -> float:
+	var t := 0.0
+	for o in objects:
+		if not is_instance_valid(o) or o.container == null:
+			continue
+		for id in CozyMaterials.food_ids():
+			t += o.container.inventory.count(String(id))
+	return t
 
 
 ## What the resident believes they are doing right now — for the HUD and the
@@ -264,6 +351,12 @@ func _finish_work() -> void:
 	if finished_type == CozyObjectDefs.INTERACT_STORE \
 			and finished_obj != null and is_instance_valid(finished_obj):
 		haul = _haul(finished_obj)
+	elif npc_state != null:
+		# §45's "Produce Output". Inputs are a REQUIREMENT, not a decoration: a
+		# batch with nothing to work from produces nothing, on the same rule as
+		# eating needing food. A chain that can run from an empty pack is not a
+		# chain, it is a conjuring trick.
+		haul = _produce(CozyRecipeDefs.for_job(npc_state.job_id))
 
 	# Working trains the job's skill, scaled by passion (愿景 §10: ×1 / ×2 / ×4).
 	# This is what makes a resident grow into their role rather than staying a
@@ -282,17 +375,16 @@ func _finish_work() -> void:
 		last_status = "completed %d" % completions
 
 
-## The hauler's work (V2-21, doc §45).
+## §45's "Take" and "Store" — both happen here, at a container.
 ##
-## Direction is decided by what the resident is already carrying: an empty hauler
-## takes a load out, a loaded one puts it back. That exercises both halves of the
-## chain without inventing a production economy the doc has not specified — the
-## day recipes exist, this is the function that gains them.
+## Which one it is follows from the resident's RECIPE and what they are carrying,
+## never from a per-workstation rule. A job with no recipe has no goods of its
+## own and gets the generic behaviour the `hauler` job exists for: put down what
+## you carry, pick up what is there.
 ##
-## Both directions are all-or-nothing across the WHOLE load. Depositing id by id
-## would let a nearly-full chest absorb half a pack and refuse the rest, which is
-## precisely the "goods quietly vanished" failure that a conservation assertion
-## exists to catch.
+## Every transfer is all-or-nothing. Depositing id by id would let a nearly-full
+## chest absorb half a pack and refuse the rest, which is precisely the "goods
+## quietly vanished" failure the conservation assertion exists to catch.
 func _haul(obj: CozyWorldObject) -> String:
 	var c := obj.container
 	if c == null:
@@ -300,30 +392,126 @@ func _haul(obj: CozyWorldObject) -> String:
 	if npc_state == null or npc_state.inventory == null:
 		return "no pack"
 	var pack := npc_state.inventory
+	var r := CozyRecipeDefs.for_job(npc_state.job_id)
 
-	if pack.total() > 0.0:
-		var carrying := pack.total()
-		if not c.has_room_for(carrying):
-			return "store full (%.0f/%.0f, carrying %.0f)" % [
-				c.stored(), c.capacity, carrying]
-		# `keys()` returns a copy, so spending inside the loop is safe.
-		for id in pack.items.keys():
-			var n := pack.count(String(id))
+	# ONE thing per visit, in the order the chain needs it.
+	#
+	# Doing both at once reads as efficient and is not: a resident that deposits
+	# its output and immediately draws fresh input walks away carrying two
+	# different things, and every later step then has to cope with a pack that is
+	# two things at once. §45 lists Take and Store as separate steps for the same
+	# reason.
+	if r.is_empty():
+		# No recipe, so no goods of its own: a hauler's trade is put down what you
+		# carry, or pick up what is there.
+		if pack.total() > 0.0:
+			return _deposit_all(c, pack)
+		return _withdraw_any(c, pack)
+
+	# Store first: a resident still holding a finished batch is not going to go
+	# and fetch more materials on top of it.
+	var put := _deposit_ids(c, pack, r["outputs"])
+	if put != "":
+		return put
+	var got := _withdraw_for(c, pack, r["inputs"])
+	if got != "":
+		return got
+	if _pack_food() <= 0.0:
+		return _withdraw_food(c, pack)
+	return "nothing to move"
+
+
+## §45's "Produce Output", all-or-nothing. A batch that ate its inputs and
+## produced nothing is worse than one that never started.
+func _produce(r: Dictionary) -> String:
+	if r.is_empty():
+		return ""
+	var ins: Dictionary = r["inputs"]
+	var outs: Dictionary = r["outputs"]
+	var pack := npc_state.inventory
+	for id in ins:
+		if pack.count(String(id)) < float(ins[id]):
+			return "no %s to work with" % id
+	for id in ins:
+		pack.spend({String(id): float(ins[id])})
+	var made := 0.0
+	var named := ""
+	for id in outs:
+		pack.add(String(id), float(outs[id]))
+		made += float(outs[id])
+		named = String(id)
+	produced += 1
+	return "made %.0f %s" % [made, named]
+
+
+func _deposit_all(c: CozyContainerState, pack: CozyInventory) -> String:
+	var carrying := pack.total()
+	if carrying <= 0.0:
+		return ""
+	if not c.has_room_for(carrying):
+		return "store full (%.0f/%.0f, carrying %.0f)" % [
+			c.stored(), c.capacity, carrying]
+	# `keys()` returns a copy, so spending inside the loop is safe.
+	for id in pack.items.keys():
+		var n := pack.count(String(id))
+		c.deposit(String(id), n)
+		pack.spend({String(id): n})
+	return "stored %.0f" % carrying
+
+
+func _deposit_ids(c: CozyContainerState, pack: CozyInventory, ids: Dictionary) -> String:
+	var total := 0.0
+	for id in ids:
+		total += pack.count(String(id))
+	if total <= 0.0:
+		return ""
+	if not c.has_room_for(total):
+		return "store full (%.0f/%.0f, carrying %.0f)" % [c.stored(), c.capacity, total]
+	for id in ids:
+		var n := pack.count(String(id))
+		if n > 0.0:
 			c.deposit(String(id), n)
 			pack.spend({String(id): n})
-		return "stored %.0f (%.0f/%.0f)" % [carrying, c.stored(), c.capacity]
+	return "stored %.0f" % total
 
-	# Picking up. First id in sorted order, so the same chest always yields the
-	# same load — everything procedural in this project is deterministic.
+
+## Draw up to `want` of one id. `want` is a Dictionary so callers can pass either
+## a recipe's inputs or a single wanted food.
+func _withdraw_for(c: CozyContainerState, pack: CozyInventory, want: Dictionary) -> String:
+	# Fixed order, so the same chest always yields the same draw — everything
+	# procedural in this project is deterministic.
+	var ids: Array = want.keys()
+	ids.sort()
+	for id in ids:
+		var need := float(want[id]) - pack.count(String(id))
+		if need <= 0.0:
+			continue
+		var n := minf(need, c.inventory.count(String(id)))
+		if n > 0.0 and c.withdraw(String(id), n):
+			pack.add(String(id), n)
+			return "took %.0f %s" % [n, id]
+	return ""
+
+
+func _withdraw_food(c: CozyContainerState, pack: CozyInventory) -> String:
+	for id in CozyMaterials.food_ids():
+		var n := minf(HAUL_LOAD, c.inventory.count(String(id)))
+		if n > 0.0 and c.withdraw(String(id), n):
+			pack.add(String(id), n)
+			return "took %.0f %s" % [n, id]
+	return ""
+
+
+func _withdraw_any(c: CozyContainerState, pack: CozyInventory) -> String:
 	var have := c.sorted_ids()
 	if have.is_empty():
-		return "store is empty"
+		return ""
 	var id := String(have[0])
 	var n := minf(HAUL_LOAD, c.inventory.count(id))
 	if not c.withdraw(id, n):
-		return "could not take %s" % id
+		return ""
 	pack.add(id, n)
-	return "took %.0f %s (%.0f/%.0f)" % [n, id, c.stored(), c.capacity]
+	return "took %.0f %s" % [n, id]
 
 
 func _abandon_job() -> void:
