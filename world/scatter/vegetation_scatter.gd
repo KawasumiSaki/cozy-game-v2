@@ -43,6 +43,11 @@ var _meshes: Dictionary = {}       ## asset_id -> MultiMeshInstance3D
 var _counts: Dictionary = {}       ## rule_id  -> instances placed
 var _candidates := 0
 
+## Lowest ground height any sampled point had. Exposed so a check can prove the
+## field follows the terrain's HEIGHT and not just its material — plants are
+## placed at the sample point's own height (debt 6).
+var lowest_y := 0.0
+
 ## Phase timings from the last rebuild, milliseconds. Split because the two
 ## halves have completely different fixes — sampling is arithmetic, mesh
 ## building is GPU buffer upload — and guessing which one dominates is how
@@ -70,6 +75,7 @@ func rebuild() -> Dictionary:
 	_meshes.clear()
 	_counts.clear()
 	_candidates = 0
+	lowest_y = 0.0
 
 	if terrain == null:
 		return _counts
@@ -122,7 +128,15 @@ func rebuild() -> Dictionary:
 						res["scale_lo"], res["scale_hi"])
 					if not by_asset.has(asset_id):
 						by_asset[asset_id] = []
-					by_asset[asset_id].append({"pos": Vector3(x, 0.0, z), "scale": sc})
+					# On the ground, not at y=0 (debt 6). The field carries a height
+					# and DIG/FILL move it, so a fixed y would leave plants hanging
+					# over a hole or sunk in a mound — and it is the HEIGHT half of
+					# that debt, not the material half, that was ever wrong: this
+					# loop already re-reads terrain on every rebuild.
+					var gy := terrain.height_at(x, z)
+					lowest_y = minf(lowest_y, gy)
+					by_asset[asset_id].append({
+						"pos": Vector3(x, gy, z), "scale": sc})
 					_counts[rule_id] = int(_counts.get(rule_id, 0)) + 1
 			z += SAMPLE_STEP
 		x += SAMPLE_STEP

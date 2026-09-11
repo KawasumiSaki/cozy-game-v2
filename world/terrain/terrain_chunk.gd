@@ -97,6 +97,28 @@ func buildability_at(lx: int, lz: int) -> int:
 	return _build[_index(lx, lz)]
 
 
+## Height at a GRID CORNER. Corners run 0..CELLS inclusive, so a chunk has one
+## more corner than cell in each direction — 65 x 65 of them.
+##
+## Averaged over the up-to-four cells that share the corner. Both the surface
+## mesh and the collision mesh read THIS, so the ground you look at and the
+## ground you stand on cannot disagree; a mismatch between them is a player
+## standing inside a hillside. Averaging also keeps the surface from depending on
+## which side of a boundary `locate_index` happens to pick.
+func corner_height(gx: int, gz: int) -> float:
+	var sum := 0.0
+	var n := 0
+	for oz: int in [-1, 0]:
+		for ox: int in [-1, 0]:
+			var cx: int = gx + ox
+			var cz: int = gz + oz
+			if cx < 0 or cz < 0 or cx >= CELLS or cz >= CELLS:
+				continue
+			sum += height_at(cx, cz)
+			n += 1
+	return sum / float(n) if n > 0 else 0.0
+
+
 func cell_at(lx: int, lz: int) -> CozyTerrainCell:
 	return CozyTerrainCell.create(material_id_at(lx, lz), height_at(lx, lz))
 

@@ -281,28 +281,58 @@ func _prepare_starter_plot() -> void:
 	terrain_renderer.rebuild_dirty()
 
 
+## The ground beyond the terrain field — the world does not stop at the field's
+## edge.
+##
+## A FRAME, not one slab, and the reason is debt 2. The terrain field now carries
+## its own collision, displaced to its own heights. A slab spanning the field
+## would sit at y=0 as a LID over every hole dug into it: the player would see a
+## pit and walk straight across the top of it. Four strips leave the field to its
+## own surface.
+##
+## The visual sits a hair low so it never z-fights the field's edge.
 func _build_ground() -> void:
 	var grass := CozyPixelArt.make_texture(16, Color(0.44, 0.72, 0.36), 0.055, 1337)
+	var o := terrain.origin
+	var x0 := o.x
+	var x1 := o.x + terrain.width_m
+	var z0 := o.y
+	var z1 := o.y + terrain.depth_m
+	var out := 200.0
 
-	var ground := MeshInstance3D.new()
-	ground.name = "Ground"
-	var pm := PlaneMesh.new()
-	pm.size = Vector2(400.0, 400.0)
-	ground.mesh = pm
-	ground.material_override = CozyPixelArt.make_material(grass, Vector3(200.0, 200.0, 1.0))
-	# Sits just under the terrain field so the two never z-fight. It is what the
-	# world looks like beyond the terrain field's edge.
-	ground.position = Vector3(0.0, -0.1, 0.0)
-	add_child(ground)
+	# x0, z0, x1, z1 — the four bands around the field.
+	var strips := [
+		[-out, -out, out, z0],
+		[-out, z1, out, out],
+		[-out, z0, x0, z1],
+		[x1, z0, out, z1],
+	]
+	for s in strips:
+		var w: float = s[2] - s[0]
+		var d: float = s[3] - s[1]
+		if w <= 0.0 or d <= 0.0:
+			continue
+		var cx: float = (s[0] + s[2]) * 0.5
+		var cz: float = (s[1] + s[3]) * 0.5
 
-	var body := StaticBody3D.new()
-	var cs := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(400.0, 1.0, 400.0)
-	cs.shape = box
-	cs.position = Vector3(0.0, -0.5, 0.0)
-	body.add_child(cs)
-	add_child(body)
+		var ground := MeshInstance3D.new()
+		var pm := PlaneMesh.new()
+		pm.size = Vector2(w, d)
+		ground.mesh = pm
+		# Half a texture repeat per metre, matching the old single slab.
+		ground.material_override = CozyPixelArt.make_material(grass,
+			Vector3(w * 0.5, d * 0.5, 1.0))
+		ground.position = Vector3(cx, -0.1, cz)
+		add_child(ground)
+
+		var body := StaticBody3D.new()
+		var cs := CollisionShape3D.new()
+		var box := BoxShape3D.new()
+		box.size = Vector3(w, 1.0, d)
+		cs.shape = box
+		body.add_child(cs)
+		body.position = Vector3(cx, -0.5, cz)
+		add_child(body)
 
 
 # ---------------------------------------------------------------- building
@@ -1445,6 +1475,7 @@ func _report() -> void:
 	_check_scatter()
 	_check_nav()
 	_check_terrain()
+	_check_terrain_surface()
 	_check_wall_connection()
 	_check_openings()
 	_check_wall_assembly()
@@ -1829,6 +1860,55 @@ func _check_nav() -> void:
 	print("[cozyv2] nav after obstacle:   %3d pts, %5.2f m  [%s]" % [
 		p2.size(), l2,
 		"OK, detour +%.2f m" % (l2 - l1) if detoured else "FAIL, route did not change"])
+
+
+## Terrain HEIGHT, displaced into the ground (debt 2), and the plants that sit on
+## it (debt 6).
+##
+## Before this the field carried a height DIG changed and the renderer ignored:
+## the ground was one flat plane at y=0, so a dug cell looked exactly like an
+## undug one. The number moved and nothing else did.
+##
+## Surface and collision are asserted SEPARATELY because they fail independently,
+## and the failure between them is the worst of the three: displacing the picture
+## without moving the collision gives a pit the player can see and walk straight
+## across the top of. That is worse than no pit, because it is a lie.
+func _check_terrain_surface() -> void:
+	# Inside the field and clear of the homestead.
+	var px := terrain.origin.x + 48.0
+	var pz := terrain.origin.y + 48.0
+	var extent := terrain.chunk_extent()
+	var coord := Vector2i(int(floor((px - terrain.origin.x) / extent)),
+		int(floor((pz - terrain.origin.y) / extent)))
+
+	var flat := terrain_renderer.chunk_surface_range(coord)
+	var flat_ok := absf(flat.x) < 0.001 and absf(flat.y) < 0.001
+	print("[cozyv2] terrain surface before digging: y %.2f..%.2f (flat)  [%s]" % [
+		flat.x, flat.y, "OK" if flat_ok else "FAIL"])
+
+	var snapshot := terrain.to_dict()          # restored at the end
+
+	var touched: int = terrain.apply_intent(
+		CozyTerrainIntent.dig_brush(Vector2(px, pz), 2.5, 0.5))["touched"]
+	terrain_renderer.rebuild_dirty()
+	scatter.rebuild()
+
+	var dug := terrain_renderer.chunk_surface_range(coord)
+	var col := terrain_renderer.chunk_collision_min_y(coord)
+	print("[cozyv2] terrain after DIG 0.5 m: %d cell(s), surface y %.2f..%.2f, collision min y %.2f  [%s]" % [
+		touched, dug.x, dug.y, col,
+		"OK" if touched > 0 and dug.x < -0.1 and col < -0.1
+			else "FAIL, the ground did not follow the field"])
+
+	print("[cozyv2] scatter sits on the surface: lowest sampled y %.2f  [%s]" % [
+		scatter.lowest_y,
+		"OK" if scatter.lowest_y < -0.1 else "FAIL, plants are still placed at y=0"])
+
+	# Put the ground back, so every check after this sees the world it expects.
+	# The restore goes through the save/load serialiser, which exercises it too.
+	terrain.from_dict(snapshot)
+	terrain_renderer.rebuild_all()
+	_rebuild_spatial_after_terrain()
 
 
 func _check_wall_connection() -> void:
