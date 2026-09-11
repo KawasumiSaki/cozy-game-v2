@@ -137,20 +137,25 @@ func _build_house() -> void:
 	var y0 := 0.0
 	var y1 := FLOOR_H
 
-	# ---- Floor 0: an 8x6 rectangle with a 1.5m doorway in the south wall ----
-	# The doorway splits the south wall into two segments. This is exactly the
-	# advantage of segment walls over tiles (doc #16 / #19): the opening can sit
-	# anywhere, it does not have to snap to a grid cell.
-	_add_wall(_house, Vector3(0.0, y0, 0.0), Vector3(2.5, y0, 0.0))              # south, left of door
-	_add_wall(_house, Vector3(4.0, y0, 0.0), Vector3(HOUSE_W, y0, 0.0))          # south, right of door
+	# ---- Floor 0: an 8x6 rectangle, south wall carrying a real doorway ----
+	# The south wall is ONE segment with a Door opening cut into it (V2-16).
+	# It used to be two hand-split segments with a gap between them; now the
+	# wall generates its own geometry around the hole.
+	var south := _add_wall(_house, Vector3(0.0, y0, 0.0), Vector3(HOUSE_W, y0, 0.0))
+	south.add_opening(CozyOpening.door(3.25, 1.5))
+
 	_add_wall(_house, Vector3(HOUSE_W, y0, 0.0), Vector3(HOUSE_W, y0, HOUSE_D))  # east
 	_add_wall(_house, Vector3(HOUSE_W, y0, HOUSE_D), Vector3(0.0, y0, HOUSE_D))  # north
 	_add_wall(_house, Vector3(0.0, y0, HOUSE_D), Vector3(0.0, y0, 0.0))          # west
 
-	# ---- Floor 1: a full ring of exterior walls ----
-	_add_wall(_house, Vector3(0.0, y1, 0.0), Vector3(HOUSE_W, y1, 0.0))
+	# ---- Floor 1: exterior ring with windows ----
+	var up_south := _add_wall(_house, Vector3(0.0, y1, 0.0), Vector3(HOUSE_W, y1, 0.0))
+	up_south.add_opening(CozyOpening.window(2.0, 1.2))
+	up_south.add_opening(CozyOpening.window(6.0, 1.2))
+
 	_add_wall(_house, Vector3(HOUSE_W, y1, 0.0), Vector3(HOUSE_W, y1, HOUSE_D))
-	_add_wall(_house, Vector3(HOUSE_W, y1, HOUSE_D), Vector3(0.0, y1, HOUSE_D))
+	var up_north := _add_wall(_house, Vector3(HOUSE_W, y1, HOUSE_D), Vector3(0.0, y1, HOUSE_D))
+	up_north.add_opening(CozyOpening.window(4.0, 1.6))
 	_add_wall(_house, Vector3(0.0, y1, HOUSE_D), Vector3(0.0, y1, 0.0))
 
 	# ---- Upper slab, with a hole left open for the stairwell ----
@@ -188,11 +193,12 @@ func _build_house() -> void:
 	_house.add_child(ramp)
 
 
-func _add_wall(parent: Node3D, a: Vector3, b: Vector3, mat_id := "wood") -> void:
+func _add_wall(parent: Node3D, a: Vector3, b: Vector3, mat_id := "wood") -> CozyWall:
 	var w := CozyWall.new()
 	parent.add_child(w)
 	w.setup(a, b, FLOOR_H, WALL_T, mat_id)
 	walls.append(w)
+	return w
 
 
 func _add_box(parent: Node3D, center: Vector3, box_size: Vector3, mat_id: String) -> MeshInstance3D:
@@ -213,6 +219,11 @@ func _add_box(parent: Node3D, center: Vector3, box_size: Vector3, mat_id: String
 ## graph and local navigation. Safe to call repeatedly — that is the whole point
 ## (doc #28: change a wall, the room polygon is recomputed).
 func _rebuild_spatial() -> void:
+	# Wall joins first: every wall that meets another runs half a thickness past
+	# the joint, so corners read as solid (doc #24 / #25). Room detection below
+	# uses centre-lines and is unaffected by the extension.
+	CozyWallSolver.solve(walls)
+
 	floor_system = CozyFloorSystem.new()
 	floor_system.floor_height = FLOOR_H
 
@@ -224,11 +235,15 @@ func _rebuild_spatial() -> void:
 			by_floor[fi] = []
 		by_floor[fi].append([Vector2(w.start.x, w.start.z), Vector2(w.end.x, w.end.z)])
 
+	# Note: NO bridging of doorways here any more. An opening carves geometry but
+	# leaves the wall's centre-line intact, so the wall graph is already closed
+	# around a doorway and the room is detected without help. (Bridging used to
+	# be required when a doorway was a physical gap between two wall segments;
+	# it is now redundant, and a bridge over an intact span would add a duplicate
+	# edge that corrupts the planar face traversal.)
 	var detector := CozyRoomDetector.new()
 	for fi in by_floor.keys():
-		var segs: Array = by_floor[fi]
-		segs.append_array(_door_bridges(fi))
-		var polys := detector.detect(segs)
+		var polys := detector.detect(by_floor[fi])
 		for i in polys.size():
 			floor_system.add_room(CozyRoom.new("room_%d_%d" % [fi, i], fi, polys[i]))
 
@@ -252,16 +267,6 @@ func _rebuild_spatial() -> void:
 		nav.build(r)
 		_nav_by_room[r.id] = nav
 	local_nav = _nav_by_room.get("room_0_0", null)
-
-
-## Doorways are physically open, but topologically they CLOSE a room — a door
-## separates two spaces while remaining passable (doc #29: a Door knows both
-## room_a and room_b). So detection bridges the opening.
-func _door_bridges(floor_index: int) -> Array:
-	if floor_index != 0:
-		return []
-	# The 1.5m doorway cut into the south wall (x 2.5 .. 4.0 at z = 0).
-	return [[Vector2(2.5, 0.0), Vector2(4.0, 0.0)]]
 
 
 # ---------------------------------------------------------------- characters
@@ -524,6 +529,59 @@ func _report() -> void:
 	_check_route("room_1_0", "room_1_0", "(no route)")
 
 	_check_nav()
+	_check_wall_connection()
+	_check_openings()
+
+
+## Openings (V2-16, doc #29 / #30). A wall carves its own geometry around a hole:
+## a doorway reaches the floor and leaves a gap an agent walks through, while a
+## window leaves a solid sill below it — which is what stops the agent, with no
+## special-casing anywhere.
+func _check_openings() -> void:
+	var cases := [
+		["door gap (walkable)", Vector3(3.25, 1.0, 0.0), false],
+		["door lintel (solid)", Vector3(3.25, 2.6, 0.0), true],
+		["window gap (open)", Vector3(2.0, 4.5, 0.0), false],
+		["window sill (solid)", Vector3(2.0, 3.4, 0.0), true],
+	]
+	var all_ok := true
+	for c in cases:
+		var label: String = c[0]
+		var p: Vector3 = c[1]
+		var want_solid: bool = c[2]
+		var is_solid := CozyWallSolver.any_wall_contains(walls, p)
+		var ok := is_solid == want_solid
+		all_ok = all_ok and ok
+		print("[cozyv2]   %-22s %-5s  [%s]" % [
+			label, "solid" if is_solid else "open", "OK" if ok else "FAIL"])
+	print("[cozyv2] openings  [%s]" % ("OK" if all_ok else "FAIL"))
+
+
+## Wall connection solving (V2-15, doc #24 / #25).
+## Measure the outer corner before and after solving, rather than assuming the
+## solver is what fills it — unsolving first proves causation.
+func _check_wall_connection() -> void:
+	var corner := Vector3(HOUSE_W + 0.1, 1.5, -0.1)   # just outside the SE corner
+
+	for w in walls:
+		w.extend_start = 0.0
+		w.extend_end = 0.0
+		w.refresh()
+	var before := CozyWallSolver.any_wall_contains(walls, corner)
+
+	CozyWallSolver.solve(walls)
+	var after := CozyWallSolver.any_wall_contains(walls, corner)
+
+	var joined := 0
+	for w in walls:
+		if w.extend_start > 0.0:
+			joined += 1
+		if w.extend_end > 0.0:
+			joined += 1
+
+	print("[cozyv2] corner(%.1f,%.1f) solid: %s -> %s  [%s]  (%d joined ends)" % [
+		corner.x, corner.z, str(before), str(after),
+		"OK" if (not before and after) else "FAIL", joined])
 
 
 ## Proves doc #28 — "a building is not a static picture but a dynamic spatial

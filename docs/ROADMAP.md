@@ -144,6 +144,47 @@ Fixed with **planar subdivision**: any node lying on a segment's interior splits
 that segment. This is a prerequisite for wall connection solving (#24) and
 procedural building fusion (#25), so it had to be right here rather than later.
 
+### Wall connection solving (V2-15)
+
+Two boxes that stop at a joint each contribute half a thickness, so a
+thickness-sized square of daylight is missing from the outside of an L-corner.
+Every wall that meets another now runs half a thickness past the joint, so the
+boxes overlap and the corner reads as solid.
+
+```
+corner(8.1,-0.1) solid: false -> true  [OK]  (16 joined ends)
+```
+
+The self-check *unsolves* first, measures, then re-solves — so it proves the
+solver is what fills the corner rather than assuming it.
+
+### Openings (V2-16)
+
+Doors and windows are now properties of a wall, not gaps the caller carves
+(doc #30: "a window is also a Wall's Opening"). The wall emits its own pieces
+around each hole: a **door** reaches the floor and leaves a walkable gap plus a
+lintel above; a **window** leaves a solid sill below, which is what stops an
+agent walking through it — with no special-casing anywhere.
+
+```
+door gap (walkable)    open   [OK]
+door lintel (solid)    solid  [OK]
+window gap (open)      open   [OK]
+window sill (solid)    solid  [OK]
+```
+
+**This deleted code rather than adding it.** The hand-carved doorway in
+`main.gd` and the whole door-bridging mechanism are gone. The bridge existed
+because a doorway used to be a physical gap between two wall segments; now an
+opening carves geometry but leaves the centre-line intact, so the wall graph is
+already closed around a doorway. A bridge over an intact span would add a
+duplicate edge and corrupt the planar face traversal — which is exactly the bug
+that appeared when the bridge outlived its purpose.
+
+Bonus: the ground-floor room polygon went from **6 vertices to 4**. Splitting
+the wall into segments had been polluting the room topology; a clean rectangle
+is what a room with a door in it should be.
+
 Run it yourself:
 ```bash
 godot --headless --path ~/cozy-game-v2 --quit-after 900
@@ -183,8 +224,8 @@ godot --headless --path ~/cozy-game-v2 --quit-after 900
 | # | Block | One-liner | Size | Status |
 |---|---|---|---|---|
 | V2-14 | Building intent | Draw an outline → system generates the structure | M | 🚧 09-11 — drag-to-place wall + live rebuild |
-| V2-15 | Wall connection solver | Corners, beams, joints where segments meet | M | ⬜ |
-| V2-16 | Openings | Door / window cut into a wall as parametric openings | M | ⬜ |
+| V2-15 | Wall connection solver | Corners, beams, joints where segments meet | M | ✅ 09-11 |
+| V2-16 | Openings | Door / window cut into a wall as parametric openings | M | ✅ 09-11 |
 | V2-17 | Roof generator | Polygon → ridge → roof geometry (gable/hip/flat) | L | ⬜ |
 
 ### Phase 4 — Object & interaction

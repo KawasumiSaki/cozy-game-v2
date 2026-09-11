@@ -38,6 +38,14 @@ func _process(_delta: float) -> void:
 			blocked[hit["collider"]] = true
 
 	for w in walls:
-		if not is_instance_valid(w) or w.static_body == null:
+		if not is_instance_valid(w):
 			continue
-		w.set_fade(FADE_ALPHA if blocked.has(w.static_body) else 1.0)
+		# A wall is built from several pieces (sills, lintels, spans between
+		# openings), so "is this wall blocking?" means "is ANY of its pieces
+		# the collider the ray hit?".
+		var is_blocking := false
+		for b in w.bodies():
+			if blocked.has(b):
+				is_blocking = true
+				break
+		w.set_fade(FADE_ALPHA if is_blocking else 1.0)
