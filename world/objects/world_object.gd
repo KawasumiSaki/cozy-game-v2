@@ -16,6 +16,9 @@ var floor_index := 0
 
 var interaction_points: Array[CozyInteractionPoint] = []
 
+## Effects this object emits (doc E.18), built from its definition.
+var vfx: Array[CozyVfx] = []
+
 var _def: Dictionary = {}
 var _size := Vector2.ONE
 var _specs: Array = []          ## {local: Vector3, ...} mirrors interaction_points
@@ -35,6 +38,7 @@ func _build() -> void:
 		c.queue_free()
 	interaction_points.clear()
 	_specs.clear()
+	vfx.clear()
 	if _def.is_empty():
 		return
 
@@ -72,9 +76,37 @@ func _build() -> void:
 		interaction_points.append(CozyInteractionPoint.new(
 			it["type"], Vector3.ZERO, it["skill"], it["duration"]))
 
+	_build_vfx()
+	refresh_vfx_phase()
+
+
+## Re-seed effect phases from this object's world position.
+##
+## `_build()` runs before the caller positions the object, so the first pass can
+## only see the definition — and two campfires share one, which leaves them
+## flickering in lockstep. Position is what distinguishes instances.
+func refresh_vfx_phase() -> void:
+	if vfx.is_empty():
+		return
+	var cell := Vector3i(roundi(global_position.x * 10.0),
+		floori(global_position.y), roundi(global_position.z * 10.0))
+	for fx in vfx:
+		var h := CozyArtSeed.mix4(hash(def_id), cell.x, cell.y, cell.z) ^ hash(fx.vfx_id)
+		fx.set_phase(CozyArtSeed.unit(h) * 0.5)
+
 
 func _process(_delta: float) -> void:
 	refresh_points()
+
+
+## Effects are declared by the definition and phased from the object's own id,
+## so two campfires never flicker in lockstep (doc E.21).
+func _build_vfx() -> void:
+	for vfx_id in _def.get("vfx", []):
+		var phase := CozyArtSeed.unit(hash(def_id) ^ hash(vfx_id)) * 0.5
+		var fx := CozyVfx.create(vfx_id, phase)
+		add_child(fx)
+		vfx.append(fx)
 
 
 ## Recompute the world position of each advertised point from the current

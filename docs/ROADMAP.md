@@ -95,7 +95,7 @@
 | ART-10 | Pixel asset library | ✅ |
 | ART-11 | Terrain scatter | ✅ |
 | ART-12 | Building material library | 🚧 assembly done, textures await assets |
-| ART-13 | Pixel VFX library | ⬜ |
+| ART-13 | Pixel VFX library | ✅ campfire |
 | ART-14 | NPC sprite pipeline | ⬜ |
 | ART-15 | NPC Skeleton2D | ⬜ |
 | ART-16 | NPC animation controller | ⬜ |

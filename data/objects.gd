@@ -46,6 +46,19 @@ const OBJECTS := {
 			{"type": "sleep", "skill": "", "duration": 8.0, "reach": 1.2},
 		],
 	},
+	"campfire": {
+		"name": "Campfire",
+		"kind": "decoration",
+		"size": Vector2(0.9, 0.9),
+		"height": 0.3,
+		"color": Color(0.38, 0.30, 0.24),
+		# Effects this object emits (doc E.18). Declared as data so adding a
+		# lantern or a forge chimney later needs no object-system change.
+		"vfx": ["fire", "smoke"],
+		"interactions": [
+			{"type": "sit", "skill": "", "duration": 4.0, "reach": 1.0},
+		],
+	},
 	"chair": {
 		"name": "Chair",
 		"kind": "furniture",
@@ -59,7 +72,7 @@ const OBJECTS := {
 }
 
 ## Order used when cycling build choices in-game.
-const PLACEABLE: Array[String] = ["research_table", "chest", "bed", "chair"]
+const PLACEABLE: Array[String] = ["research_table", "chest", "bed", "chair", "campfire"]
 
 
 static func get_def(id: String) -> Dictionary:

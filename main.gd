@@ -83,6 +83,7 @@ var _is_headless := false
 var _build_test_done := false
 var _npc_test_done := false
 var _occlusion_test_done := false
+var _vfx_test_done := false
 
 
 func _ready() -> void:
@@ -388,6 +389,10 @@ func _add_box(parent: Node3D, center: Vector3, box_size: Vector3, mat_id: String
 func _place_initial_furniture() -> void:
 	_place_object("research_table", 2.0, 2.0, 1)
 	_place_object("chest", 6.6, 1.0, 0)
+	# Two campfires, so the self-check can prove their effects do not animate in
+	# lockstep (doc E.21): same definition, different phase.
+	_place_object("campfire", -2.0, 5.0, 0)
+	_place_object("campfire", 10.5, 2.0, 0)
 
 
 func _place_object(def_id: String, x: float, z: float, floor_index: int) -> CozyWorldObject:
@@ -397,7 +402,8 @@ func _place_object(def_id: String, x: float, z: float, floor_index: int) -> Cozy
 	add_child(obj)
 	obj.setup(def_id, floor_index)
 	obj.global_position = Vector3(x, float(floor_index) * FLOOR_H, z)
-	obj.refresh_points()   # make its work points usable before the first frame
+	obj.refresh_points()      # work points usable before the first frame
+	obj.refresh_vfx_phase()   # effects desynced by position, not by definition
 	objects.append(obj)
 	return obj
 
@@ -791,6 +797,9 @@ func _run_headless_stages() -> void:
 	if not _occlusion_test_done and f > 60:
 		_occlusion_test_done = true
 		_check_occlusion()
+	if not _vfx_test_done and f > 120:
+		_vfx_test_done = true
+		_check_vfx()
 	if not _build_test_done and f > AUTOPILOT_DONE_FRAME:
 		_build_test_done = true
 		_run_live_rebuild_test()
@@ -1270,6 +1279,36 @@ func _check_camera() -> void:
 	print("[cozyv2] camera debug unlock: rotates=%s, relocks=%s  [%s]" % [
 		str(unlocked), str(camera.is_locked()),
 		"OK" if unlocked and camera.is_locked() else "FAIL"])
+
+
+## Pixel VFX (V2.1 doc E.18 / E.21).
+##
+## Staged rather than checked at startup: nothing has run a frame yet inside
+## `_ready`, so animation would have nothing to report. It also checks the thing
+## the doc actually cares about — that two instances of the same effect do NOT
+## animate in lockstep.
+func _check_vfx() -> void:
+	var fires: Array[CozyVfx] = []
+	for o in objects:
+		if not is_instance_valid(o):
+			continue
+		for fx in o.vfx:
+			if fx.vfx_id == "fire":
+				fires.append(fx)
+
+	if fires.size() < 2:
+		print("[cozyv2] vfx: expected 2 campfire effects, found %d  [FAIL]" % fires.size())
+		return
+
+	print("[cozyv2] vfx: %d fire effect(s), %d frame(s), now frame %d, advanced %d  [%s]" % [
+		fires.size(), fires[0].frames.size(), fires[0].current_frame(),
+		fires[0].advances(),
+		"OK" if fires[0].advances() > 0 and fires[0].frames.size() > 1 else "FAIL, not animating"])
+
+	var phase_gap := absf(fires[0].start_phase - fires[1].start_phase)
+	print("[cozyv2] vfx desync: phases %.3f vs %.3f  [%s]" % [
+		fires[0].start_phase, fires[1].start_phase,
+		"OK" if phase_gap > 0.01 else "FAIL, effects in lockstep"])
 
 
 ## Occlusion (doc #57). The camera follows the player, so only geometry that

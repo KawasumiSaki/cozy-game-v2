@@ -196,6 +196,80 @@ static func make_tree_texture(seed_val := 4) -> ImageTexture:
 	return _outline(img, Color(0.14, 0.22, 0.12, 1.0))
 
 
+## VFX frame sets (doc E.18). Placeholder like everything else — real VFX come
+## from the asset library later. Each set is a short loop of 32x32 frames.
+
+static func make_fire_frames() -> Array[Texture2D]:
+	var out: Array[Texture2D] = []
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 909
+	for f in 4:
+		var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+		img.fill(Color(0, 0, 0, 0))
+		# Flame height and lean change per frame; the base stays put.
+		var h := 13 + f * 2
+		var lean := (f - 1) * 0.6
+		for y in range(32 - h, 30):
+			var t := float(30 - y) / float(h)          # 0 at base, 1 at tip
+			var half := maxf(1.0, (1.0 - t) * 7.0 - t * 1.5)
+			var cx := 16.0 + lean * t
+			for x in range(int(cx - half), int(cx + half) + 1):
+				if x < 0 or x >= 32:
+					continue
+				# Core is yellow-white, edges orange-red.
+				var edge := absf(float(x) - cx) / half
+				var c := Color(0.98, 0.82, 0.30).lerp(Color(0.85, 0.30, 0.12), edge)
+				c = c.lerp(Color(0.55, 0.14, 0.06), t * 0.75)
+				if rng.randf() < 0.12:
+					c = c.darkened(0.25)
+				img.set_pixel(x, y, Color(c.r, c.g, c.b, 1.0))
+		out.append(ImageTexture.create_from_image(img))
+	return out
+
+
+static func make_smoke_frames() -> Array[Texture2D]:
+	var out: Array[Texture2D] = []
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 4242
+	for f in 4:
+		var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+		img.fill(Color(0, 0, 0, 0))
+		var rise := float(f) * 2.0
+		var spread := 6.0 + float(f) * 1.6
+		var cx := 16.0 + (float(f) - 1.5) * 0.8
+		var cy := 22.0 - rise
+		for y in 32:
+			for x in 32:
+				var d := Vector2((float(x) - cx) / spread, (float(y) - cy) / (spread * 1.2))
+				if d.length() > 1.0:
+					continue
+				var a := (1.0 - d.length()) * (0.55 - float(f) * 0.08)
+				var n := rng.randf_range(-0.05, 0.05)
+				img.set_pixel(x, y, Color(
+					clampf(0.62 + n, 0, 1), clampf(0.62 + n, 0, 1),
+					clampf(0.64 + n, 0, 1), clampf(a, 0, 1)))
+		out.append(ImageTexture.create_from_image(img))
+	return out
+
+
+static func make_magic_frames() -> Array[Texture2D]:
+	var out: Array[Texture2D] = []
+	for f in 4:
+		var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+		img.fill(Color(0, 0, 0, 0))
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 77 + f
+		for i in 10:
+			var a := rng.randf() * TAU
+			var r := 4.0 + rng.randf() * 10.0
+			var x := int(16.0 + cos(a) * r)
+			var y := int(18.0 + sin(a) * r * 0.6) - int(float(f) * 1.5)
+			if x >= 0 and x < 32 and y >= 0 and y < 32:
+				img.set_pixel(x, y, Color(0.72, 0.86, 0.98, 1.0))
+		out.append(ImageTexture.create_from_image(img))
+	return out
+
+
 ## Billboarding material for scattered vegetation. Fixed-Y so a sprite never
 ## tips with the camera (docs/ART_PROFILE.md), alpha-cut so depth sorting stays
 ## correct and walls still occlude it.
