@@ -1,14 +1,9 @@
 class_name CozyWallSolver
 extends RefCounted
-## Wall connection solver (V2 doc #24 Wall Connection, #25 Procedural Fusion).
+## Wall connection solver (V2.1 doc #22, originally #24/#25).
 ##
-## The doc's complaint (#25) is that placing two wall meshes next to each other
-## reads as "two models that happen to sit side by side" rather than one building
-## that was actually constructed.
-##
-## The visible symptom is at an outer corner. Two boxes that stop at the joint
-## each contribute half a thickness, so a thickness-sized square of daylight is
-## missing from the outside of the corner:
+## Two boxes that stop at a joint each contribute half a thickness, so a
+## thickness-sized square of daylight is missing from the outside of an L-corner:
 ##
 ##     (looking down at an L-corner, '#' = wall)
 ##
@@ -19,41 +14,46 @@ extends RefCounted
 ##         ##
 ##
 ## The fix is the classic one: at a junction, run each wall half a thickness
-## past the joint so the boxes overlap and the corner reads as solid. That is
-## the "Connection Solver -> Corner -> Beam -> Final Structure" chain in #25,
-## reduced to the piece that actually matters for a box-built wall.
+## past the joint so the boxes overlap and the corner reads as solid.
+##
+## This operates on STATES, not on generated geometry — the solver is part of
+## the Rules/Solver stage in doc #70's chain, upstream of the generator. It
+## reports which walls it modified so regeneration stays incremental (doc #32).
 
 const EXTEND_FRACTION := 0.5   ## Of wall thickness, per joined end.
-
-## Position quantisation for deciding two wall ends occupy the same point.
-const SNAP := 1000.0
+const SNAP := 1000.0           ## Position quantisation for "same point".
 
 
-## Set extend_start / extend_end on every wall whose end meets another wall,
-## then refresh the geometry. Safe to call on every rebuild.
-static func solve(walls: Array) -> void:
+## Set extend_start / extend_end on every wall whose end meets another wall.
+## Returns the ids of walls whose extension actually changed, so the caller can
+## rebuild only those views.
+static func solve_states(walls: Array) -> Array[String]:
 	var buckets := {}
 	for w in walls:
 		_bucket(buckets, w.start).append(w)
 		_bucket(buckets, w.end).append(w)
 
+	var changed: Array[String] = []
 	for w in walls:
-		w.extend_start = 0.0
-		w.extend_end = 0.0
+		var prev_start: float = w.extend_start
+		var prev_end: float = w.extend_end
 		var half: float = w.thickness * EXTEND_FRACTION
+
 		# More than one wall sharing this exact point means a junction.
-		if _bucket(buckets, w.start).size() > 1:
-			w.extend_start = half
-		if _bucket(buckets, w.end).size() > 1:
-			w.extend_end = half
-		w.refresh()
+		w.extend_start = half if _bucket(buckets, w.start).size() > 1 else 0.0
+		w.extend_end = half if _bucket(buckets, w.end).size() > 1 else 0.0
+
+		if not is_equal_approx(prev_start, w.extend_start) \
+				or not is_equal_approx(prev_end, w.extend_end):
+			changed.append(w.id)
+	return changed
 
 
-## Is this world point inside any wall's solid volume?
-## Used by the self-check to prove the corner actually gained material.
-static func any_wall_contains(walls: Array, p: Vector3) -> bool:
-	for w in walls:
-		if w.contains_point(p):
+## Is this world point inside any generated wall volume?
+## Used by the self-check to prove a corner actually gained material.
+static func any_view_contains(views: Array, p: Vector3) -> bool:
+	for v in views:
+		if is_instance_valid(v) and v.contains_point(p):
 			return true
 	return false
 

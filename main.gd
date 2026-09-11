@@ -53,7 +53,7 @@ var player: CozyCharacter = null
 var npc: CozyNpcAgent = null
 var hud: Label = null
 
-var walls: Array[CozyWall] = []
+var building: CozyBuildingSystem = null
 var roofs: Array[CozyRoof] = []
 var objects: Array[CozyWorldObject] = []
 
@@ -84,6 +84,11 @@ func _ready() -> void:
 		print("[cozyv2] headless self-check start")
 	_build_environment()
 	_build_ground()
+	# The building system owns BuildingState and generates every wall view from
+	# it (doc #18). Nothing else in this file is allowed to create a wall node.
+	building = CozyBuildingSystem.new()
+	add_child(building)
+	building.setup(self)
 	_build_house()
 	_build_roof()
 	_place_initial_furniture()
@@ -147,25 +152,39 @@ func _build_house() -> void:
 	var y0 := 0.0
 	var y1 := FLOOR_H
 
-	# Floor 0: an 8x6 rectangle whose south wall carries a real doorway.
-	# The wall is ONE segment with an opening cut into it (V2-16) — it generates
-	# its own geometry around the hole rather than being hand-split.
-	var south := _add_wall(_house, Vector3(0.0, y0, 0.0), Vector3(HOUSE_W, y0, 0.0))
-	south.add_opening(CozyOpening.door(3.25, 1.5))
+	# Every wall below is submitted as an Intent (doc #1.4). This function never
+	# creates a node: the walls are generated from the resulting BuildingState.
+	#
+	# The south wall of floor 0 is ONE segment with a Door opening cut into it
+	# (doc #24) — no hand-splitting, and no topology patching downstream.
+	var intents: Array = [
+		CozyBuildingIntent.draw_wall(Vector3(0.0, y0, 0.0), Vector3(HOUSE_W, y0, 0.0),
+			FLOOR_H, WALL_T, "wood", 0).with_opening(CozyOpening.door(3.25, 1.5)),
+		CozyBuildingIntent.draw_wall(Vector3(HOUSE_W, y0, 0.0), Vector3(HOUSE_W, y0, HOUSE_D),
+			FLOOR_H, WALL_T, "wood", 0),
+		CozyBuildingIntent.draw_wall(Vector3(HOUSE_W, y0, HOUSE_D), Vector3(0.0, y0, HOUSE_D),
+			FLOOR_H, WALL_T, "wood", 0),
+		CozyBuildingIntent.draw_wall(Vector3(0.0, y0, HOUSE_D), Vector3(0.0, y0, 0.0),
+			FLOOR_H, WALL_T, "wood", 0),
 
-	_add_wall(_house, Vector3(HOUSE_W, y0, 0.0), Vector3(HOUSE_W, y0, HOUSE_D))  # east
-	_add_wall(_house, Vector3(HOUSE_W, y0, HOUSE_D), Vector3(0.0, y0, HOUSE_D))  # north
-	_add_wall(_house, Vector3(0.0, y0, HOUSE_D), Vector3(0.0, y0, 0.0))          # west
+		# Floor 1: exterior ring with windows.
+		CozyBuildingIntent.draw_wall(Vector3(0.0, y1, 0.0), Vector3(HOUSE_W, y1, 0.0),
+			FLOOR_H, WALL_T, "wood", 1)
+			.with_opening(CozyOpening.window(2.0, 1.2))
+			.with_opening(CozyOpening.window(6.0, 1.2)),
+		CozyBuildingIntent.draw_wall(Vector3(HOUSE_W, y1, 0.0), Vector3(HOUSE_W, y1, HOUSE_D),
+			FLOOR_H, WALL_T, "wood", 1),
+		CozyBuildingIntent.draw_wall(Vector3(HOUSE_W, y1, HOUSE_D), Vector3(0.0, y1, HOUSE_D),
+			FLOOR_H, WALL_T, "wood", 1).with_opening(CozyOpening.window(4.0, 1.6)),
+		CozyBuildingIntent.draw_wall(Vector3(0.0, y1, HOUSE_D), Vector3(0.0, y1, 0.0),
+			FLOOR_H, WALL_T, "wood", 1),
+	]
+	building.submit_many(intents)
 
-	# Floor 1: exterior ring with windows.
-	var up_south := _add_wall(_house, Vector3(0.0, y1, 0.0), Vector3(HOUSE_W, y1, 0.0))
-	up_south.add_opening(CozyOpening.window(2.0, 1.2))
-	up_south.add_opening(CozyOpening.window(6.0, 1.2))
-
-	_add_wall(_house, Vector3(HOUSE_W, y1, 0.0), Vector3(HOUSE_W, y1, HOUSE_D))
-	var up_north := _add_wall(_house, Vector3(HOUSE_W, y1, HOUSE_D), Vector3(0.0, y1, HOUSE_D))
-	up_north.add_opening(CozyOpening.window(4.0, 1.6))
-	_add_wall(_house, Vector3(0.0, y1, HOUSE_D), Vector3(0.0, y1, 0.0))
+	# NOTE: slabs and stairs are still emitted directly here. They belong in
+	# BuildingState too (doc #18 lists Floor / Stair alongside Wall), but they
+	# are not what the State refactor was about, and converting them now would
+	# mix two changes. Tracked as remaining debt.
 
 	# Upper slab: two pieces plus a landing at the head of the stairs, leaving
 	# a stairwell hole between WELL_X0 and WELL_X1.
@@ -220,12 +239,11 @@ func _build_roof() -> void:
 	roofs.append(roof)
 
 
-func _add_wall(parent: Node3D, a: Vector3, b: Vector3, mat_id := "wood") -> CozyWall:
-	var w := CozyWall.new()
-	parent.add_child(w)
-	w.setup(a, b, FLOOR_H, WALL_T, mat_id)
-	walls.append(w)
-	return w
+## The ONLY route by which this scene adds a wall. It returns the STATE, not a
+## node — callers read facts, they never reach into generated geometry.
+func _add_wall(a: Vector3, b: Vector3, mat_id := "wood", floor_id := 0) -> CozyWallState:
+	return building.submit(
+		CozyBuildingIntent.draw_wall(a, b, FLOOR_H, WALL_T, mat_id, floor_id))
 
 
 ## `collide` matters: floor slabs MUST be solid, or agents walk off the edge and
@@ -283,25 +301,16 @@ func _place_object(def_id: String, x: float, z: float, floor_index: int) -> Cozy
 ## portals, the room graph, local navigation and the world navigator.
 ## Safe to call repeatedly — that is the point (doc #28).
 func _rebuild_spatial() -> void:
-	CozyWallSolver.solve(walls)
-
 	floor_system = CozyFloorSystem.new()
 	floor_system.floor_height = FLOOR_H
 
-	var by_floor := {}
-	for w in walls:
-		var fi := floor_system.floor_index_at(w.midpoint().y)
-		if not by_floor.has(fi):
-			by_floor[fi] = []
-		by_floor[fi].append([Vector2(w.start.x, w.start.z), Vector2(w.end.x, w.end.z)])
-
-	# No doorway bridging here any more. An opening carves geometry but leaves
-	# the wall's centre-line intact, so the graph is already closed around a
-	# door. Bridging an intact span would add a duplicate edge and corrupt the
-	# planar face traversal.
+	# Room detection reads centre-lines straight out of BuildingState. There is
+	# no doorway bridging: an opening carves geometry but leaves the centre-line
+	# intact, so the graph is already closed around a door. Bridging an intact
+	# span would add a duplicate edge and corrupt the planar face traversal.
 	var detector := CozyRoomDetector.new()
-	for fi in by_floor.keys():
-		var polys := detector.detect(by_floor[fi])
+	for fi in building.state.floor_ids():
+		var polys := detector.detect(building.centrelines_on_floor(fi))
 		for i in polys.size():
 			floor_system.add_room(CozyRoom.new("room_%d_%d" % [fi, i], fi, polys[i]))
 
@@ -407,7 +416,7 @@ func _build_camera() -> void:
 	occ.targets = [player, npc]
 	# Walls and roofs both fade — a roof that cannot fade hides the player.
 	occ.fadables = []
-	occ.fadables.append_array(walls)
+	occ.fadables.append_array(building.wall_views)
 	occ.fadables.append_array(roofs)
 
 
@@ -489,22 +498,23 @@ func _end_drag() -> void:
 	_drag_active = false
 	_clear_preview()
 
-	var t := CozyWall.segment_transform(_drag_start, _drag_end, FLOOR_H)
+	var t := CozyWallState.segment_transform(_drag_start, _drag_end, FLOOR_H)
 	if float(t["length"]) < MIN_WALL_LEN:
 		return   # A click, not a drag.
 
-	_add_wall(_house, _drag_start, _drag_end)
+	_add_wall(_drag_start, _drag_end, "wood", _build_floor_index())
 	_rebuild_spatial()
-	tool_idx = 0     # keep roofs/fadables in sync with the new wall
-	_build_camera_occlusion_refresh()
+	_refresh_occlusion_fadables()
 	_update_hud()
 
 
-func _build_camera_occlusion_refresh() -> void:
+## The building system rebuilds wall views, so the occlusion list is
+## re-collected rather than incrementally maintained.
+func _refresh_occlusion_fadables() -> void:
 	for c in get_children():
 		if c is CozyOcclusion:
 			c.fadables = []
-			c.fadables.append_array(walls)
+			c.fadables.append_array(building.wall_views)
 			c.fadables.append_array(roofs)
 
 
@@ -518,7 +528,7 @@ func _update_preview() -> void:
 		_preview.material_override = mat
 		add_child(_preview)
 
-	var t := CozyWall.segment_transform(_drag_start, _drag_end, FLOOR_H)
+	var t := CozyWallState.segment_transform(_drag_start, _drag_end, FLOOR_H)
 	var bm := BoxMesh.new()
 	bm.size = Vector3(float(t["length"]), FLOOR_H, WALL_T)
 	_preview.mesh = bm
@@ -702,9 +712,9 @@ func _run_live_rebuild_test() -> void:
 	var before := floor_system.rooms_on(0).size()
 	# Bisect the GROUND floor. The autopilot has already finished by this frame,
 	# so the new wall cannot interfere with the walk-through test.
-	_add_wall(_house, Vector3(4.0, 0.0, 0.0), Vector3(4.0, 0.0, HOUSE_D))
+	_add_wall(Vector3(4.0, 0.0, 0.0), Vector3(4.0, 0.0, HOUSE_D), "wood", 0)
 	_rebuild_spatial()
-	_build_camera_occlusion_refresh()
+	_refresh_occlusion_fadables()
 	var after := floor_system.rooms_on(0).size()
 	print("[cozyv2] floor-0 rooms %d -> %d  [%s]" % [
 		before, after,
@@ -715,8 +725,8 @@ func _check_nav() -> void:
 	if local_nav == null:
 		print("[cozyv2] local nav NOT BUILT  [FAIL]")
 		return
-	var from := Vector2(3.25, 1.0)
-	var to := Vector2(5.3, 4.5)
+	var from := Vector2(3.25, 1.0)          # just inside the doorway
+	var to := Vector2(WELL_X0 - 0.3, 4.5)   # the foot of the stairs
 
 	var p1 := local_nav.find_path(from, to)
 	var l1 := CozyLocalNav.path_length(p1)
@@ -725,7 +735,8 @@ func _check_nav() -> void:
 	if p1.is_empty():
 		return
 
-	local_nav.add_obstacle(Rect2(4.0, 1.2, 0.6, 4.0))
+	# Block the direct line with a table-sized obstacle, clear of the target.
+	local_nav.add_obstacle(Rect2(3.7, 1.5, 0.5, 2.5))
 	var p2 := local_nav.find_path(from, to)
 	var l2 := CozyLocalNav.path_length(p2)
 	var detoured := p2.size() > 0 and l2 > l1
@@ -736,13 +747,19 @@ func _check_nav() -> void:
 
 func _check_wall_connection() -> void:
 	var corner := Vector3(HOUSE_W + 0.1, 1.5, -0.1)
-	for w in walls:
-		w.extend_start = 0.0
-		w.extend_end = 0.0
-		w.refresh()
-	var before := CozyWallSolver.any_wall_contains(walls, corner)
-	CozyWallSolver.solve(walls)
-	var after := CozyWallSolver.any_wall_contains(walls, corner)
+
+	# Un-solve, regenerate WITHOUT solving, measure, then solve and measure
+	# again — so the result proves the solver fills the corner rather than
+	# assuming it.
+	for ws in building.state.walls:
+		ws.extend_start = 0.0
+		ws.extend_end = 0.0
+	building.regenerate([], true)
+	var before := CozyWallSolver.any_view_contains(building.wall_views, corner)
+
+	building.regenerate()
+	var after := CozyWallSolver.any_view_contains(building.wall_views, corner)
+
 	print("[cozyv2] corner(%.1f,%.1f) solid: %s -> %s  [%s]" % [
 		corner.x, corner.z, str(before), str(after),
 		"OK" if (not before and after) else "FAIL"])
@@ -760,7 +777,7 @@ func _check_openings() -> void:
 		var label: String = c[0]
 		var p: Vector3 = c[1]
 		var want_solid: bool = c[2]
-		var is_solid := CozyWallSolver.any_wall_contains(walls, p)
+		var is_solid := CozyWallSolver.any_view_contains(building.wall_views, p)
 		var ok := is_solid == want_solid
 		all_ok = all_ok and ok
 		print("[cozyv2]   %-22s %-5s  [%s]" % [
@@ -808,6 +825,6 @@ func _update_hud() -> void:
 	hud.text = "CozyVale V2\n%s\nWASD move | Q/E rotate | R/F pitch | wheel zoom | B build\npos %.1f,%.1f,%.1f  floor %d  room %s\nwalls %d  objects %d  rooms %d\nNPC: %s" % [
 		mode, p.x, p.y, p.z, player.current_floor(FLOOR_H),
 		(room.id if room != null else "outdoors"),
-		walls.size(), objects.size(),
+		building.state.wall_count(), objects.size(),
 		floor_system.all_rooms().size() if floor_system != null else 0,
 		npc.status_line() if npc != null else "-"]
