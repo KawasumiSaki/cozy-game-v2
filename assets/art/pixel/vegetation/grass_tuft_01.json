@@ -1,0 +1,18 @@
+{
+  "id": "grass_tuft_01",
+  "category": "vegetation",
+  "subcategory": "grass",
+  "style_set": "cozy_pixel_world",
+  "source": "test_fixture",
+  "license": "project_verified",
+  "resolution": [32, 32],
+  "pixel_scale": 1,
+  "pivot": [0.5, 1.0],
+  "anchor": "bottom_center",
+  "billboard": true,
+  "casts_shadow": false,
+  "biomes": ["grassland", "village", "forest_edge"],
+  "tags": ["small", "ground", "vegetation"],
+  "variants": 6,
+  "state": "approved"
+}

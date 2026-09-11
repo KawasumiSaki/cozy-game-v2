@@ -1,0 +1,18 @@
+{
+  "id": "fern_draft_01",
+  "category": "vegetation",
+  "subcategory": "fern",
+  "style_set": "cozy_pixel_world",
+  "source": "ai_raw",
+  "license": "project_verified",
+  "resolution": [32, 32],
+  "pixel_scale": 1,
+  "pivot": [0.5, 1.0],
+  "anchor": "bottom_center",
+  "billboard": true,
+  "casts_shadow": false,
+  "biomes": ["forest_edge"],
+  "tags": ["small", "ground", "vegetation"],
+  "variants": 2,
+  "state": "raw"
+}

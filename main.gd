@@ -57,6 +57,7 @@ var hud: Label = null
 var building: CozyBuildingSystem = null
 var terrain: CozyTerrainSystem = null
 var terrain_renderer: CozyTerrainRenderer = null
+var assets: CozyAssetLibrary = null
 var roofs: Array[CozyRoof] = []
 var objects: Array[CozyWorldObject] = []
 
@@ -90,6 +91,7 @@ func _ready() -> void:
 	if _is_headless:
 		print("[cozyv2] headless self-check start")
 	_build_environment()
+	_build_assets()
 	_build_terrain()
 	# The homestead starts on ground that has already been cleared. Without
 	# this the terrain gate (doc #12) would refuse the very first wall.
@@ -142,6 +144,21 @@ func _build_environment() -> void:
 	sun.light_color = Color(1.0, 0.97, 0.90)
 	sun.shadow_enabled = true
 	add_child(sun)
+
+
+# ---------------------------------------------------------------- assets
+
+## The asset catalogue (V2.1 doc E.3 / E.4).
+##
+## Nothing visible is drawn from it yet — that is ART-11 onwards. What exists
+## now is the contract: definitions load, invalid ones are refused with a
+## reason, and only APPROVED assets are offered to runtime systems.
+##
+## Doc 58.1 is the reason this can be built before any art exists:
+## "美术资源可以为空，系统不能依赖资源本身才能运行。"
+func _build_assets() -> void:
+	assets = CozyAssetLibrary.new()
+	assets.load_dir("res://assets/art")
 
 
 # ---------------------------------------------------------------- terrain
@@ -785,6 +802,7 @@ func _report() -> void:
 	_check_route("room_1_0", "room_1_0", "(no route)")
 
 	_check_camera()
+	_check_assets()
 	_check_nav()
 	_check_terrain()
 	_check_wall_connection()
@@ -1044,6 +1062,51 @@ func _check_openings() -> void:
 		print("[cozyv2]   %-22s %-5s  [%s]" % [
 			label, "solid" if is_solid else "open", "OK" if ok else "FAIL"])
 	print("[cozyv2] openings  [%s]" % ("OK" if all_ok else "FAIL"))
+
+
+## Asset library (V2.1 doc E.3 / E.4).
+##
+## Three things must hold, and each is checked separately:
+##   1. valid definitions load, invalid ones are REJECTED with a reason
+##   2. raw generator output is excluded from the runtime set (E.3.1)
+##   3. queries answer the questions a scatter system will actually ask
+##
+## Note (3) deliberately returns MORE than the runtime set: `by_category` sees
+## every loaded definition, while `runtime_definitions()` is approval-filtered.
+## Those are different questions and conflating them is how unapproved art
+## reaches a running game.
+func _check_assets() -> void:
+	if assets == null:
+		print("[cozyv2] asset library: NOT BUILT  [FAIL]")
+		return
+
+	var s := assets.summary()
+	var expected_loaded := 4
+	var expected_rejected := 1
+	var expected_runtime := 3
+	print("[cozyv2] asset library: %d loaded, %d rejected, %d runtime  [%s]" % [
+		s["loaded"], s["rejected"], s["runtime"],
+		"OK" if s["loaded"] == expected_loaded and s["rejected"] == expected_rejected \
+			and s["runtime"] == expected_runtime else "FAIL, expected 4/1/3"])
+
+	# A rejected definition must say WHY (same rule as the terrain gate, doc #72).
+	var why := assets.rejection_report()
+	print("[cozyv2] asset library rejects malformed_draft: %s  [%s]" % [
+		why, "OK" if why.contains("missing") else "FAIL, no reason given"])
+
+	# E.3.1 — the RAW asset must not appear in the runtime set.
+	var raw_leaked := false
+	for d in assets.runtime_definitions():
+		if d.state_name() != "approved":
+			raw_leaked = true
+	var raw_visible_to_query := assets.by_category("vegetation").size()
+	print("[cozyv2] asset library raw exclusion: runtime=%d, vegetation query=%d  [%s]" % [
+		s["runtime"], raw_visible_to_query,
+		"OK" if not raw_leaked and raw_visible_to_query == 3 else "FAIL"])
+
+	var grassland := assets.by_biome_and_category("grassland", "vegetation")
+	print("[cozyv2] asset library biome query: grassland+vegetation -> %d  [%s]" % [
+		grassland.size(), "OK" if grassland.size() == 2 else "FAIL, expected 2"])
 
 
 ## Camera lock (V2.1 doc E.1.1). Free rotation is barred as a gameplay feature

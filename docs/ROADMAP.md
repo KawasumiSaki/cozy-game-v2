@@ -92,7 +92,7 @@
 | ID | Block | Status |
 |---|---|---|
 | ART-09 | Fixed camera art profile | ✅ |
-| ART-10 | Pixel asset library | ⬜ |
+| ART-10 | Pixel asset library | ✅ |
 | ART-11 | Terrain scatter | ⬜ |
 | ART-12 | Building material library | ⬜ |
 | ART-13 | Pixel VFX library | ⬜ |
@@ -132,6 +132,11 @@ Stated plainly so it is not rediscovered later.
    chunk.
 3. **Openings do not create Portals.** Door and stair portals are still
    registered as fixtures, so walling up a doorway would not remove its portal.
+4. **The asset library scans with DirAccess.** Works in the editor and in
+   headless runs; an exported build would need the definitions declared as
+   resources or bundled into a manifest first.
+5. **Terrain has no biome concept** — only materials. ART-11's scatter rules
+   need biomes to query against.
 
 ---
 
