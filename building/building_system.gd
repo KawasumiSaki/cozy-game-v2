@@ -23,9 +23,17 @@ var wall_views: Array[CozyWall] = []
 ## a placement rule that only exists in a mouse handler is not a rule.
 var terrain: CozyTerrainSystem = null
 
+## Optional material store (doc #34-#36). When set, a wall must be paid for out
+## of it as it is built. Construction is no longer free.
+var inventory: CozyInventory = null
+
 ## Why the last intent was refused, for the UI to surface. Doc #72 requires an
 ## explicit reason: "不允许建筑时有明确原因."
 var last_rejection := ""
+
+## What the last regenerate actually disturbed (doc #33). Callers read this to
+## rebuild only the downstream stages that need it.
+var last_dirty := CozyDirtyRegion.new()
 
 var _view_root: Node3D = null
 
@@ -47,19 +55,29 @@ func submit(intent: CozyBuildingIntent) -> CozyWallState:
 func submit_many(intents: Array) -> CozyWallState:
 	var touched: Array[String] = []
 	var result: CozyWallState = null
+	last_dirty = CozyDirtyRegion.new()
+	last_rejection = ""
 
 	for intent in intents:
 		match intent.kind:
 			CozyBuildingIntent.Kind.DRAW_WALL:
 				if not _ground_approves(intent):
 					continue
+				if not _materials_available(intent):
+					continue
 				result = state.add_wall(intent.a, intent.b, intent.height,
 					intent.thickness, intent.material_id, intent.floor_id)
 				for o in intent.openings:
 					result.add_opening(o)
 				touched.append(result.id)
+				last_dirty.add_wall(result.id, result.floor_id)
+				_charge(result)
 
 			CozyBuildingIntent.Kind.REMOVE_WALL:
+				var doomed := state.wall(intent.wall_id)
+				if doomed != null:
+					last_dirty.add_wall(doomed.id, doomed.floor_id)
+					_refund(doomed)
 				state.remove_wall(intent.wall_id)
 
 			CozyBuildingIntent.Kind.ADD_OPENING:
@@ -67,9 +85,43 @@ func submit_many(intents: Array) -> CozyWallState:
 				if w != null and intent.opening != null:
 					w.add_opening(intent.opening)
 					touched.append(w.id)
+					last_dirty.add_wall(w.id, w.floor_id)
 
 	regenerate(touched)
 	return result
+
+
+# ---------------------------------------------------------------- material cost
+
+## doc #34 — the cost is derived from the geometry, not invented. The definition
+## table decides how a volume converts into resources.
+func wall_cost(w: CozyWallState) -> Dictionary:
+	return CozyBuildingDefs.cost_for(w.material_id, w.volume())
+
+
+func _materials_available(intent: CozyBuildingIntent) -> bool:
+	if inventory == null:
+		return true
+	# Price the wall from the geometry it WILL have, before it exists.
+	var probe := CozyWallState.create("probe", intent.a, intent.b, intent.height,
+		intent.thickness, intent.material_id, intent.floor_id)
+	var cost := wall_cost(probe)
+	if inventory.can_afford(cost):
+		return true
+	last_rejection = "need %s, short %s" % [
+		CozyBuildingDefs.describe_cost(cost),
+		CozyBuildingDefs.describe_cost(inventory.shortfall(cost))]
+	return false
+
+
+func _charge(w: CozyWallState) -> void:
+	if inventory != null:
+		inventory.spend(wall_cost(w))
+
+
+func _refund(w: CozyWallState) -> void:
+	if inventory != null:
+		inventory.refund(wall_cost(w))
 
 
 ## State -> Solver -> Generator -> Runtime nodes (doc #70).

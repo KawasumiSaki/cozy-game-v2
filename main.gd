@@ -64,6 +64,8 @@ var room_graph: CozyRoomGraph = null
 var world_navigator: CozyWorldNavigator = null
 var local_nav: CozyLocalNav = null
 var _nav_by_room: Dictionary = {}
+## Per-floor room cache, so an edit only re-derives its own floor (doc #33).
+var _rooms_by_floor: Dictionary = {}
 
 var build_mode := false
 var last_build_message := ""
@@ -98,6 +100,16 @@ func _ready() -> void:
 	add_child(building)
 	building.setup(self)
 	building.terrain = terrain        # ground must approve placements (doc #12)
+
+	# Construction stops being free (doc #34). The starting stock is sized so the
+	# homestead itself fits, with enough left that running out is something the
+	# player can actually experience rather than a number that never bites.
+	building.inventory = CozyInventory.new()
+	building.inventory.add("wood", 600.0)
+	building.inventory.add("stone", 300.0)
+	building.inventory.add("brick", 150.0)
+	building.inventory.add("plaster", 100.0)
+
 	_build_house()
 	_build_roof()
 	_place_initial_furniture()
@@ -346,19 +358,38 @@ func _place_object(def_id: String, x: float, z: float, floor_index: int) -> Cozy
 ## Re-derive every layer that depends on walls or furniture: wall joins, rooms,
 ## portals, the room graph, local navigation and the world navigator.
 ## Safe to call repeatedly — that is the point (doc #28).
-func _rebuild_spatial() -> void:
-	floor_system = CozyFloorSystem.new()
-	floor_system.floor_height = FLOOR_H
+func _rebuild_spatial(dirty: CozyDirtyRegion = null) -> void:
+	# Which floors need their rooms re-derived? Rooms come from the wall graph
+	# of a SINGLE floor, so a wall on floor 0 cannot change the rooms on floor 1.
+	# An edit therefore only invalidates its own floor (doc #33). A null or empty
+	# region means "rebuild everything" — used at startup and when furniture
+	# moves, since objects are not part of the building's dirty region yet.
+	var full := dirty == null or dirty.is_empty()
+	var floors: Array = building.state.floor_ids() if full else dirty.floor_list()
 
 	# Room detection reads centre-lines straight out of BuildingState. There is
 	# no doorway bridging: an opening carves geometry but leaves the centre-line
 	# intact, so the graph is already closed around a door. Bridging an intact
 	# span would add a duplicate edge and corrupt the planar face traversal.
 	var detector := CozyRoomDetector.new()
-	for fi in building.state.floor_ids():
+	for fi in floors:
 		var polys := detector.detect(building.centrelines_on_floor(fi))
+		var rooms: Array = []
 		for i in polys.size():
-			floor_system.add_room(CozyRoom.new("room_%d_%d" % [fi, i], fi, polys[i]))
+			rooms.append(CozyRoom.new("room_%d_%d" % [fi, i], fi, polys[i]))
+		_rooms_by_floor[fi] = rooms
+
+	# A floor that lost its last wall must lose its rooms too.
+	var live_floors := building.state.floor_ids()
+	for fi in _rooms_by_floor.keys().duplicate():
+		if not live_floors.has(fi):
+			_rooms_by_floor.erase(fi)
+
+	floor_system = CozyFloorSystem.new()
+	floor_system.floor_height = FLOOR_H
+	for fi in _rooms_by_floor:
+		for r in _rooms_by_floor[fi]:
+			floor_system.add_room(r)
 
 	# Portals. Fixtures for now — V2-16 style derivation would bind these to
 	# actual openings once openings carry a portal flag.
@@ -376,11 +407,20 @@ func _rebuild_spatial() -> void:
 
 	# Local navigation per room, with furniture registered as obstacles.
 	# This is what makes moving a table change routing (doc #86).
-	_nav_by_room.clear()
+	#
+	# The nav grid is the expensive layer — one cell per 0.25 m — so this is
+	# where "local edit, local rebuild" actually pays. Rooms on untouched floors
+	# keep the grid they already have.
+	var alive := {}
 	for r in floor_system.all_rooms():
-		var nav := CozyLocalNav.new()
-		nav.build(r, _obstacles_on_floor(r.floor_index))
-		_nav_by_room[r.id] = nav
+		alive[r.id] = true
+		if full or floors.has(r.floor_index):
+			var nav := CozyLocalNav.new()
+			nav.build(r, _obstacles_on_floor(r.floor_index))
+			_nav_by_room[r.id] = nav
+	for id in _nav_by_room.keys().duplicate():
+		if not alive.has(id):
+			_nav_by_room.erase(id)
 	local_nav = _nav_by_room.get("room_0_0", null)
 
 	world_navigator = CozyWorldNavigator.new(floor_system, room_graph, _nav_by_room)
@@ -556,7 +596,7 @@ func _end_drag() -> void:
 		last_build_message = "refused: %s" % building.last_rejection
 	else:
 		last_build_message = ""
-		_rebuild_spatial()
+		_rebuild_spatial(building.last_dirty)
 		_refresh_occlusion_fadables()
 	_update_hud()
 
@@ -835,6 +875,39 @@ func _check_terrain() -> void:
 		str(held), building.last_rejection,
 		"OK" if held else "FAIL, the gate did not hold"])
 
+	# --- material cost (doc #34-#36) ---
+	# Cost is derived from geometry, so it must scale with the wall's volume.
+	var probe := CozyWallState.create("probe", Vector3.ZERO, Vector3(8.0, 0.0, 0.0),
+		3.0, 0.25, "wood", 0)
+	var vol := probe.volume()
+	var cost := CozyBuildingDefs.cost_for("wood", vol)
+	print("[cozyv2] cost of an 8x3x0.25 m wood wall (%.1f m3): %s  [%s]" % [
+		vol, CozyBuildingDefs.describe_cost(cost),
+		"OK" if is_equal_approx(vol, 6.0) and float(cost.get("wood", 0)) > 0.0 else "FAIL"])
+
+	var inv := CozyInventory.new()
+	inv.add("wood", 100.0)
+	var afford := inv.can_afford({"wood": 50.0})
+	var paid := inv.spend({"wood": 50.0})
+	print("[cozyv2] inventory spend 50 of 100: paid=%s, left=%d  [%s]" % [
+		str(paid), int(inv.count("wood")),
+		"OK" if afford and paid and is_equal_approx(inv.count("wood"), 50.0) else "FAIL"])
+
+	var refused := not inv.can_afford({"wood": 500.0})
+	var no_partial := inv.count("wood") > 0.0
+	print("[cozyv2] inventory refuses overspend: %s  [%s]" % [
+		str(refused), "OK" if refused and no_partial else "FAIL"])
+
+	# --- dirty region (doc #33) ---
+	# A wall on one floor must not invalidate the other floor's rooms.
+	var rooms1_before := floor_system.rooms_on(1).size()
+	building.submit(CozyBuildingIntent.draw_wall(
+		Vector3(1.0, 0.0, 2.0), Vector3(1.0, 0.0, 5.0), FLOOR_H, WALL_T, "wood", 0))
+	var fl := building.last_dirty.floor_list()
+	var rooms1_after := floor_system.rooms_on(1).size()
+	print("[cozyv2] dirty region after a floor-0 wall: floors=%s  [%s]" % [
+		str(fl), "OK" if fl.size() == 1 and fl[0] == 0 and rooms1_after == rooms1_before else "FAIL"])
+
 
 ## Can an agent standing on the ground floor obtain a route to a work point on
 ## the first floor? That is the whole stack in one query (#41 / #112).
@@ -876,7 +949,7 @@ func _run_live_rebuild_test() -> void:
 	# Bisect the GROUND floor. The autopilot has already finished by this frame,
 	# so the new wall cannot interfere with the walk-through test.
 	_add_wall(Vector3(4.0, 0.0, 0.0), Vector3(4.0, 0.0, HOUSE_D), "wood", 0)
-	_rebuild_spatial()
+	_rebuild_spatial(building.last_dirty)
 	_refresh_occlusion_fadables()
 	var after := floor_system.rooms_on(0).size()
 	print("[cozyv2] floor-0 rooms %d -> %d  [%s]" % [
