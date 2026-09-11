@@ -231,17 +231,17 @@ godot --headless --path ~/cozy-game-v2 --quit-after 900
 ### Phase 4 — Object & interaction
 | # | Block | One-liner | Size | Status |
 |---|---|---|---|---|
-| V2-18 | WorldObject | Unified base for furniture / machine / container / item | M | ⬜ |
-| V2-19 | Free placement | No tile snap + validation (wall / overlap / support / doorway) | M | ⬜ |
-| V2-20 | InteractionPoint | Decouples NPC from furniture entirely | M | ⬜ |
+| V2-18 | WorldObject | Unified base for furniture / machine / container / item | M | ✅ 09-11 (box furniture) |
+| V2-19 | Free placement | No tile snap + validation (wall / overlap / support / doorway) | M | ✅ 09-11 (no snap; validation basic) |
+| V2-20 | InteractionPoint | Decouples NPC from furniture entirely | M | ✅ 09-11 |
 | V2-21 | Containers | Inventory + capacity + access point | S | ⬜ |
 
 ### Phase 5 — NPC
 | # | Block | One-liner | Size | Status |
 |---|---|---|---|---|
 | V2-22 | NPC data model | Identity, attributes, skills, needs, inventory | M | ⬜ |
-| V2-23 | Job / Task | Job = what I'm responsible for; Task = what I do now | L | ⬜ |
-| V2-24 | Cross-floor work | Warehouse → stair → floor 1 → machine, no hard-coding | L | ⬜ |
+| V2-23 | Job / Task | Job = what I'm responsible for; Task = what I do now | L | ✅ 09-11 (simplified) |
+| V2-24 | Cross-floor work | Warehouse → stair → floor 1 → machine, no hard-coding | L | ✅ 09-11 |
 | V2-25 | Schedule & needs | Time-of-day behaviour; hunger / energy drive tasks | M | ⬜ |
 
 ### Phase 6 — Persistence
@@ -302,3 +302,50 @@ files change — nothing in the game logic:
 - `data/materials.gd` — the material table
 
 That is the whole point of doc #134 (Data-Driven Design).
+
+
+---
+
+## The playable slice — 2026-09-11
+
+The loop closes. An NPC starts on the ground floor, finds a free WorkPoint
+upstairs, routes there on its own, and works.
+
+```
+npc completed 1 job(s)  [OK]
+
+(5.93, 0.00, 1.60)   starts on the ground floor
+(3.88, 0.00, 2.53)   walks to the stairwell
+(4.57, 0.42, 4.09)   onto the ramp
+(5.71, 1.78, 4.25)   climbing
+(7.10, 3.01, 4.44)   arrives on floor 1
+(3.43, 3.00, 2.88)   crosses the upper floor, stays at y = 3.00
+(2.41, 3.00, 3.19)   working at the upstairs table
+```
+
+Note what is NOT in `npc_agent.gd`: no staircase logic, no floor special-casing,
+no knowledge that a research table exists. It asks the world for a free point of
+a kind it cares about, plans through the room graph and the local grid, works
+for the point's stated duration, repeats. Doc #112's ban on
+`if npc_is_textile_worker: go_upstairs()` holds.
+
+### Bugs this shook out
+
+Every one of these was found by the headless assertions, not by looking at the
+screen. None would have been obvious while playing.
+
+1. **Stuck detection never reset.** Any walk longer than the timeout was
+   abandoned as "blocked". It must only count time when the agent is NOT moving.
+2. **A ramp's collider is a vertical wall from the south.** A tilted slab
+   presents a perpendicular face along the stairwell edge, which nothing can
+   climb. Ramps must be entered from the low end — and must top out at floor
+   level with a landing, or there is nothing to arrive on.
+3. **Floor slabs had no collision at all.** The upper floor was a picture, not a
+   surface; agents walked off the edge and dropped to the ground floor.
+4. **Running out of waypoints is not the same as arriving.** The agent happily
+   "worked" from the ground floor directly beneath a first-floor table.
+   `_arrive()` now checks the actual distance.
+5. **The stairwell is an obstacle on BOTH floors**, for opposite reasons: solid
+   ramp below, open hole above.
+6. **Interaction points were (0,0,0) at planning time** — their world positions
+   were only updated in `_process`, but planning happens in `_ready`.
