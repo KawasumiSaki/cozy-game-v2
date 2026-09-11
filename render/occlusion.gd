@@ -24,6 +24,20 @@ var targets: Array = []
 
 var fadables: Array = []   ## Anything exposing bodies() + set_fade()
 
+## Supplies the fadables. Asked for on EVERY refresh, so the list cannot go stale.
+##
+## It used to be pushed in, and re-pushed from a handful of call sites. That is a
+## snapshot of a live collection, and the building system REPLACES views as the
+## world changes — a roof follows its room, a local edit rebuilds a wall. Any
+## replacement landing between two pushes leaves a FREED node in the list and the
+## live one missing.
+##
+## Measured 2026-09-12 with the occlusion probe: at frame 91 `roof_views` held one
+## live roof while the list held a dead one, so NO roof ever faded — and nothing
+## reported it, because a fade list is only ever read through entry by entry and a
+## freed entry is skipped in silence.
+var fadable_source: Callable = Callable()
+
 ## Fade geometry that blocks the OTHER characters too (NPCs).
 ##
 ## This defaults to FALSE, and that default is deliberate. With it on, a
@@ -45,8 +59,21 @@ var _faded_by: Dictionary = {}
 
 
 func _process(_delta: float) -> void:
+	refresh()
+
+
+## Recompute the fade set.
+##
+## Split out of `_process` so it can be driven on demand — the occlusion probe
+## steps the followed character from spot to spot and has to ask after each move,
+## within the same frame. It also gives this project's "a per-frame refresh must
+## be idempotent" rule something with a name to assert against.
+func refresh() -> void:
 	if camera == null or not camera.is_inside_tree():
 		return
+
+	if fadable_source.is_valid():
+		fadables = fadable_source.call()
 
 	var watched: Array = []
 	if targets.size() > 0:
@@ -91,6 +118,12 @@ func _process(_delta: float) -> void:
 ## How many fadables are faded right now.
 func faded_count() -> int:
 	return _faded_by.size()
+
+
+## Is this particular fadable faded? The probe needs per-object answers, because
+## "how many faded" cannot tell a correct fade from a missing one.
+func is_faded(f: Object) -> bool:
+	return _faded_by.has(f)
 
 
 ## How many fadables are faded on behalf of someone OTHER than the followed

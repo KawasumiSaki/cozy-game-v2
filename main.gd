@@ -127,6 +127,7 @@ var _is_headless := false
 var _build_test_done := false
 var _npc_test_done := false
 var _occlusion_test_done := false
+var _occlusion_probe_done := false
 var _vfx_test_done := false
 var _outline_test_done := false
 
@@ -823,10 +824,17 @@ func _build_camera() -> void:
 	# Order matters: index 0 is the character the camera follows, and only that
 	# one drives fading by default. See CozyOcclusion.watch_non_followed.
 	occ.targets = [player, npc]
-	# Walls and roofs both fade — a roof that cannot fade hides the player.
-	occ.fadables = []
-	occ.fadables.append_array(building.wall_views)
-	occ.fadables.append_array(building.roof_views)
+	# Walls, roofs AND slabs fade. A roof that cannot fade hides the player, and
+	# so does a slab: at a pitched camera a floor between the camera and anyone
+	# under it hides them exactly the way a wall would (`slab.gd` says so, and
+	# doc #57 is the reason). Slabs were left out of this list — see the note on
+	# `CozyOcclusion.fadable_source`.
+	#
+	# The list is PULLED on every refresh rather than pushed here, because the
+	# building system replaces views as the world changes and a push is a
+	# snapshot: a roof that follows its room left a freed node in this list and
+	# the live roof missing, so no roof ever faded.
+	occ.fadable_source = _current_fadables
 	occlusion = occ
 
 
@@ -971,18 +979,22 @@ func _end_drag() -> void:
 		_say("refused: %s" % building.last_rejection, true, 5.0)
 	else:
 		_rebuild_spatial(building.last_dirty)
-		_refresh_occlusion_fadables()
 	_update_hud()
 
 
-## The building system rebuilds wall views, so the occlusion list is
-## re-collected rather than incrementally maintained.
-func _refresh_occlusion_fadables() -> void:
-	for c in get_children():
-		if c is CozyOcclusion:
-			c.fadables = []
-			c.fadables.append_array(building.wall_views)
-			c.fadables.append_array(building.roof_views)
+## Everything that may fade when it blocks the followed character: the live wall,
+## roof and slab views, and nothing else. `CozyOcclusion` asks for this on every
+## refresh, so a rebuilt view is picked up the same frame and a replaced one
+## cannot linger.
+##
+## Stairs are deliberately absent: `CozyStair.set_fade()` takes an alpha and
+## ignores it, so listing them would add a "fadable" that never fades.
+func _current_fadables() -> Array:
+	var out: Array = []
+	out.append_array(building.wall_views)
+	out.append_array(building.roof_views)
+	out.append_array(building.slab_views)
+	return out
 
 
 func _update_preview() -> void:
@@ -1165,7 +1177,6 @@ func _remove_target(target: Variant) -> void:
 		building.submit(CozyBuildingIntent.remove_wall(node.state.id))
 		_rebuild_spatial(building.last_dirty)
 		_build_roofs()
-		_refresh_occlusion_fadables()
 		_say("wall removed")
 	elif node is CozyWorldObject:
 		objects.erase(node)
@@ -1328,7 +1339,6 @@ func _finish_outline() -> void:
 		_say("built %d wall(s) from outline" % added)
 		_rebuild_spatial(building.last_dirty)
 		_build_roofs()
-		_refresh_occlusion_fadables()
 	_update_hud()
 
 
@@ -1511,6 +1521,10 @@ func _run_headless_stages() -> void:
 	if not _occlusion_test_done and f > 60:
 		_occlusion_test_done = true
 		_check_occlusion()
+	# Probe only, never in the baseline run: see `_probe_occlusion_sweep`.
+	if not _occlusion_probe_done and f > 90 and _has_arg("--cozy-probe-occlusion"):
+		_occlusion_probe_done = true
+		_probe_occlusion_sweep()
 	if not _vfx_test_done and f > 120:
 		_vfx_test_done = true
 		_check_vfx()
@@ -2077,7 +2091,6 @@ func _run_live_rebuild_test() -> void:
 		"wood", 0)
 	divider.add_opening(CozyOpening.door(HOUSE_D * 0.5, 1.2))
 	_rebuild_spatial(building.last_dirty)
-	_refresh_occlusion_fadables()
 	var after := floor_system.rooms_on(0).size()
 	print("[cozyv2] floor-0 rooms %d -> %d  [%s]" % [
 		before, after,
@@ -2742,9 +2755,6 @@ func _apply_world(d: Dictionary) -> void:
 	# and re-links the agent's navigator and object list at the end of it.
 	_rebuild_spatial()
 	_build_roofs()
-	# Walls and roofs are new nodes now, so the occlusion lists still point at
-	# the ones that were freed.
-	_refresh_occlusion_fadables()
 	_update_hud()
 
 
@@ -3097,6 +3107,168 @@ func _check_occlusion() -> void:
 		"outdoors" if outdoors else "indoors",
 		occlusion.debug_summary(), others,
 		"OK" if others == 0 else "FAIL, faded on someone else's behalf"])
+
+	# The fade set must be exactly the LIVE views.
+	#
+	# "0 faded" cannot say whether that holds: it is equally what a list full of
+	# freed nodes produces and what a ray reaching the character unobstructed
+	# produces. Measured 2026-09-12 with the occlusion probe — the list held a
+	# freed roof, the live roof was missing, and all three slabs were missing,
+	# while the line above printed OK.
+	occlusion.refresh()
+	var live := _current_fadables()
+	var freed := 0
+	for f in occlusion.fadables:
+		if not is_instance_valid(f):
+			freed += 1
+	var missing := 0
+	for v in live:
+		if not occlusion.fadables.has(v):
+			missing += 1
+	print("[cozyv2] occlusion fade set: %d listed, %d live, %d freed, %d missing  [%s]" % [
+		occlusion.fadables.size(), live.size(), freed, missing,
+		"OK" if freed == 0 and missing == 0 else "FAIL, the fade set is not the live views"])
+
+
+## PROBE, not an assertion. Walk the followed character around the homestead and
+## report what the occlusion ray actually does from each spot.
+##
+## Added 2026-09-12, the day the camera moved to yaw 0 / pitch 40. The fade set is
+## a property of the VIEWING ANGLE — the rule in `occlusion.gd` was written
+## against a 45/52 oblique that looks down INTO a room, and a front-on camera
+## meets the near wall first instead. Which piece of geometry ends up between the
+## camera and the player is a fact about the scene, not about the source, so it
+## gets measured rather than reasoned about.
+##
+## THE NUMBER THAT MATTERS is the OPAQUE BLOCKER COUNT: geometry sitting on the
+## camera->player ray that did NOT fade. Above zero means the player is genuinely
+## hidden and the fade set is wrong for this angle. `faded=` alone cannot tell a
+## correct fade from a missing one — which is exactly why the existing check's
+## "0 faded" reads as green whatever the camera does.
+##
+## Run:  godot --headless --path <repo> --quit-after 400 -- --cozy-probe-occlusion
+func _probe_occlusion_sweep() -> void:
+	if occlusion == null or camera == null:
+		print("[cozyv2] probe occlusion: NOT BUILT")
+		return
+
+	var keep := player.global_position
+	var spots: Array = [
+		["front yard (spawn)", Vector3(3.25, 0.2, -3.5)],
+		["at the door", Vector3(3.25, 0.2, -1.0)],
+		["inside floor 0 mid", Vector3(4.0, 0.2, 3.0)],
+		["inside floor 0 north", Vector3(4.0, 0.2, 5.0)],
+		["inside floor 1", Vector3(2.0, 3.2, 3.0)],
+		["north yard", Vector3(4.0, 0.2, 9.0)],
+		["east yard", Vector3(11.0, 0.2, 3.0)],
+		["west yard", Vector3(-3.0, 0.2, 3.0)],
+	]
+
+	print("[cozyv2] probe occlusion sweep: yaw %.0f pitch %.0f %s, %d fadable(s)" % [
+		camera.yaw_deg, camera.pitch_deg,
+		"perspective" if camera.projection == Camera3D.PROJECTION_PERSPECTIVE else "orthographic",
+		occlusion.fadables.size()])
+	for f in occlusion.fadables:
+		if not is_instance_valid(f):
+			print("[cozyv2]   fadable: FREED NODE STILL IN THE LIST")
+			continue
+		print("[cozyv2]   fadable: %s (bodies=%d)" % [_describe_fadable(f), f.bodies().size()])
+	print("[cozyv2]   roof_views=%d slab_views=%d stair_views=%d" % [
+		building.roof_views.size(), building.slab_views.size(), building.stair_views.size()])
+
+	for spot in spots:
+		player.global_position = spot[1]
+		camera.snap_to_target()
+		occlusion.refresh()
+		_probe_occlusion_at(spot[0])
+
+	# A probe reads the world; it must hand it back the way it found it.
+	player.global_position = keep
+	camera.snap_to_target()
+	occlusion.refresh()
+
+
+## One spot: every collider along the camera->player ray, in order, each labelled
+## with whether it faded.
+func _probe_occlusion_at(label: String) -> void:
+	var from: Vector3 = camera.global_position
+	var to: Vector3 = player.global_position + Vector3(0.0, CozyOcclusion.AIM_HEIGHT, 0.0)
+
+	var hits: Array = []
+	var exclude: Array[RID] = [player.get_rid()]
+	var space := camera.get_world_3d().direct_space_state
+	for _i in 24:
+		var q := PhysicsRayQueryParameters3D.create(from, to)
+		q.collide_with_areas = false
+		q.exclude = exclude
+		var h := space.intersect_ray(q)
+		if h.is_empty():
+			break
+		hits.append(h)
+		exclude.append(h["rid"])
+
+	var faded_n := 0
+	var opaque_n := 0
+	var parts: Array[String] = []
+	for h in hits:
+		var f: Object = _fadable_owning(h["collider"])
+		var what := _describe_collider(h["collider"])
+		if f == null:
+			opaque_n += 1
+			parts.append("%s -> OPAQUE, not in `fadables`" % what)
+		elif occlusion.is_faded(f):
+			faded_n += 1
+			parts.append("%s -> faded" % what)
+		else:
+			opaque_n += 1
+			parts.append("%s -> OPAQUE, in `fadables` but did not fade" % what)
+
+	print("[cozyv2] probe %s | player=(%.1f,%.1f,%.1f) cam=(%.1f,%.1f,%.1f) ray=%d faded=%d opaque=%d  [%s]" % [
+		label,
+		player.global_position.x, player.global_position.y, player.global_position.z,
+		from.x, from.y, from.z,
+		hits.size(), faded_n, opaque_n,
+		"CLEAR" if opaque_n == 0 else "PLAYER HIDDEN"])
+	if not parts.is_empty():
+		print("[cozyv2]   on the ray: %s" % ", ".join(parts))
+
+
+## Name a hit collider by the generated view that owns it. Node names in this
+## project are engine-generated (`@Node3D@88`), so `name` identifies nothing —
+## the class of the PARENT is what says whether this was a wall, a slab or a roof.
+func _describe_collider(c: Object) -> String:
+	var p: Node = c.get_parent()
+	var d := _describe_fadable(p)
+	return d if d != "?" else "unidentified collider at %s" % c.get_path()
+
+
+func _describe_fadable(f: Object) -> String:
+	if not is_instance_valid(f):
+		return "FREED (still in the list!)"
+	if f is CozyWall:
+		return "wall %s" % _state_id(f.state)
+	if f is CozyRoof:
+		return "roof %s" % _state_id(f.state)
+	if f is CozySlab:
+		return "slab %s" % _state_id(f.state)
+	if f is CozyStair:
+		return "stair %s" % _state_id(f.state)
+	return "?"
+
+
+func _state_id(s: Object) -> String:
+	return "?" if s == null else str(s.id)
+
+
+## Which fadable, if any, owns this collider. Walls are several bodies, so a hit
+## body has to be traced back to the wall that fades as a whole.
+func _fadable_owning(collider: Object) -> Object:
+	for w in occlusion.fadables:
+		if not is_instance_valid(w):
+			continue
+		if w.bodies().has(collider):
+			return w
+	return null
 
 
 ## The resident's data model (V2-22, doc #43 / 愿景 §9-§10).

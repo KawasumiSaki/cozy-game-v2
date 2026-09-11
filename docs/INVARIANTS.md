@@ -247,6 +247,38 @@ This bites because `main.gd` legitimately reads `.state` off a **wall**
 (`CozyWallState`). Copying that line for an NPC yields an int — no error, no
 crash, no warning. Just a blank panel. Nothing in the type system stops you.
 
+## A fade list is a LIVE collection, not something you push once
+
+`CozyOcclusion.fadables` used to be pushed in from a handful of call sites. The
+building system **replaces** views as the world changes — a roof follows its
+room, a local edit rebuilds a wall — so any replacement landing between two
+pushes left a **freed node in the list and the live one missing**.
+
+Measured 2026-09-12 with the occlusion probe: at frame 91 `roof_views` held one
+live roof while the fade list held a dead one, and **no roof ever faded**. The
+list is now pulled from `fadable_source` on every refresh, which cannot go stale.
+
+Two corollaries:
+
+- **Anything that collects a list of views has this bug available to it.** Ask
+  what replaces those views, and what happens to the list when they are.
+- **A fade count cannot tell a correct fade from a missing one.** `0 faded` is
+  equally the output of "nothing is in the way", "the ray hit nothing at all" and
+  "the list is full of freed nodes". Assert the SET — `N listed, M live, freed,
+  missing` — never the count. The old check printed `[OK]` through all three.
+
+## A declared fadable that is never registered does not fade
+
+`CozySlab` opens with "It is FADABLE on purpose"; `slab.gd` implements `bodies()`
+and `set_fade()`; and this file already required it — a slab between the camera
+and anyone under it hides them exactly the way a wall would. **Nothing ever added
+a slab to the fade list.** Fifth instance of the same pattern; see "A declared
+capability with no consumer".
+
+Corollary: `CozyStair.set_fade(a)` takes the alpha and drops it (`_a` is never
+read). Stairs are deliberately NOT in the list — listing one would add a fadable
+that never fades, which is the same defect wearing the opposite mask.
+
 ---
 
 ## Bugs this project has already paid for
@@ -274,8 +306,10 @@ log (`02-开发日志/游戏开发日志.md`).
 | 16 | `BuildingState.to_dict()` stored walls only → a load dropped every slab and stair | save/load round-trip |
 | 17 | `JSON.stringify` wrote `PackedByteArray` as a String → the file was unreadable while the in-memory round trip passed | pushing the dict through a real serializer |
 | 18 | `_sync_views` matched by id and never re-pointed `v.state` → views refreshed from replaced state | wall-connection (corner) assertion, after a live load |
+| 19 | The fade list held a freed roof, missed the live one, and had never contained a slab → no roof ever faded | occlusion probe (`occlusion fade set`) |
+| 20 | `0 faded` printed OK while the fade set was wrong — a count that several different wrong worlds produce | same probe, once bug 19 was fixed |
 
-**Seventeen of the eighteen were found by an assertion, not by looking at the
+**Eighteen of the twenty were found by an assertion, not by looking at the
 screen.** Several were invisible in a still frame. That is the whole argument
 for the assertion discipline in `03-流程/更新方案.md`.
 
