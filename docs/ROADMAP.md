@@ -93,7 +93,7 @@
 |---|---|---|
 | ART-09 | Fixed camera art profile | ✅ |
 | ART-10 | Pixel asset library | ✅ |
-| ART-11 | Terrain scatter | ⬜ |
+| ART-11 | Terrain scatter | ✅ |
 | ART-12 | Building material library | 🚧 assembly done, textures await assets |
 | ART-13 | Pixel VFX library | ⬜ |
 | ART-14 | NPC sprite pipeline | ⬜ |

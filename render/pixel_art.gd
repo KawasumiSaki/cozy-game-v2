@@ -108,6 +108,79 @@ static func _outline(img: Image, line: Color) -> ImageTexture:
 	return ImageTexture.create_from_image(out)
 
 
+## Placeholder ground vegetation. Anchored at the BOTTOM CENTRE — the sprite
+## stands ON the ground, which is the anchor rule in docs/ART_PROFILE.md.
+##
+## Everything here is procedural, per doc 58.1: art may be empty, but no system
+## may depend on art existing. Real sprites replace these without touching the
+## scatter rules.
+static func make_grass_tuft_texture(seed_val := 1) -> ImageTexture:
+	const W := 16
+	const H := 16
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val
+	var base := Color(0.36, 0.62, 0.28)
+	for b in 4:
+		var x0 := 4 + b * 3
+		var h := 7 + rng.randi_range(0, 5)
+		var lean := rng.randi_range(-1, 1)
+		for i in h:
+			var y := H - 2 - i
+			var x := x0 + int(round(float(lean) * float(i) / float(h)))
+			var shade := 1.0 - float(i) * 0.03
+			img.set_pixel(x, y, Color(base.r * shade, base.g * shade, base.b * shade, 1.0))
+	return _outline(img, Color(0.16, 0.26, 0.14, 1.0))
+
+
+static func make_flower_texture(petal := Color(0.94, 0.86, 0.42), seed_val := 2) -> ImageTexture:
+	const W := 16
+	const H := 16
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var stem := Color(0.34, 0.56, 0.28)
+	for y in range(8, H - 1):
+		img.set_pixel(8, y, stem)
+	for d in [Vector2i(0, 0), Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+		img.set_pixel(8 + d.x, 6 + d.y, petal)
+	img.set_pixel(8, 6, Color(0.92, 0.74, 0.28))
+	return _outline(img, Color(0.20, 0.24, 0.14, 1.0))
+
+
+static func make_pebble_texture(base := Color(0.56, 0.56, 0.58), seed_val := 3) -> ImageTexture:
+	const W := 16
+	const H := 16
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val
+	for y in range(9, H - 1):
+		for x in range(4, 12):
+			var n := rng.randf_range(-0.05, 0.05)
+			img.set_pixel(x, y, Color(
+				clampf(base.r + n, 0.0, 1.0), clampf(base.g + n, 0.0, 1.0),
+				clampf(base.b + n, 0.0, 1.0), 1.0))
+	return _outline(img, Color(0.24, 0.24, 0.26, 1.0))
+
+
+## Billboarding material for scattered vegetation. Fixed-Y so a sprite never
+## tips with the camera (docs/ART_PROFILE.md), alpha-cut so depth sorting stays
+## correct and walls still occlude it.
+static func make_billboard_material(tex: Texture2D) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_texture = tex
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	m.alpha_scissor_threshold = 0.5
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.roughness = 1.0
+	m.metallic_specular = 0.0
+	return m
+
+
 ## Build a 3D material with nearest-neighbour filtering forced on.
 ## Pixel art must never be smoothed (doc #35).
 static func make_material(tex: Texture2D, uv_scale := Vector3.ONE) -> StandardMaterial3D:

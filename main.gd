@@ -58,6 +58,7 @@ var building: CozyBuildingSystem = null
 var terrain: CozyTerrainSystem = null
 var terrain_renderer: CozyTerrainRenderer = null
 var assets: CozyAssetLibrary = null
+var scatter: CozyVegetationScatter = null
 var roofs: Array[CozyRoof] = []
 var objects: Array[CozyWorldObject] = []
 
@@ -118,6 +119,7 @@ func _ready() -> void:
 	_build_roof()
 	_place_initial_furniture()
 	_rebuild_spatial()
+	_build_scatter()
 	_build_characters()
 	_build_camera()
 	_build_hud()
@@ -159,6 +161,34 @@ func _build_environment() -> void:
 func _build_assets() -> void:
 	assets = CozyAssetLibrary.new()
 	assets.load_dir("res://assets/art")
+
+
+# ---------------------------------------------------------------- scatter
+
+## Vegetation scatter (V2.1 doc E.20 / 58.4).
+##
+## Built after the building system so it can see what has been built: the
+## `village` biome and the near-building thinning rule (E.20.2) both depend on
+## it. Rebuilt whenever the world changes underneath, which is the payoff of
+## biomes being derived rather than stored.
+func _build_scatter() -> void:
+	scatter = CozyVegetationScatter.new()
+	add_child(scatter)
+	scatter.setup(terrain, assets, 20260911)
+	scatter.building_points = _building_points()
+	scatter.rebuild()
+
+
+## World positions of built things. A wall's NODE sits at the origin — its
+## geometry is baked into vertices — so midpoints are what has to be reported.
+func _building_points() -> Array:
+	var out: Array = []
+	for ws in building.state.walls:
+		out.append(ws.midpoint())
+	for o in objects:
+		if is_instance_valid(o):
+			out.append(o.global_position)
+	return out
 
 
 # ---------------------------------------------------------------- terrain
@@ -803,6 +833,7 @@ func _report() -> void:
 
 	_check_camera()
 	_check_assets()
+	_check_scatter()
 	_check_nav()
 	_check_terrain()
 	_check_wall_connection()
@@ -1103,6 +1134,53 @@ func _check_openings() -> void:
 		print("[cozyv2]   %-22s %-5s  [%s]" % [
 			label, "solid" if is_solid else "open", "OK" if ok else "FAIL"])
 	print("[cozyv2] openings  [%s]" % ("OK" if all_ok else "FAIL"))
+
+
+## Vegetation scatter (V2.1 doc E.20 / E.21 / #61).
+##
+## Four properties, each checked separately:
+##   1. it actually places things, at a plausible density
+##   2. instancing holds — thousands of plants in a handful of draw calls (#61)
+##   3. density responds to terrain and to buildings (E.20.1 / E.20.2)
+##   4. it is DETERMINISTIC, so the field survives a save and reload (E.21)
+func _check_scatter() -> void:
+	if scatter == null:
+		print("[cozyv2] scatter: NOT BUILT  [FAIL]")
+		return
+
+	var total := scatter.total_instances()
+	var meshes := scatter.mesh_count()
+	print("[cozyv2] scatter: %d instance(s) in %d mesh(es), %d candidate(s)  [%s]" % [
+		total, meshes, scatter.sample_candidates(),
+		"OK" if total > 0 and meshes > 0 else "FAIL, nothing placed"])
+	print("[cozyv2] scatter instancing: %d instance(s) -> %d draw call(s)  [%s]" % [
+		total, meshes, "OK" if meshes <= 4 else "FAIL, too many meshes"])
+
+	# E.20.1 — the density field must respond to what is under it.
+	var on_grass := CozyScatterRule.base_probability("grass_tuft",
+		CozyBiome.GRASSLAND, "grass", false)
+	var on_sand := CozyScatterRule.base_probability("grass_tuft",
+		CozyBiome.ROCKY, "sand", false)
+	var on_water := CozyScatterRule.base_probability("grass_tuft",
+		CozyBiome.SHORE, "water", false)
+	print("[cozyv2] scatter density: grass=%.2f sand=%.2f water=%.2f  [%s]" % [
+		on_grass, on_sand, on_water,
+		"OK" if on_grass > 0.3 and on_sand == 0.0 and on_water == 0.0 else "FAIL"])
+
+	# E.20.2 — ground near a building is walked on, so it thins out.
+	var away := CozyScatterRule.base_probability("grass_tuft",
+		CozyBiome.GRASSLAND, "grass", false)
+	var near := CozyScatterRule.base_probability("grass_tuft",
+		CozyBiome.VILLAGE, "grass", true)
+	print("[cozyv2] scatter near building: %.2f vs %.2f open  [%s]" % [
+		near, away, "OK" if near < away else "FAIL, no thinning"])
+
+	# E.21 — the same world must rebuild identically.
+	var fp1 := scatter.fingerprint()
+	scatter.rebuild()
+	var fp2 := scatter.fingerprint()
+	print("[cozyv2] scatter deterministic: fingerprint %d vs %d  [%s]" % [
+		fp1, fp2, "OK" if fp1 == fp2 and fp1 != 0 else "FAIL, field rearranged"])
 
 
 ## Asset library (V2.1 doc E.3 / E.4).
