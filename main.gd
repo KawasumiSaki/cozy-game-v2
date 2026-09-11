@@ -55,6 +55,7 @@ var hud: Label = null
 
 var building: CozyBuildingSystem = null
 var terrain: CozyTerrainSystem = null
+var terrain_renderer: CozyTerrainRenderer = null
 var roofs: Array[CozyRoof] = []
 var objects: Array[CozyWorldObject] = []
 
@@ -65,6 +66,7 @@ var local_nav: CozyLocalNav = null
 var _nav_by_room: Dictionary = {}
 
 var build_mode := false
+var last_build_message := ""
 var tool_idx := 0
 var _drag_active := false
 var _drag_start := Vector3.ZERO
@@ -85,12 +87,17 @@ func _ready() -> void:
 		print("[cozyv2] headless self-check start")
 	_build_environment()
 	_build_terrain()
+	# The homestead starts on ground that has already been cleared. Without
+	# this the terrain gate (doc #12) would refuse the very first wall.
+	_prepare_starter_plot()
 	_build_ground()
+
 	# The building system owns BuildingState and generates every wall view from
 	# it (doc #18). Nothing else in this file is allowed to create a wall node.
 	building = CozyBuildingSystem.new()
 	add_child(building)
 	building.setup(self)
+	building.terrain = terrain        # ground must approve placements (doc #12)
 	_build_house()
 	_build_roof()
 	_place_initial_furniture()
@@ -136,6 +143,26 @@ func _build_terrain() -> void:
 	terrain.setup(64.0, 64.0,
 		Vector2(HOUSE_W * 0.5 - 32.0, HOUSE_D * 0.5 - 32.0))
 
+	terrain_renderer = CozyTerrainRenderer.new()
+	add_child(terrain_renderer)
+	terrain_renderer.setup(terrain)
+
+
+## Clear a plot around the house so the terrain gate has something to approve.
+##
+## This is the doc's own opening beat (#10): you do not get to build on virgin
+## grass, you clear it first. The homestead simply starts already cleared —
+## the mechanic is the same one the player uses, driven through an Intent.
+func _prepare_starter_plot() -> void:
+	var plot := PackedVector2Array([
+		Vector2(-3.0, -3.0),
+		Vector2(HOUSE_W + 3.0, -3.0),
+		Vector2(HOUSE_W + 3.0, HOUSE_D + 3.0),
+		Vector2(-3.0, HOUSE_D + 3.0),
+	])
+	terrain.apply_intent(CozyTerrainIntent.clear_polygon(plot))
+	terrain_renderer.rebuild_dirty()
+
 
 func _build_ground() -> void:
 	var grass := CozyPixelArt.make_texture(16, Color(0.44, 0.72, 0.36), 0.055, 1337)
@@ -146,6 +173,9 @@ func _build_ground() -> void:
 	pm.size = Vector2(400.0, 400.0)
 	ground.mesh = pm
 	ground.material_override = CozyPixelArt.make_material(grass, Vector3(200.0, 200.0, 1.0))
+	# Sits just under the terrain field so the two never z-fight. It is what the
+	# world looks like beyond the terrain field's edge.
+	ground.position = Vector3(0.0, -0.1, 0.0)
 	add_child(ground)
 
 	var body := StaticBody3D.new()
@@ -519,8 +549,15 @@ func _end_drag() -> void:
 		return   # A click, not a drag.
 
 	_add_wall(_drag_start, _drag_end, "wood", _build_floor_index())
-	_rebuild_spatial()
-	_refresh_occlusion_fadables()
+
+	# The terrain gate lives in the building system, so a refusal shows up as
+	# "nothing was added". Report it rather than silently doing nothing.
+	if building.last_rejection != "":
+		last_build_message = "refused: %s" % building.last_rejection
+	else:
+		last_build_message = ""
+		_rebuild_spatial()
+		_refresh_occlusion_fadables()
 	_update_hud()
 
 
@@ -776,6 +813,28 @@ func _check_terrain() -> void:
 
 	terrain.clear_dirty()
 
+	# --- the building gate (doc #12) ---
+	# Virgin grass must refuse; the cleared homestead plot must accept.
+	var on_grass := CozyFoundationValidator.validate(terrain, Rect2(30.0, 30.0, 2.0, 2.0))
+	print("[cozyv2] foundation on virgin grass: %s (%s)  [%s]" % [
+		CozyFoundationValidator.result_name(on_grass["result"]), on_grass["reason"],
+		"OK" if on_grass["result"] == CozyFoundationValidator.Result.INVALID else "FAIL"])
+
+	var on_plot := CozyFoundationValidator.validate(terrain, Rect2(1.0, 1.0, 2.0, 1.0))
+	print("[cozyv2] foundation on cleared plot: %s  [%s]" % [
+		CozyFoundationValidator.result_name(on_plot["result"]),
+		"OK" if on_plot["result"] == CozyFoundationValidator.Result.VALID else "FAIL"])
+
+	# The gate must hold at the SYSTEM level, not merely in the validator.
+	# A rule that only exists in a mouse handler is not a rule (doc #70).
+	var before_n := building.state.wall_count()
+	building.submit(CozyBuildingIntent.draw_wall(
+		Vector3(30.0, 0.0, 30.0), Vector3(34.0, 0.0, 30.0), FLOOR_H, WALL_T, "wood", 0))
+	var held := building.state.wall_count() == before_n
+	print("[cozyv2] wall on virgin grass: refused=%s (%s)  [%s]" % [
+		str(held), building.last_rejection,
+		"OK" if held else "FAIL, the gate did not hold"])
+
 
 ## Can an agent standing on the ground floor obtain a route to a work point on
 ## the first floor? That is the whole stack in one query (#41 / #112).
@@ -926,6 +985,8 @@ func _update_hud() -> void:
 	var mode := "MOVE"
 	if build_mode:
 		mode = "BUILD [%s]  TAB cycles" % _current_tool()
+	if last_build_message != "":
+		mode += "\n!" + last_build_message
 	hud.text = "CozyVale V2\n%s\nWASD move | Q/E rotate | R/F pitch | wheel zoom | B build\npos %.1f,%.1f,%.1f  floor %d  room %s\nwalls %d  objects %d  rooms %d\nNPC: %s" % [
 		mode, p.x, p.y, p.z, player.current_floor(FLOOR_H),
 		(room.id if room != null else "outdoors"),

@@ -17,6 +17,16 @@ signal structure_changed
 var state := CozyBuildingState.new()
 var wall_views: Array[CozyWall] = []
 
+## Optional terrain gate (doc #12). When set, a DRAW_WALL intent must be
+## approved by the ground before it may change state. The rule lives HERE, not
+## in the UI — doc #70 puts rules and solvers between State and Generator, and
+## a placement rule that only exists in a mouse handler is not a rule.
+var terrain: CozyTerrainSystem = null
+
+## Why the last intent was refused, for the UI to surface. Doc #72 requires an
+## explicit reason: "不允许建筑时有明确原因."
+var last_rejection := ""
+
 var _view_root: Node3D = null
 
 
@@ -41,6 +51,8 @@ func submit_many(intents: Array) -> CozyWallState:
 	for intent in intents:
 		match intent.kind:
 			CozyBuildingIntent.Kind.DRAW_WALL:
+				if not _ground_approves(intent):
+					continue
 				result = state.add_wall(intent.a, intent.b, intent.height,
 					intent.thickness, intent.material_id, intent.floor_id)
 				for o in intent.openings:
@@ -109,6 +121,32 @@ func _sync_views(dirty: Dictionary) -> void:
 			_view_root.add_child(v)
 			v.setup_from(ws)
 			wall_views.append(v)
+
+
+# ---------------------------------------------------------------- terrain gate
+
+## Ask the ground for permission (doc #12). A no-op until a terrain system is
+## attached, so the building system stays usable on its own.
+func _ground_approves(intent: CozyBuildingIntent) -> bool:
+	if terrain == null:
+		return true
+
+	# A wall's footprint is its span widened by its thickness, since the wall is
+	# centred on the centre-line.
+	var pad: float = intent.thickness + 0.05
+	var r := Rect2(
+		Vector2(minf(intent.a.x, intent.b.x) - pad, minf(intent.a.z, intent.b.z) - pad),
+		Vector2(absf(intent.b.x - intent.a.x) + pad * 2.0,
+			absf(intent.b.z - intent.a.z) + pad * 2.0))
+
+	var verdict := CozyFoundationValidator.validate(terrain, r)
+	var res: int = verdict["result"]
+	if res == CozyFoundationValidator.Result.INVALID:
+		last_rejection = String(verdict["reason"])
+		return false
+
+	last_rejection = ""
+	return true
 
 
 # ---------------------------------------------------------------- queries
