@@ -141,6 +141,87 @@ func set_buildability_at(world_x: float, world_z: float, b: int) -> bool:
 	return true
 
 
+# ---------------------------------------------------------------- intent entry
+
+## Apply a land edit. This is the ONLY way terrain changes (doc #1.4): the same
+## rule the building system follows, applied to ground. Returns a summary.
+func apply_intent(intent: CozyTerrainIntent) -> Dictionary:
+	var cells := intent.cells(CELL_SIZE, origin)
+	var touched := 0
+
+	match intent.operation:
+		CozyTerrainIntent.Op.CLEAR:
+			for c in cells:
+				if _clear_cell(c):
+					touched += 1
+		CozyTerrainIntent.Op.PAINT_MATERIAL:
+			for c in cells:
+				if set_material_at(c.x, c.y, intent.material_id):
+					touched += 1
+		CozyTerrainIntent.Op.DIG:
+			for c in cells:
+				if _offset_height(c, -intent.depth):
+					touched += 1
+		CozyTerrainIntent.Op.FILL:
+			for c in cells:
+				if _offset_height(c, intent.depth):
+					touched += 1
+		CozyTerrainIntent.Op.FLATTEN:
+			touched = _flatten(cells)
+
+	return {"cells": cells.size(), "touched": touched, "dirty": _dirty.size()}
+
+
+## doc #10 — clearing vegetation turns Grass into Soil, and the ground becomes
+## buildable.
+##
+## The doc's full chain is Grassland -> CLEARED -> PREPARED -> BUILDABLE. This
+## collapses the two preparation steps into the single action the doc describes
+## the PLAYER performing ("clean a patch of lawn"), and lands on the end state
+## the doc states for it (Buildable = true). CLEARED and PREPARED stay in the
+## enum for a later multi-step flow; nothing drives them yet.
+func _clear_cell(c: Vector2) -> bool:
+	var loc := locate(c.x, c.y)
+	if loc.is_empty():
+		return false
+	var chunk: CozyTerrainChunk = chunks[loc[0]]
+	var changed := false
+	if chunk.material_id_at(loc[1], loc[2]) == "grass":
+		changed = chunk.set_material(loc[1], loc[2], "soil") or changed
+	# Soil's own default already resolves to BUILDABLE (doc #7), so this is a
+	# no-op on a fresh conversion and only fires when re-clearing.
+	changed = chunk.set_buildability(loc[1], loc[2], CozyBuildability.BUILDABLE) or changed
+	if changed:
+		_dirty[loc[0]] = true
+	return changed
+
+
+func _offset_height(c: Vector2, delta: float) -> bool:
+	var loc := locate(c.x, c.y)
+	if loc.is_empty():
+		return false
+	var chunk: CozyTerrainChunk = chunks[loc[0]]
+	var h := chunk.height_at(loc[1], loc[2]) + delta
+	if not chunk.set_height(loc[1], loc[2], h):
+		return false
+	_dirty[loc[0]] = true
+	return true
+
+
+func _flatten(cells: Array) -> int:
+	if cells.is_empty():
+		return 0
+	var sum := 0.0
+	for c in cells:
+		sum += height_at(c.x, c.y)
+	var mean := sum / float(cells.size())
+	var n := 0
+	for c in cells:
+		if set_height_at(c.x, c.y, mean):
+			n += 1
+	return n
+
+
 # ---------------------------------------------------------------- dirty region
 
 ## Chunk coords edited since the last clear (doc #33: local edit, local rebuild).

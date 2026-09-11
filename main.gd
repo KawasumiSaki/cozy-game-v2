@@ -739,6 +739,41 @@ func _check_terrain() -> void:
 	# This instance was never added to the tree, so nothing else will free it.
 	restored.free()
 
+	# --- editing: shape + operation + material (doc #8 / #9) ---
+	#
+	# The doc's worked example (#10) is "clear a triangular patch of lawn". A
+	# triangle is not a special shape — it is a 3-point polygon, and the same
+	# rasterizer handles brush circles and rectangles too.
+	terrain.clear_dirty()
+	var tri := PackedVector2Array([
+		Vector2(12.0, 12.0), Vector2(20.0, 12.0), Vector2(16.0, 20.0)])
+	var res := terrain.apply_intent(CozyTerrainIntent.clear_polygon(tri))
+	var dirty_n: int = terrain.dirty_chunks().size()
+
+	print("[cozyv2] terrain clear polygon: %d cells, %d changed, %d chunk(s) dirty  [%s]" % [
+		res["cells"], res["touched"], dirty_n,
+		"OK" if res["touched"] > 0 and dirty_n > 0 and dirty_n < terrain.chunk_count() else "FAIL"])
+
+	# Inside the polygon: grass -> soil, not buildable -> buildable.
+	var in_m := terrain.material_id_at(16.0, 15.0)
+	var in_b := terrain.buildability_at(16.0, 15.0)
+	print("[cozyv2]   inside  (16,15): %s / %s  [%s]" % [
+		in_m, CozyBuildability.name_of(in_b),
+		"OK" if in_m == "soil" and CozyBuildability.accepts_building(in_b) else "FAIL"])
+
+	# Outside it, nothing may have moved.
+	var out_m := terrain.material_id_at(11.0, 15.0)
+	var out_b := terrain.buildability_at(11.0, 15.0)
+	print("[cozyv2]   outside (11,15): %s / %s  [%s]" % [
+		out_m, CozyBuildability.name_of(out_b),
+		"OK" if out_m == "grass" and out_b == CozyBuildability.NATURAL else "FAIL"])
+
+	# Dig lowers the surface; the intent carries the depth.
+	terrain.apply_intent(CozyTerrainIntent.dig_polygon(tri, 0.5))
+	var h := terrain.height_at(16.0, 15.0)
+	print("[cozyv2] terrain dig 0.5 m: height=%.2f  [%s]" % [
+		h, "OK" if is_equal_approx(h, -0.5) else "FAIL"])
+
 	terrain.clear_dirty()
 
 
