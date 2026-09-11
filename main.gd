@@ -34,6 +34,7 @@ var player: CozyCharacter = null
 var npc: CozyCharacter = null
 var walls: Array[CozyWall] = []
 var hud: Label = null
+var floor_system: CozyFloorSystem = null
 
 var _is_headless := false
 
@@ -47,9 +48,11 @@ func _ready() -> void:
 	_build_environment()
 	_build_ground()
 	_build_house()
+	_detect_rooms()
 	_build_characters()
 	_build_camera()
 	_build_hud()
+	_report_rooms()
 
 
 # ---------------------------------------------------------------- environment
@@ -178,6 +181,60 @@ func _add_box(parent: Node3D, center: Vector3, box_size: Vector3, mat_id: String
 	return mi
 
 
+# ---------------------------------------------------------------- rooms (V2-06)
+
+## Rooms are DERIVED, never authored (doc #26). Feed the wall graph for each
+## floor through a planar face traversal and the enclosed regions fall out.
+func _detect_rooms() -> void:
+	floor_system = CozyFloorSystem.new()
+	floor_system.floor_height = FLOOR_H
+
+	# Group wall centre-lines by floor.
+	var by_floor := {}
+	for w in walls:
+		var fi := floor_system.floor_index_at(w.midpoint().y)
+		if not by_floor.has(fi):
+			by_floor[fi] = []
+		by_floor[fi].append([Vector2(w.start.x, w.start.z), Vector2(w.end.x, w.end.z)])
+
+	var detector := CozyRoomDetector.new()
+	for fi in by_floor.keys():
+		var segs: Array = by_floor[fi]
+		segs.append_array(_door_bridges(fi))
+		var polys := detector.detect(segs)
+		for i in polys.size():
+			floor_system.add_room(CozyRoom.new("room_%d_%d" % [fi, i], fi, polys[i]))
+
+
+## Doorways are physically open, but topologically they CLOSE a room — a door
+## separates two spaces while remaining passable (doc #29: a Door knows both
+## room_a and room_b). So detection bridges the opening.
+func _door_bridges(floor_index: int) -> Array:
+	if floor_index != 0:
+		return []
+	# The 1.5m doorway cut into the south wall (x 2.5 .. 4.0 at z = 0).
+	return [[Vector2(2.5, 0.0), Vector2(4.0, 0.0)]]
+
+
+func _report_rooms() -> void:
+	if not _is_headless or floor_system == null:
+		return
+	print("[cozyv2] detected rooms:")
+	print(floor_system.describe())
+
+	# Assert the full lookup chain: wall graph -> polygon -> floor -> world point.
+	_check_room_at(Vector3(4.0, 0.1, 3.0), "room_0_0")            # inside, ground floor
+	_check_room_at(Vector3(4.0, FLOOR_H + 0.1, 3.0), "room_1_0")  # same xz, upper floor
+	_check_room_at(Vector3(4.0, 0.1, -6.0), "outdoors")           # outside the footprint
+
+
+func _check_room_at(pos: Vector3, expected: String) -> void:
+	var r := floor_system.room_at(pos)
+	var got := r.id if r != null else "outdoors"
+	print("[cozyv2] room_at(%s) -> %s  [%s]" % [
+		pos, got, "OK" if got == expected else "FAIL, expected " + expected])
+
+
 # ---------------------------------------------------------------- characters
 
 func _build_characters() -> void:
@@ -299,5 +356,7 @@ func _autopilot_dir() -> Vector3:
 
 func _update_hud() -> void:
 	var p := player.global_position
-	hud.text = "CozyVale V2  Phase 0\nWASD move | Q/E rotate | R/F pitch | wheel zoom\npos  %.1f, %.1f, %.1f\nfloor  %d\nwalls  %d" % [
-		p.x, p.y, p.z, player.current_floor(FLOOR_H), walls.size()]
+	var room := floor_system.room_at(p) if floor_system != null else null
+	hud.text = "CozyVale V2  Phase 0\nWASD move | Q/E rotate | R/F pitch | wheel zoom\npos   %.1f, %.1f, %.1f\nfloor %d\nroom  %s\nwalls %d" % [
+		p.x, p.y, p.z, player.current_floor(FLOOR_H),
+		(room.id if room != null else "outdoors"), walls.size()]

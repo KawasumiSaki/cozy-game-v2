@@ -39,6 +39,24 @@ frame 206  (7.53, 2.80,  4.08)  floor=1   arrives, stops
 Proven: gravity, doorway traversal, stair climbing, floor detection,
 occlusion raycasting — zero errors, zero warnings.
 
+**Rooms are now derived from the wall graph** (V2-06). No room is authored by
+hand — the detector runs a planar face traversal over the wall segments and the
+enclosed regions fall out:
+
+```
+floor 0 (y=0.0): 1 room — 48.0 m2, 6 verts   (8x6; 6 verts because the
+                                              doorway splits the south wall)
+floor 1 (y=3.0): 1 room — 48.0 m2, 4 verts   (clean rectangle ring)
+
+room_at((4.0, 0.1, 3.0)) -> room_0_0   [OK]
+room_at((4.0, 3.1, 3.0)) -> room_1_0   [OK]   same XZ, upper floor
+room_at((4.0, 0.1, -6.0)) -> outdoors  [OK]
+```
+
+Doorways are physically open but topologically **close** a room — a door
+separates two spaces while staying passable (doc #29). Detection therefore
+bridges the opening.
+
 Run it yourself:
 ```bash
 godot --headless --path ~/cozy-game-v2 --quit-after 900
@@ -60,8 +78,8 @@ godot --headless --path ~/cozy-game-v2 --quit-after 900
 ### Phase 1 — Spatial core
 | # | Block | One-liner | Size | Status |
 |---|---|---|---|---|
-| V2-05 | Floor system | Elevation registry; floor as a first-class spatial layer | S | ⬜ |
-| V2-06 | Room detection | Closed regions auto-derived from the wall graph | M | ⬜ |
+| V2-05 | Floor system | Elevation registry; floor as a first-class spatial layer | S | ✅ 09-11 |
+| V2-06 | Room detection | Closed regions auto-derived from the wall graph | M | ✅ 09-11 |
 | V2-07 | Portal | Door / stair / elevator unified as a space connector | S | ⬜ |
 | V2-08 | Room graph | Macro routing: room → portal → room, across floors | M | ⬜ |
 | V2-09 | Local navigation | Navmesh per room; furniture updates it | M | ⬜ |
@@ -124,9 +142,9 @@ systems** (doc #179). Space → terrain → building → object → interaction 
 | # | Block | Notes |
 |---|---|---|
 | V2-00…04 | Phase 0 spike | ✅ done |
-| V2-05 | Floor system | Foundational; everything spatial reads it |
-| V2-06 | Room detection | The block that makes walls mean something |
-| V2-07 | Portal | Door + stair as first-class connectors (stretch) |
+| V2-05 | Floor system | ✅ done |
+| V2-06 | Room detection | ✅ done — walls now mean something |
+| V2-07 | Portal | ⬜ not reached; carried to next session |
 
 Reaching V2-06 today means the world stops being "a box you can walk in" and
 starts having **rooms that the system understands** — which is the prerequisite
