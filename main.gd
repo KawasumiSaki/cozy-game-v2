@@ -411,13 +411,6 @@ func _build_house() -> void:
 ##
 ## This is what the slabs-and-stairs migration unblocked — before it, there was
 ## no way to ask where the floors were or how high the building went.
-func _has_roof_for(room_id: String) -> bool:
-	for r in building.state.roofs:
-		if r.room_id == room_id:
-			return true
-	return false
-
-
 ## Is there a floor slab above this room?
 ##
 ## The rule for "does this room need a roof" is NOT "is it on the highest floor".
@@ -455,25 +448,66 @@ func _has_cover_above(room: CozyRoom) -> bool:
 ##
 ## Nothing here is a prefab: the polygon comes from room detection, the
 ## elevation from the floor system, and CozyRoofGenerator derives the ridge,
-## slopes and gables from those. Move a wall and the roof follows.
+## slopes and gables from those.
 ##
 ## This is what the slabs-and-stairs migration unblocked — before it, there was
 ## no way to ask where the floors were or how high the building went.
+##
+## But "move a wall and the roof follows" was not true until debt 8. The pass skipped
+## any room that already had a roof, keyed on the room's ID — and an ID SURVIVES
+## a wall moving. So a room could be reshaped and keep the roof it had before,
+## floating over a footprint that no longer existed, while every count in the
+## world stayed correct.
+##
+## Matching is by POLYGON now, and a roof that no longer matches is retired and
+## rebuilt. A second pass still stacks nothing: an unchanged room still matches.
 func _build_roofs() -> void:
-	# Idempotent: this runs again whenever the building changes, and a second
-	# pass must not stack another roof on a room that already has one.
 	var intents: Array = []
+	var retire: Array[String] = []
 	for r in floor_system.all_rooms():
-		if _has_roof_for(r.id) or _has_cover_above(r):
+		var existing := _roof_for(r.id)
+		if _has_cover_above(r):
+			# Something covers this room now, so any roof it had is wrong.
+			if existing != null:
+				retire.append(existing.id)
 			continue
 		# The eave line sits on top of this room's own walls, one floor height
 		# above its floor — not at the top of the building.
 		var base_y := floor_system.elevation_of(r.floor_index + 1)
+		if existing != null:
+			if _roof_matches(existing, r, base_y):
+				continue
+			retire.append(existing.id)
 		intents.append(CozyBuildingIntent.add_roof(r.id, r.polygon, base_y,
 			CozyRoofState.Style.GABLE, "brick", r.floor_index + 1))
+
+	for id in retire:
+		building.state.remove_roof(id)
 	if intents.is_empty():
 		return
 	building.submit_many(intents)
+
+
+func _roof_for(room_id: String) -> CozyRoofState:
+	for r in building.state.roofs:
+		if r.room_id == room_id:
+			return r
+	return null
+
+
+## Is this roof still the right roof for this room?
+##
+## Comparing the POLYGON is the point: a room's id is stable across an edit, so
+## `room_id` matching says nothing about whether the shape is still the same.
+func _roof_matches(roof: CozyRoofState, room: CozyRoom, base_y: float) -> bool:
+	if absf(roof.base_y - base_y) > 0.001:
+		return false
+	if roof.polygon.size() != room.polygon.size():
+		return false
+	for i in roof.polygon.size():
+		if roof.polygon[i].distance_to(room.polygon[i]) > 0.001:
+			return false
+	return true
 
 
 func _add_wall(a: Vector3, b: Vector3, mat_id := "wood", floor_id := 0) -> CozyWallState:
@@ -1209,8 +1243,13 @@ func _rebuild_spatial_after_terrain() -> void:
 ## its own — rooms come from the wall graph, the roof from the rooms. That is
 ## the doc's "intent in, structure out" chain, and none of it is special-cased.
 func _finish_outline() -> void:
-	if _outline_points.size() < 3:
-		_say("outline needs at least 3 points", true)
+	# A bad outline is refused with a REASON rather than built into a broken
+	# graph. A crossed outline produces walls that intersect mid-span, and room
+	# detection then walks a non-planar graph — the T-junction failure again,
+	# which showed up only as a room that quietly did not appear.
+	var reason := CozyOutlineGenerator.reject_reason(_outline_points)
+	if reason != "":
+		_say("outline refused: %s" % reason, true, 5.0)
 		_cancel_outline()
 		_update_hud()
 		return
@@ -1481,6 +1520,8 @@ func _report() -> void:
 	_check_wall_assembly()
 	_check_building_state()
 	_check_roofs()
+	_check_outline_guard()
+	_check_roof_follows_room()
 	_check_npc_route_plan()
 
 
@@ -1543,6 +1584,89 @@ func _check_outline_build() -> void:
 
 ## Roofs (V2.1 doc #31). Derived from the room polygon rather than placed, and
 ## they must fade (doc #57) or the player disappears the moment they go inside.
+## The outline guard (debt 8). A crossed outline becomes walls that intersect
+## mid-span, and room detection is then handed a non-planar graph — the
+## T-junction failure again, which shows up only as a room that quietly does not
+## appear.
+##
+## Asserted in BOTH directions, because a guard that refuses too much is its own
+## bug: it would silently make L-shaped buildings unbuildable.
+func _check_outline_guard() -> void:
+	var bowtie := PackedVector2Array([Vector2(0.0, 0.0), Vector2(4.0, 4.0),
+		Vector2(4.0, 0.0), Vector2(0.0, 4.0)])
+	var repeated := PackedVector2Array([Vector2(0.0, 0.0), Vector2(0.0, 0.0),
+		Vector2(4.0, 0.0), Vector2(4.0, 4.0)])
+	# Concave, and perfectly legitimate. The roof generator degrades to a flat
+	# roof for it, which is doc #31's stated simplification — not a reason to
+	# refuse the walls.
+	var ell := PackedVector2Array([Vector2(0.0, 0.0), Vector2(6.0, 0.0),
+		Vector2(6.0, 3.0), Vector2(3.0, 3.0), Vector2(3.0, 6.0), Vector2(0.0, 6.0)])
+	var square := PackedVector2Array([Vector2(0.0, 0.0), Vector2(4.0, 0.0),
+		Vector2(4.0, 4.0), Vector2(0.0, 4.0)])
+
+	var bowtie_r := CozyOutlineGenerator.reject_reason(bowtie)
+	var repeat_r := CozyOutlineGenerator.reject_reason(repeated)
+	var ell_r := CozyOutlineGenerator.reject_reason(ell)
+	var square_r := CozyOutlineGenerator.reject_reason(square)
+
+	# The bowtie must be refused BY THE GUARD and not by something else further
+	# down. `plan()` produces its walls quite happily, so the guard is the only
+	# thing standing between this polygon and a non-planar graph — without this
+	# line the check would still pass if the guard were removed and the terrain
+	# gate happened to refuse the walls instead.
+	var would_build := CozyOutlineGenerator.plan(bowtie, 0.0, FLOOR_H, WALL_T,
+		"wood", 0, Vector2(2.0, 2.0)).size()
+
+	var refuses_bad := bowtie_r != "" and repeat_r != "" and would_build == 4
+	var allows_good := ell_r == "" and square_r == ""
+	print("[cozyv2] outline guard: bowtie=\"%s\" (%d wall(s) planned, refused by the guard), repeated=\"%s\"; L-shape and square allowed=%s  [%s]" % [
+		bowtie_r, would_build, repeat_r, str(allows_good),
+		"OK" if refuses_bad and allows_good else "FAIL"])
+
+
+## Roofs follow their room (debt 8).
+##
+## The bug was never "a roof is missing". It was that a roof could OUTLIVE the
+## room it was built for: `_build_roofs` skipped any room that already had a
+## roof, keyed on the room's ID, and an ID survives a wall moving. The shape
+## changed under a fixed roof while every count in the world stayed correct.
+##
+## This drives the decision directly — it makes a roof disagree with its room the
+## way a moved wall would, and requires the next pass to notice. Reaching the
+## same state by moving walls would be three coordinated edits for the same code
+## path.
+func _check_roof_follows_room() -> void:
+	var room: CozyRoom = null
+	var roof: CozyRoofState = null
+	for r in floor_system.all_rooms():
+		var cand := _roof_for(r.id)
+		if cand != null:
+			room = r
+			roof = cand
+			break
+	if room == null or roof == null:
+		print("[cozyv2] roof follows its room: no roofed room in the scene  [FAIL]")
+		return
+
+	var before_id := roof.id
+	var poly := roof.polygon
+	if poly.is_empty():
+		print("[cozyv2] roof follows its room: roof has no polygon  [FAIL]")
+		return
+	poly[0] = poly[0] + Vector2(1.5, 1.5)
+	roof.polygon = poly
+
+	var noticed := not _roof_matches(roof, room, roof.base_y)
+	_build_roofs()
+
+	var after := _roof_for(room.id)
+	var base_y := floor_system.elevation_of(room.floor_index + 1)
+	var repaired := after != null and _roof_matches(after, room, base_y)
+	print("[cozyv2] roof follows its room: noticed=%s, rebuilt=%s (roof %s -> %s)  [%s]" % [
+		str(noticed), str(repaired), before_id, after.id if after != null else "-",
+		"OK" if noticed and repaired else "FAIL, a stale roof survived"])
+
+
 func _check_roofs() -> void:
 	var rs := building.roof_views
 	if rs.is_empty():

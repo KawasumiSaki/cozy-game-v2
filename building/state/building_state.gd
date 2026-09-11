@@ -99,6 +99,17 @@ func slabs_on_floor(floor_id: int) -> Array[CozySlabState]:
 	return out
 
 
+## Retire a roof so it can be regenerated. Roofs are derived, so "removing" one
+## is just dropping it — the generator puts back whatever the rooms now call for.
+func remove_roof(id: String) -> bool:
+	for i in roofs.size():
+		if roofs[i].id == id:
+			roofs.remove_at(i)
+			changed.emit()
+			return true
+	return false
+
+
 func remove_wall(id: String) -> bool:
 	for i in walls.size():
 		if walls[i].id == id:
