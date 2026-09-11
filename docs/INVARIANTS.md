@@ -170,6 +170,33 @@ change, check the test.
 
 ---
 
+## A per-frame refresh must be idempotent
+
+Anything that redraws every frame has to satisfy: `refresh()` called N times
+produces the same result as `refresh()` called once. The moment a refresh reads
+its own output — rebuilding a label's text out of that label's text — it
+accumulates corruption at frame rate.
+
+The trap is that **every single-frame check passes**. The widget exists, it is
+wired, it has the right number of rows, and one refresh draws the correct
+string. Assert it as "one refresh versus N refreshes", never as "does it draw
+the right thing". (UI-02: 600 refreshes turned `"> 09:00  0  Working"` into a
+line with three hundred zeros in it.)
+
+Corollary: when a string is formatted in two places, it will drift. One
+formatter, two callers.
+
+## `agent.state` is the FSM, `agent.npc_state` is the resident
+
+`CozyNpcAgent.state` is an enum (`IDLE` / `GOING` / `WORKING`). A resident's
+actual data is on `npc_state`.
+
+This bites because `main.gd` legitimately reads `.state` off a **wall**
+(`CozyWallState`). Copying that line for an NPC yields an int — no error, no
+crash, no warning. Just a blank panel. Nothing in the type system stops you.
+
+---
+
 ## Bugs this project has already paid for
 
 Recorded here so they are not re-derived. Full narratives are in the development
@@ -191,7 +218,12 @@ log (`02-开发日志/游戏开发日志.md`).
 | 12 | Roof rule "highest floor" left one-storey outbuildings bare | outline assertion |
 | 13 | "anything above" tested by centroid alone; the stairwell fooled it | outline assertion |
 | 14 | VFX phase from `def_id` → two campfires in lockstep | VFX assertion |
+| 15 | Per-frame panel refresh re-derived its input from its own output → schedule text corroded 60×/s | panel idempotence assertion |
 
-**Thirteen of the fourteen were found by an assertion, not by looking at the
+**Fourteen of the fifteen were found by an assertion, not by looking at the
 screen.** Several were invisible in a still frame. That is the whole argument
 for the assertion discipline in `03-流程/更新方案.md`.
+
+Bug 15 was never once rendered on screen — nothing instantiated the widget that
+had it. It was written, it imported cleanly, and it sat on disk as a `class_name`
+with no callers. **Parsing is not working.**

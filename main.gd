@@ -78,6 +78,11 @@ var npc: CozyNpcAgent = null
 var occlusion: CozyOcclusion = null
 var hud: CozyHud = null
 var menu: CozyContextMenu = null
+var npc_panel: CozyNpcPanel = null
+
+## Who the resident panel is showing. Held as the node, not an index, so it stays
+## correct the day residents can be added or removed.
+var _npc_panel_target: CozyNpcAgent = null
 
 var clock: CozyTimeSystem = null
 var building: CozyBuildingSystem = null
@@ -742,6 +747,20 @@ func _build_hud() -> void:
 	add_child(menu)
 	menu.action_chosen.connect(_on_menu_action)
 
+	# The resident panel rides the HUD's CanvasLayer and is anchored to the right
+	# edge, so it never covers the tool strip along the bottom. Offset bottom is
+	# left equal to top: a PanelContainer grows to its content's minimum height,
+	# and grow_vertical decides which way.
+	npc_panel = CozyNpcPanel.new()
+	hud.add_child(npc_panel)
+	npc_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	npc_panel.offset_left = -CozyNpcPanel.WIDTH - CozyUiTheme.GAP
+	npc_panel.offset_right = -CozyUiTheme.GAP
+	npc_panel.offset_top = CozyUiTheme.STRIP_H + CozyUiTheme.GAP
+	npc_panel.offset_bottom = CozyUiTheme.STRIP_H + CozyUiTheme.GAP
+	npc_panel.grow_vertical = Control.GROW_DIRECTION_END
+	npc_panel.visible = false
+
 
 ## The HUD is now the single place a tool can be chosen, so a click and the TAB
 ## key go through the same path rather than two that can drift apart.
@@ -974,6 +993,17 @@ func _open_context_menu(at: Vector2) -> void:
 			target["title"] = CozyObjectDefs.display_name(o.def_id)
 			entries.append({"id": "info", "label": "Info"})
 			entries.append({"id": "remove", "label": "Remove"})
+		"npc":
+			# The resident panel is where V2-22 and V2-25 stop being stored values.
+			#
+			# `npc_state`, NOT `state`: an agent's `state` is its FSM enum
+			# (IDLE/GOING/WORKING), and reading that instead would hand the panel an
+			# int — no error, no crash, just a blank resident.
+			var a: CozyNpcAgent = probe["node"]
+			target["title"] = a.npc_state.display_name if a.npc_state != null else "Resident"
+			entries.append({"id": "npc_panel", "label": "Resident",
+				"hint": "attributes, skills, needs and today's schedule"})
+			entries.append({"id": "info", "label": "Info"})
 		_:
 			entries.append({"id": "info", "label": "Info"})
 
@@ -995,8 +1025,43 @@ func _on_menu_action(id: String, target: Variant) -> void:
 			_say("cleared")
 		"remove":
 			_remove_target(target)
+		"npc_panel":
+			_open_npc_panel(target["node"])
 		"info":
 			_show_info(target)
+
+
+# ---------------------------------------------------------------- resident panel
+
+func _open_npc_panel(agent: CozyNpcAgent) -> void:
+	if agent == null or agent.npc_state == null:
+		_say("that resident has no state attached", true)
+		return
+	_npc_panel_target = agent
+	npc_panel.visible = true
+	_refresh_npc_panel()
+
+
+func _close_npc_panel() -> void:
+	npc_panel.visible = false
+	_npc_panel_target = null
+
+
+## Called every frame the panel is open. Needs MOVE — hunger climbs and energy
+## falls while you read, and a panel frozen at the value it opened with would
+## teach the player the numbers are decorative.
+func _refresh_npc_panel() -> void:
+	if npc_panel == null or not npc_panel.visible:
+		return
+	if not is_instance_valid(_npc_panel_target):
+		_close_npc_panel()
+		return
+	var st: CozyNpcState = _npc_panel_target.npc_state
+	if st == null:
+		return
+	# current_activity() rather than the raw schedule: a critical need overrides
+	# the timetable (doc #116), and the panel should agree with the agent.
+	npc_panel.refresh(st, clock.hour, _npc_panel_target.current_activity())
 
 
 func _remove_target(target: Variant) -> void:
@@ -1184,6 +1249,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				_finish_outline()
 				return
 		if event.keycode == KEY_ESCAPE:
+			# Esc closes whatever is on top: the resident panel first, then an
+			# unfinished outline. Dismissing a read-only panel must never discard
+			# work the player has not finished.
+			if npc_panel != null and npc_panel.visible:
+				_close_npc_panel()
+				return
 			if build_mode and _outline_points.size() > 0:
 				_cancel_outline()
 				_say("outline cancelled")
@@ -1245,6 +1316,7 @@ func _process(delta: float) -> void:
 			player.current_floor(FLOOR_H), str(player.is_on_floor()),
 			npc.debug_line() if npc != null else "-"])
 
+	_refresh_npc_panel()
 	_update_hud()
 
 
@@ -1946,8 +2018,78 @@ func _check_ui() -> void:
 	print("[cozyv2] info panel: shows=%s hides=%s  [%s]" % [
 		str(shown), str(hidden), "OK" if shown and hidden else "FAIL"])
 
+	_check_npc_panel()
+
 	# Leave the scene on the wall tool so the demo opens in a neutral state.
 	hud.select_tool(TOOLS.find("outline"))
+
+
+## The resident panel — where V2-22 and V2-25 finally become visible.
+##
+## The assertion that earns its keep is the idempotence one. The panel redraws
+## every frame, and the version this was written against rebuilt each schedule
+## row's text from that same row's PREVIOUS text, stripping a fixed-width prefix
+## that matched neither format. It accrued garbage sixty times a second.
+##
+## Every other check below passes with that bug present: the panel exists, it is
+## wired, it draws the right number of rows, and a SINGLE refresh produces
+## correct output. Only refreshing twice catches it — which is the whole reason
+## the assertion is written as "one refresh vs six hundred" rather than "does it
+## draw the right thing".
+func _check_npc_panel() -> void:
+	if npc_panel == null:
+		print("[cozyv2] npc panel: NOT BUILT  [FAIL]")
+		return
+
+	var hidden_at_start := not npc_panel.visible
+	print("[cozyv2] npc panel: built on the HUD, hidden until asked  [%s]" % [
+		"OK" if hidden_at_start else "FAIL, visible before anything was selected"])
+
+	# Row counts come from the DATA, never from a list retyped here.
+	var skills_ok := npc_panel.skill_row_count() == CozySkills.ORDER.size()
+	var sched_ok := npc_panel.schedule_row_count() == CozySchedule.DEFAULT_DAY.size()
+	print("[cozyv2] npc panel rows: %d/%d skill(s), %d/%d schedule row(s)  [%s]" % [
+		npc_panel.skill_row_count(), CozySkills.ORDER.size(),
+		npc_panel.schedule_row_count(), CozySchedule.DEFAULT_DAY.size(),
+		"OK" if skills_ok and sched_ok else "FAIL, a row list is out of step with its data"])
+
+	# Content, read back off the widgets after a known state is pushed in.
+	var st := CozyNpcState.create("panel_probe", "Probe Resident", "researcher", 7)
+	st.traits = []
+	st.hunger = 40.0
+	st.energy = 90.0
+	st.mood = 50.0
+	npc_panel.refresh(st, 9.0, "work")
+	var titled := npc_panel.title_text() == "Probe Resident"
+	var hunger_ok := npc_panel.meter_value("hunger") == 40
+	var frac_ok := absf(npc_panel.meter_fraction("hunger") - 0.40) < 0.01
+	var marked_ok := npc_panel.highlighted_schedule_hour() == 9
+	print("[cozyv2] npc panel content: \"%s\" hunger=%d frac=%.2f marked=%02d:00  [%s]" % [
+		npc_panel.title_text(), npc_panel.meter_value("hunger"),
+		npc_panel.meter_fraction("hunger"), npc_panel.highlighted_schedule_hour(),
+		"OK" if titled and hunger_ok and frac_ok and marked_ok else "FAIL"])
+
+	# Idempotence — see the note above. 600 refreshes is ten seconds of frames.
+	var once := npc_panel.schedule_line(9)
+	for i in 600:
+		npc_panel.refresh(st, 9.0, "work")
+	var many := npc_panel.schedule_line(9)
+	print("[cozyv2] npc panel refresh idempotent over 600 frames: %s  [%s]" % [
+		"unchanged" if once == many else "\"%s\" -> \"%s\"" % [once, many],
+		"OK" if once == many else "FAIL, refresh is feeding on its own output"])
+
+	# The menu -> panel path, end to end, on the resident that actually exists.
+	if npc != null and npc.npc_state != null:
+		_on_menu_action("npc_panel", {"node": npc})
+		var opened := npc_panel.visible \
+			and npc_panel.title_text() == npc.npc_state.display_name
+		print("[cozyv2] menu opens the resident panel: %s -> \"%s\"  [%s]" % [
+			npc.npc_state.id, npc_panel.title_text(), "OK" if opened else "FAIL"])
+		_close_npc_panel()
+		print("[cozyv2] resident panel closes again: %s  [%s]" % [
+			str(not npc_panel.visible), "OK" if not npc_panel.visible else "FAIL"])
+	else:
+		print("[cozyv2] menu opens the resident panel: no resident in the scene  [SKIP]")
 
 
 ## Camera lock (V2.1 doc E.1.1). Free rotation is barred as a gameplay feature

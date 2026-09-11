@@ -86,6 +86,7 @@
 | ID | Block | Status |
 |---|---|---|
 | UI-01 | Interface basics (HUD / build palette / right-click select) | ✅ |
+| UI-02 | Resident panel (attributes / skills / needs / schedule) | ✅ |
 
 ### Phase 7-8 — Frozen
 | ID | Block | Status |
