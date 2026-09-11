@@ -32,6 +32,9 @@ const OBJECTS := {
 		"size": Vector2(1.0, 0.7),
 		"height": 0.7,
 		"color": Color(0.52, 0.36, 0.24),
+		# How much it holds, in the SAME units the inventory counts — doc #35's
+		# "one store, many callers" means this is not "20 wood", just 20.
+		"capacity": 20.0,
 		"interactions": [
 			{"type": "store", "skill": "", "duration": 2.0, "reach": 0.7},
 		],

@@ -1413,6 +1413,7 @@ func _report() -> void:
 
 	_check_camera()
 	_check_ui()
+	_check_container()
 	_check_assets()
 	_check_scatter()
 	_check_nav()
@@ -2090,6 +2091,77 @@ func _check_npc_panel() -> void:
 			str(not npc_panel.visible), "OK" if not npc_panel.visible else "FAIL"])
 	else:
 		print("[cozyv2] menu opens the resident panel: no resident in the scene  [SKIP]")
+
+
+## Containers, and the `hauler` job that has never been able to work (V2-21).
+##
+## The chest has been in this scene since Phase 4 advertising a `store`
+## interaction point, and `CozyJobDefs` has carried a `hauler` whose point_type
+## is `store` for just as long. Neither meant anything: nothing consumed either
+## one. A point nothing answers and a job that can never complete are both
+## invisible on screen — they look exactly like features.
+##
+## The check that earns its keep is CONSERVATION. A transfer system's
+## characteristic failure is not a crash; it is goods that quietly doubled or
+## vanished, and that is invisible in any single frame.
+func _check_container() -> void:
+	var chest := _first_object("chest")
+	if chest == null or chest.container == null:
+		print("[cozyv2] container: the chest has no container behind its store point  [FAIL]")
+		return
+
+	var c := chest.container
+
+	# (1) The point the hauler job has always pointed at is finally answered.
+	var pts := chest.free_points_of_type(CozyObjectDefs.INTERACT_STORE)
+	var hauler_wants := CozyJobDefs.point_type("hauler")
+	var answered := not pts.is_empty() and hauler_wants == CozyObjectDefs.INTERACT_STORE
+	print("[cozyv2] container: hauler wants \"%s\", chest offers %d point(s)  [%s]" % [
+		hauler_wants, pts.size(),
+		"OK" if answered else "FAIL, the store point is still unanswered"])
+
+	if npc == null or npc.npc_state == null or npc.npc_state.inventory == null:
+		print("[cozyv2] container transfers: no resident with a pack  [SKIP]")
+		return
+	var pack := npc.npc_state.inventory
+
+	# (2) Deposit, through the same function the agent runs when work completes.
+	c.inventory.items.clear()
+	pack.items.clear()
+	pack.add("wood", 8.0)
+	pack.add("stone", 3.0)
+	var before := pack.total() + c.stored()
+	var msg_out := npc._haul(chest)
+	var after := pack.total() + c.stored()
+	var conserved := absf(before - after) < 0.0001 and c.stored() > 0.0 \
+		and pack.total() <= 0.0
+	print("[cozyv2] container deposit: %s, conserved=%s (%.0f -> %.0f)  [%s]" % [
+		msg_out, str(conserved), before, after,
+		"OK" if conserved else "FAIL, goods were created or destroyed"])
+
+	# (3) And back out again — the other half of the chain.
+	var before2 := pack.total() + c.stored()
+	var msg_in := npc._haul(chest)
+	var after2 := pack.total() + c.stored()
+	var conserved2 := absf(before2 - after2) < 0.0001 and pack.total() > 0.0
+	print("[cozyv2] container withdraw: %s, conserved=%s (%.0f -> %.0f)  [%s]" % [
+		msg_in, str(conserved2), before2, after2,
+		"OK" if conserved2 else "FAIL"])
+
+	# (4) Capacity is a real limit, and a refusal moves NOTHING.
+	c.inventory.items.clear()
+	c.inventory.add("stone", c.capacity - 1.0)      # exactly one unit of room
+	pack.items.clear()
+	pack.add("wood", 5.0)
+	var refused_msg := npc._haul(chest)
+	var refused := absf(pack.total() - 5.0) < 0.0001 \
+		and absf(c.stored() - (c.capacity - 1.0)) < 0.0001
+	print("[cozyv2] container refuses an over-capacity load whole: carrying=%.0f -> %s  [%s]" % [
+		pack.total(), refused_msg, "OK" if refused else "FAIL, a partial load moved"])
+
+	# Leave the world as it was found.
+	c.inventory.items.clear()
+	pack.items.clear()
 
 
 ## Camera lock (V2.1 doc E.1.1). Free rotation is barred as a gameplay feature

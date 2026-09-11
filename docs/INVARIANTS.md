@@ -170,6 +170,20 @@ change, check the test.
 
 ---
 
+## A declared capability with no consumer is not a feature
+
+`chest` advertised a `store` interaction point from Phase 4, and `CozyJobDefs`
+carried a `hauler` whose `point_type` is `store` for exactly as long. Nothing
+consumed either one. The point was decoration, and the job could acquire a
+target that no object ever offered, so it could never finish a task.
+
+On screen both read as working features. Neither had ever run.
+
+Before trusting a data table, ask what reads it. Every interaction type in
+`CozyObjectDefs` and every `point_type` in `CozyJobDefs` should have a consumer;
+`grep` for the constant is the entire check. The same question applies to a
+`class_name` — if nothing instantiates it, it has never executed.
+
 ## A per-frame refresh must be idempotent
 
 Anything that redraws every frame has to satisfy: `refresh()` called N times

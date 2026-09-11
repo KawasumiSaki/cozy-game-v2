@@ -19,6 +19,13 @@ var interaction_points: Array[CozyInteractionPoint] = []
 ## Effects this object emits (doc E.18), built from its definition.
 var vfx: Array[CozyVfx] = []
 
+## What this object HOLDS, when its definition says it is a container (V2-21).
+##
+## Until this existed, `chest` advertised a `store` interaction point and the
+## `hauler` job in the data table pointed at it — and nothing anywhere answered
+## either. The point was decoration and the job could never complete a task.
+var container: CozyContainerState = null
+
 var _def: Dictionary = {}
 var _size := Vector2.ONE
 var _specs: Array = []          ## {local: Vector3, ...} mirrors interaction_points
@@ -76,8 +83,20 @@ func _build() -> void:
 		interaction_points.append(CozyInteractionPoint.new(
 			it["type"], Vector3.ZERO, it["skill"], it["duration"]))
 
+	# The other half of a `store` point: the point says "you can put things here",
+	# the container is where they actually go.
+	container = null
+	if String(_def.get("kind", "")) == "container":
+		container = CozyContainerState.new()
+		container.capacity = float(_def.get("capacity",
+			CozyContainerState.DEFAULT_CAPACITY))
+
 	_build_vfx()
 	refresh_vfx_phase()
+
+
+func is_container() -> bool:
+	return container != null
 
 
 ## Re-seed effect phases from this object's world position.

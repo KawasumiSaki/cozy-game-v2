@@ -67,7 +67,7 @@
 | V2-18 | WorldObject | ✅ basic |
 | V2-19 | Free placement | ✅ basic |
 | V2-20 | InteractionPoint | ✅ |
-| V2-21 | Containers | 🚧 inventory store done |
+| V2-21 | Containers | 🚧 store + capacity + hauler done; §39 items and §45 production chain remain |
 
 ### Phase 5 — NPC
 | ID | Block | Status |

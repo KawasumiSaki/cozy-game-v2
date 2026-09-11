@@ -17,6 +17,11 @@ enum State { IDLE, GOING, WORKING }
 ## How close the agent must actually get before it may start working.
 const ARRIVE_RADIUS := 1.5
 
+## How much a resident moves in one hauling trip (V2-21). Not a game balance
+## number — it exists so a withdrawal has a definite size, and can be replaced
+## the day carrying capacity becomes a real attribute.
+const HAUL_LOAD := 5.0
+
 ## The resident's data (V2-22, doc #43). STATE, not node — the agent reads it
 ## rather than keeping its own copy of anything, which is what makes a save file
 ## possible without serialising a scene tree.
@@ -40,6 +45,11 @@ var completions := 0           ## Finished jobs — the visible payoff.
 var last_status := "spawning"
 
 var _target_point: CozyInteractionPoint = null
+
+## The object that advertised `_target_point`. A point carries no back-reference
+## to its owner, and hauling needs one — "the work finished" has to resolve to
+## "the chest it finished at".
+var _target_object: CozyWorldObject = null
 var _path := PackedVector3Array()
 var _path_i := 0
 var _work_left := 0.0
@@ -129,6 +139,7 @@ func _physics_process(delta: float) -> void:
 ## world what it offers rather than knowing what any object is (#87 / #94).
 func _acquire_job() -> void:
 	var best: CozyInteractionPoint = null
+	var best_obj: CozyWorldObject = null
 	var best_dist := INF
 	for o in objects:
 		if not is_instance_valid(o):
@@ -138,6 +149,7 @@ func _acquire_job() -> void:
 			if d < best_dist:
 				best_dist = d
 				best = p
+				best_obj = o
 
 	if npc_state != null and not npc_state.is_assignable():
 		last_status = "aversion: will not do %s" % npc_state.job_name()
@@ -161,6 +173,7 @@ func _acquire_job() -> void:
 		return
 
 	_target_point = best
+	_target_object = best_obj
 	_path = pts
 	_path_i = 0
 	_stuck_time = 0.0
@@ -227,10 +240,24 @@ func _arrive() -> void:
 
 
 func _finish_work() -> void:
+	# Capture before releasing: the transfer below has to know WHAT was worked
+	# at, and both references are cleared on the next two lines.
+	var finished_type := _target_point.type if _target_point != null else ""
+	var finished_obj := _target_object
+
 	if _target_point != null:
 		_target_point.release()
 	_target_point = null
+	_target_object = null
 	completions += 1
+
+	# Hauling is the one job whose work is a TRANSFER rather than a skill roll
+	# (doc §45). It resolves here because "the work completed" is exactly the
+	# moment at which the load is understood to have moved.
+	var haul := ""
+	if finished_type == CozyObjectDefs.INTERACT_STORE \
+			and finished_obj != null and is_instance_valid(finished_obj):
+		haul = _haul(finished_obj)
 
 	# Working trains the job's skill, scaled by passion (愿景 §10: ×1 / ×2 / ×4).
 	# This is what makes a resident grow into their role rather than staying a
@@ -243,13 +270,61 @@ func _finish_work() -> void:
 
 	state = State.IDLE
 	_idle_timer = 0.8
-	last_status = "completed %d" % completions
+	if haul != "":
+		last_status = "%s | completed %d" % [haul, completions]
+	else:
+		last_status = "completed %d" % completions
+
+
+## The hauler's work (V2-21, doc §45).
+##
+## Direction is decided by what the resident is already carrying: an empty hauler
+## takes a load out, a loaded one puts it back. That exercises both halves of the
+## chain without inventing a production economy the doc has not specified — the
+## day recipes exist, this is the function that gains them.
+##
+## Both directions are all-or-nothing across the WHOLE load. Depositing id by id
+## would let a nearly-full chest absorb half a pack and refuse the rest, which is
+## precisely the "goods quietly vanished" failure that a conservation assertion
+## exists to catch.
+func _haul(obj: CozyWorldObject) -> String:
+	var c := obj.container
+	if c == null:
+		return "no container"
+	if npc_state == null or npc_state.inventory == null:
+		return "no pack"
+	var pack := npc_state.inventory
+
+	if pack.total() > 0.0:
+		var carrying := pack.total()
+		if not c.has_room_for(carrying):
+			return "store full (%.0f/%.0f, carrying %.0f)" % [
+				c.stored(), c.capacity, carrying]
+		# `keys()` returns a copy, so spending inside the loop is safe.
+		for id in pack.items.keys():
+			var n := pack.count(String(id))
+			c.deposit(String(id), n)
+			pack.spend({String(id): n})
+		return "stored %.0f (%.0f/%.0f)" % [carrying, c.stored(), c.capacity]
+
+	# Picking up. First id in sorted order, so the same chest always yields the
+	# same load — everything procedural in this project is deterministic.
+	var have := c.sorted_ids()
+	if have.is_empty():
+		return "store is empty"
+	var id := String(have[0])
+	var n := minf(HAUL_LOAD, c.inventory.count(id))
+	if not c.withdraw(id, n):
+		return "could not take %s" % id
+	pack.add(id, n)
+	return "took %.0f %s (%.0f/%.0f)" % [n, id, c.stored(), c.capacity]
 
 
 func _abandon_job() -> void:
 	if _target_point != null:
 		_target_point.release()
 	_target_point = null
+	_target_object = null
 	_path = PackedVector3Array()
 	state = State.IDLE
 	_idle_timer = 0.5
