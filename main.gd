@@ -62,7 +62,7 @@ const DEBUG_PHYSICS_PROBE := false
 ##
 ## The terrain tools make an existing system reachable for the first time:
 ## CozyTerrainIntent has had CLEAR/DIG/FILL since V2-11 with no way to invoke it.
-const TERRAIN_TOOLS: Array[String] = ["dig", "fill", "clear"]
+const TERRAIN_TOOLS: Array[String] = ["dig", "fill", "clear", "till"]
 const BUILD_TOOLS: Array[String] = ["outline", "wall"]
 const PLACE_TOOLS: Array[String] = ["research_table", "chest", "bed", "chair",
 	"campfire"]
@@ -73,7 +73,7 @@ const TOOL_GROUPS: Array = [BUILD_TOOLS, TERRAIN_TOOLS, PLACE_TOOLS]
 ## this project has already paid for three times.
 const NPC_JOB := "cook"
 
-const TOOLS: Array[String] = ["outline", "wall", "dig", "fill", "clear",
+const TOOLS: Array[String] = ["outline", "wall", "dig", "fill", "clear", "till",
 	"research_table", "chest", "bed", "chair", "campfire"]
 
 ## Brush radius for terrain tools, metres.
@@ -1258,6 +1258,10 @@ func _apply_terrain_brush(world: Vector3) -> void:
 			intent = CozyTerrainIntent.dig_brush(centre, TERRAIN_BRUSH, 0.25)
 		"fill":
 			intent = CozyTerrainIntent.fill_brush(centre, TERRAIN_BRUSH, 0.25)
+		"till":
+			# No depth: farmland is flat ground. Tilling is a MATERIAL edit, not a
+			# height edit, which is why it shares the tool row with clear/dig.
+			intent = CozyTerrainIntent.till_brush(centre, TERRAIN_BRUSH)
 		_:
 			intent = CozyTerrainIntent.clear_brush(centre, TERRAIN_BRUSH)
 	if intent == null:
@@ -1398,8 +1402,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		# Tool hotkeys — the same ones the palette prints on its buttons. They go
 		# through the HUD's own selection path, so a key and a click cannot drift.
-		if event.keycode >= KEY_0 and event.keycode <= KEY_9:
-			var i := CozyHud.index_for_hotkey(event.keycode - KEY_0)
+		# PHYSICAL key, not logical: Godot reports Shift+1 as KEY_EXCLAMATION, so
+		# matching on `keycode` silently loses every shifted hotkey.
+		var digit_key: int = event.physical_keycode
+		if digit_key == 0:
+			digit_key = event.keycode
+		if digit_key >= KEY_0 and digit_key <= KEY_9:
+			var i := CozyHud.index_for_hotkey(digit_key - KEY_0, event.shift_pressed)
 			if i >= 0 and i < TOOLS.size():
 				_on_hud_tool_selected(i)
 				return
@@ -1598,6 +1607,7 @@ func _report() -> void:
 	_check_scatter()
 	_check_nav()
 	_check_terrain()
+	_check_farming_chain()
 	_check_terrain_surface()
 	_check_wall_connection()
 	_check_openings()
@@ -1906,6 +1916,65 @@ func _check_wall_assembly() -> void:
 ## buildability, clearing converts Grass -> Soil and unlocks building, edits
 ## mark a dirty region rather than the whole world, and the field round-trips
 ## through its save shape with no generated surface involved.
+## The planting half of the terrain chain (Willow 2026-09-12):
+## Grass -> Soil -> Farmland, and tilling cannot skip a step.
+##
+## Driven through INTENTS rather than `set_material_at`, because the rule that
+## matters lives in the OPERATION. Writing the material directly would step over
+## the guard, and this check would then pass on a chain that does not hold.
+func _check_farming_chain() -> void:
+	if terrain == null:
+		print("[cozyv2] farming chain: terrain NOT BUILT  [FAIL]")
+		return
+
+	# A plot clear of the house and of the other terrain checks' scratch corner.
+	var tx := 26.0
+	var tz := 26.0
+	var at := Vector2(tx, tz)
+
+	# (1) Tilling RAW GRASS must do nothing. This refusal IS the feature: without
+	# it the clearing step would be optional and the chain would be one action
+	# wearing two names.
+	var start := terrain.material_id_at(tx, tz)
+	var refused: int = terrain.apply_intent(
+		CozyTerrainIntent.till_brush(at, 1.0))["touched"]
+	var after_refusal := terrain.material_id_at(tx, tz)
+
+	# (2) Clear it, then till it — the chain, one intent per step. Soil's
+	# buildability is sampled BETWEEN the two, while the ground really is soil;
+	# reading it after the till would silently measure farmland under a variable
+	# named for soil.
+	terrain.apply_intent(CozyTerrainIntent.clear_brush(at, 1.0))
+	var cleared := terrain.material_id_at(tx, tz)
+	var soil_b := terrain.buildability_at(tx, tz)
+	terrain.apply_intent(CozyTerrainIntent.till_brush(at, 1.0))
+	var tilled := terrain.material_id_at(tx, tz)
+	var farm_b := terrain.buildability_at(tx, tz)
+
+	var chain_ok := (start == "grass" and refused == 0 and after_refusal == "grass"
+		and cleared == "soil" and tilled == "farmland")
+	print("[cozyv2] farming chain: %s -till-> %s (%d touched), -clear-> %s, -till-> %s  [%s]" % [
+		start, after_refusal, refused, cleared, tilled,
+		"OK" if chain_ok else "FAIL, the chain does not hold"])
+
+	# (3) Farmland is NOT buildable, and soil was. Both halves are needed: an
+	# assertion that only checked "farmland is not buildable" would pass just as
+	# well if buildability were broken for everything.
+	var rule_ok := CozyBuildability.accepts_building(soil_b) 		and not CozyBuildability.accepts_building(farm_b)
+
+	# (4) The storage order is APPEND ONLY. A saved chunk holds INDICES, so a
+	# material inserted in the middle silently re-labels every existing cell.
+	var round_trip := CozyTerrainMaterials.id_of(
+		CozyTerrainMaterials.index_of("farmland")) == "farmland"
+	var stone_kept := CozyTerrainMaterials.index_of("stone") == 3
+	print("[cozyv2] farming rule: soil build=%s, farmland build=%s, index round-trip=%s, stone still 3=%s  [%s]" % [
+		str(CozyBuildability.accepts_building(soil_b)),
+		str(CozyBuildability.accepts_building(farm_b)),
+		str(round_trip), str(stone_kept),
+		"OK" if rule_ok and round_trip and stone_kept
+			else "FAIL, farmland's build rule or the storage order is wrong"])
+
+
 func _check_terrain() -> void:
 	if terrain == null:
 		print("[cozyv2] terrain NOT BUILT  [FAIL]")
@@ -2354,8 +2423,15 @@ func _check_ui() -> void:
 	var dig_i := TOOLS.find("dig")
 	hud.select_tool(dig_i)
 	var reached := build_mode and _is_terrain_tool() and tool_idx == dig_i
-	print("[cozyv2] terrain tools reachable from the HUD: %s  [%s]" % [
-		_current_tool(), "OK" if reached else "FAIL, tool did not switch"])
+	# And the newest terrain tool, so adding one to TERRAIN_TOOLS without a button
+	# or without a hotkey cannot pass.
+	var till_i := TOOLS.find("till")
+	hud.select_tool(till_i)
+	var till_reached := build_mode and _is_terrain_tool() and tool_idx == till_i
+	hud.select_tool(dig_i)
+	print("[cozyv2] terrain tools reachable from the HUD: %s, %s  [%s]" % [
+		_current_tool(), hud.tool_hotkey_text(till_i),
+		"OK" if reached and till_reached else "FAIL, tool did not switch"])
 
 	# (4) A collider must walk back to the view that owns it. Without this the
 	# context menu cannot tell a wall from a slab from the ground.
@@ -2412,7 +2488,7 @@ func _check_ui() -> void:
 	var distinct := {}
 	for i in TOOLS.size():
 		var k := hud.tool_hotkey_text(i)
-		if k == "" or CozyHud.index_for_hotkey(int(k)) != i:
+		if k == "" or CozyHud.index_for_hotkey_text(k) != i:
 			keys_ok = false
 		distinct[k] = true
 	print("[cozyv2] hud tool hotkeys: %d tool(s), %d distinct key(s) shown  [%s]" % [

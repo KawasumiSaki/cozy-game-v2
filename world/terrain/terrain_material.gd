@@ -55,11 +55,27 @@ const MATERIALS := {
 		"default_buildability": "restricted",
 		"tags": ["natural", "liquid"],
 	},
+	"farmland": {
+		"display_name": "Farmland",
+		"color": Color(0.36, 0.24, 0.15),
+		"hardness": 0.15,
+		# NOT buildable, and that is the point: you do not drop a wall onto a crop
+		# field. Fill it back to soil first. The material's own default carries the
+		# rule — `set_material` reads it, so no extra code is involved.
+		"buildable_default": false,
+		"fertility": 1.0,
+		"default_buildability": "natural",
+		"tags": ["natural", "cultivated", "farmable"],
+	},
 }
 
 ## Fixed storage order. Chunk cell arrays store INDICES into this list rather
 ## than strings — a PackedInt32Array per chunk instead of thousands of Strings.
-const ORDER: Array[String] = ["grass", "soil", "sand", "stone", "water"]
+##
+## ⚠️ APPEND ONLY. A saved chunk stores indices, so inserting a material in the
+## middle silently re-labels every existing cell: `stone` would read back as
+## whatever moved into slot 3. New materials go on the END.
+const ORDER: Array[String] = ["grass", "soil", "sand", "stone", "water", "farmland"]
 
 const DEFAULT := "grass"
 

@@ -12,6 +12,9 @@ enum Op {
 	DIG,              ## Lower the surface.
 	FILL,             ## Raise the surface.
 	FLATTEN,          ## Level the area to its mean height.
+	## Break the ground for planting: Soil -> Farmland.
+	## APPENDED, not inserted, so the existing values do not shift.
+	TILL,
 }
 
 enum Shape { POLYGON, CIRCLE, RECT }
@@ -99,10 +102,30 @@ static func fill_polygon(poly: PackedVector2Array, p_depth := 0.5) -> CozyTerrai
 	return i
 
 
+## Break ground for planting. The chain is Grass -> Soil -> Farmland and the
+## system refuses to skip a step: tilling grass does nothing (see
+## `CozyTerrainSystem._till_cell`). Two actions, two tools, on purpose.
+static func till_brush(center: Vector2, p_radius := 2.0) -> CozyTerrainIntent:
+	var i := CozyTerrainIntent.new()
+	i.operation = Op.TILL
+	i.shape = Shape.CIRCLE
+	i.points = PackedVector2Array([center])
+	i.radius = p_radius
+	return i
+
+
+static func till_polygon(poly: PackedVector2Array) -> CozyTerrainIntent:
+	var i := CozyTerrainIntent.new()
+	i.operation = Op.TILL
+	i.shape = Shape.POLYGON
+	i.points = poly
+	return i
+
+
 # ---------------------------------------------------------------- helpers
 
 func op_name() -> String:
-	return ["clear", "paint", "dig", "fill", "flatten"][operation]
+	return ["clear", "paint", "dig", "fill", "flatten", "till"][operation]
 
 
 ## Resolve the intent's shape into world-space cell centres.

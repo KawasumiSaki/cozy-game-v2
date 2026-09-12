@@ -267,13 +267,39 @@ func set_tools(tools: Array[String], groups: Array = []) -> void:
 
 
 ## Tools are numbered 1..9 then 0, so ten of them fit a row without a modifier.
+##
+## The palette has since outgrown that: an eleventh tool would repeat "1" on the
+## same row. Shift extends the SAME scheme rather than inventing a second one, so
+## the eleventh tool reads "S1" and the row still teaches its own shortcuts —
+## which is the whole point of printing them (debt 14).
 static func hotkey_name(index: int) -> String:
-	return str((index + 1) % 10)
+	if index < 0:
+		return ""
+	if index < 10:
+		return str((index + 1) % 10)
+	if index < 20:
+		return "S" + str((index - 9) % 10)
+	return ""
 
 
 ## Which tool index a digit key selects. 0 means the tenth tool, not the first.
-static func index_for_hotkey(digit: int) -> int:
+## `shifted` selects the second ten.
+static func index_for_hotkey(digit: int, shifted := false) -> int:
+	if shifted:
+		return 19 if digit == 0 else 9 + digit
 	return 9 if digit == 0 else digit - 1
+
+
+## Inverse of `hotkey_name`, for checks that read the printed LABEL rather than a
+## keycode. Kept next to its pair so the two cannot drift.
+static func index_for_hotkey_text(text: String) -> int:
+	var t := text.strip_edges()
+	var shifted := t.begins_with("S")
+	if shifted:
+		t = t.substr(1)
+	if not t.is_valid_int():
+		return -1
+	return index_for_hotkey(int(t) % 10, shifted)
 
 
 func set_clock(text: String) -> void:
@@ -303,6 +329,7 @@ func _tool_name(tool: String) -> String:
 		"dig": return "Dig"
 		"fill": return "Fill"
 		"clear": return "Clear"
+		"till": return "Till"
 		_: return tool
 
 

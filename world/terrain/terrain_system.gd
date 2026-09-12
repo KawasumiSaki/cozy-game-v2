@@ -188,6 +188,10 @@ func apply_intent(intent: CozyTerrainIntent) -> Dictionary:
 					touched += 1
 		CozyTerrainIntent.Op.FLATTEN:
 			touched = _flatten(cells)
+		CozyTerrainIntent.Op.TILL:
+			for c in cells:
+				if _till_cell(c):
+					touched += 1
 
 	return {"cells": cells.size(), "touched": touched, "dirty": _dirty.size()}
 
@@ -214,6 +218,30 @@ func _clear_cell(c: Vector2) -> bool:
 	if changed:
 		_dirty[loc[0]] = true
 	return changed
+
+
+## Soil -> Farmland. The planting half of the chain.
+##
+## It REFUSES anything that is not already soil, and that refusal is the feature:
+## the chain is Grass -> Soil -> Farmland, and tilling grass directly would make
+## the clearing step optional. Two tools, two actions. A player who tills a lawn
+## gets nothing and has to notice why.
+##
+## Note what is NOT here: no height change. Farmland is flat ground — elevation
+## editing is deliberately out of scope for now, and this op must not sneak it in.
+func _till_cell(c: Vector2) -> bool:
+	var loc := locate(c.x, c.y)
+	if loc.is_empty():
+		return false
+	var chunk: CozyTerrainChunk = chunks[loc[0]]
+	if chunk.material_id_at(loc[1], loc[2]) != "soil":
+		return false
+	# `set_material` carries the new material's default buildability with it, so
+	# farmland lands on NATURAL by itself — no buildability write needed here.
+	if not chunk.set_material(loc[1], loc[2], "farmland"):
+		return false
+	_dirty[loc[0]] = true
+	return true
 
 
 func _offset_height(c: Vector2, delta: float) -> bool:
