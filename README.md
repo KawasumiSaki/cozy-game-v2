@@ -1,14 +1,22 @@
-# CozyVale V2
+# 《无冕之乡》 (CozyVale V2)
 
 > **Real Space Under the Hood, Pixel Art on the Surface.**
+>
+> Home sim × party loot ARPG × procedural fantasy building × pixel 3D.
+> Repo name is historical; the game is 《无冕之乡》.
 
 A pixel-art life / adventure / building sim. The world genuinely exists in 3D —
 X/Y/Z, real floors, real occlusion, real collision — while everything the player
 sees is pixel art.
 
-Rebuilt from scratch on the architecture in 《游戏 V2 技术架构》.
+Rebuilt from scratch on the architecture in 《无冕之乡》技术架构 V2.2 (Obsidian vault,
+$00-架构总纲/$; V2.1 archived under ).
 The previous 2D prototype lives on separately in `~/cozy-game` and is **not**
 the ancestor of this code.
+
+**Current position: all of it is in prose in the Obsidian vault**
+(`01-项目/xiansuwd/`), which is where a session starts. The repo carries the
+contracts the code depends on (`docs/`).
 
 ---
 
@@ -25,27 +33,24 @@ So: **use 3D to solve space, use pixel art to solve looks.**
 
 ## Layout
 
+**The full layout, with the rule that decides where new code goes, is in
+[`docs/PROJECT_LAYOUT.md`](docs/PROJECT_LAYOUT.md).** In short:
+
 ```
 cozy-game-v2/
-├── project.godot          # 640x360 base, integer-scaled, no smoothing
-├── main.tscn / main.gd    # Phase 0 scene: ground + house + 2 characters
-├── core/                  # (reserved) game manager, event bus, time
-├── world/
-│   ├── spatial/           # (reserved) floors, rooms, portals
-│   └── terrain/           # (reserved) fine grid, dig/fill
-├── building/
-│   └── wall.gd            # segment wall -> geometry + collision
-├── character/
-│   └── character_body.gd  # 3D position + 2D pixel billboard
-├── render/
-│   ├── camera_rig.gd      # orthographic camera
-│   ├── occlusion.gd       # fade the wall that blocks the player
-│   └── pixel_art.gd       # PLACEHOLDER texture factory
-├── data/
-│   └── materials.gd       # data-driven material table
-└── docs/
-    └── ROADMAP.md         # block plan and current status
+├── main.tscn / main.gd    # the ONLY scene; everything else is built in code
+├── core/                  # clock, and primitives with no domain
+├── data/                  # pure data tables — no behaviour, no nodes
+├── building/              # walls, floors, roofs, stairs, openings
+├── world/                 # terrain · spatial · objects · npc · scatter · vfx · save
+├── character/             # body, appearance, the NPC FSM
+├── render/                # camera, occlusion, placeholder art, asset library
+├── ui/                    # hud, context menu, resident panel, theme
+├── assets/art/            # the asset tree — mostly empty by design
+└── docs/                  # the contracts: INVARIANTS, ART_PROFILE, ROADMAP, LAYOUT
 ```
+
+Folders are **feature domains, not file types**. There is no `utils/`.
 
 ## Axis convention
 
@@ -59,12 +64,21 @@ label.
 # Interactive
 godot --path cozy-game-v2
 
-# Headless self-check: drives the player outside -> doorway -> upstairs
-# and prints physics state every frame
-godot --headless --path cozy-game-v2 --quit-after 900
+# Headless self-check. Expect 117 OK / 0 FAIL / 0 ERROR.
+godot --headless --path cozy-game-v2 --quit-after 4500
+
+# Occlusion probe: eight positions plus a camera-angle sweep
+godot --headless --path cozy-game-v2 --quit-after 400 -- --cozy-probe-occlusion
 ```
 
-Controls: `WASD` move · `Q`/`E` rotate camera · `R`/`F` pitch · wheel zoom.
+Controls: `WASD` move · `B` build mode · `TAB` cycle tool · `1-9`/`0` tools
+(`Shift+1..0` for the second ten) · wheel zoom.
+
+**The camera angle is LOCKED** (doc E.1.1). `L` unlocks it for debugging only —
+no production asset may ever be authored from a view that produces.
+
+Renamed 2026-09-12: the game is now **_无冕之乡_**. The repo keeps the
+`cozy-game-v2` name.
 
 ## Art
 
