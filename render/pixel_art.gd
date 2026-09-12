@@ -51,33 +51,66 @@ static func make_plank_texture(size: int, base: Color, seed_val: int) -> ImageTe
 
 
 ## Simple 16x24 pixel character sprite — the Phase 0 stand-in.
-## Replace this single function when real character art is ready.
-static func make_character_texture(skin: Color, cloth: Color, hair: Color) -> ImageTexture:
+##
+## `pose` and `step` exist so `CozyCharacterVisuals` can build a whole sprite
+## sheet from one function. These are PLACEHOLDER POSES, not animation: each is a
+## couple of pixels of difference, which is all a 16x24 figure can carry and all
+## the pipeline contract needs exercised. They have to be DISTINGUISHABLE, though
+## — a selector that plays `work` through a resident's sleep is invisible if
+## every pose draws the same figure.
+##
+## Replace this function when real character art is ready. Neither the selection
+## logic nor the sheet contract changes when it is.
+static func make_character_texture(skin: Color, cloth: Color, hair: Color,
+		pose := "idle", step := 0) -> ImageTexture:
 	const W := 16
 	const H := 24
 	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
 	img.fill(Color(0, 0, 0, 0))
 
-	var head_top := 3
-	var head_bot := 10
-	var body_top := 10
-	var body_bot := 19
+	# Lying down is a different SHAPE, not an offset — a standing figure shifted
+	# a few pixels still reads as standing.
+	if pose == "sleep":
+		for y in range(H - 7, H - 3):
+			for x in range(3, 13):
+				img.set_pixel(x, y, cloth)
+		for x in range(12, 16):                      # head at the far end
+			for y in range(H - 8, H - 3):
+				img.set_pixel(x, y, hair if y < H - 6 else skin)
+		return _outline(img, Color(0.15, 0.12, 0.18, 1.0))
+
+	# Sitting drops the whole figure and shortens the legs.
+	var drop := 2 if pose == "sit" else 0
+	var breathe := 1 if (pose == "idle" or pose == "work") and step % 2 == 1 else 0
+	var lean := 1 if pose == "work" and step % 2 == 1 else 0
+
+	var head_top := 3 + drop + breathe
+	var head_bot := 10 + drop + breathe
+	var body_top := 10 + drop + breathe
+	var body_bot := 19 + drop
+	var leg_bot := H - 1 if pose != "sit" else H - 4
 
 	# Head (top two rows read as hair)
 	for y in range(head_top, head_bot):
-		for x in range(5, 11):
+		for x in range(5 + lean, 11 + lean):
 			img.set_pixel(x, y, hair if y < head_top + 2 else skin)
 
 	# Torso
 	for y in range(body_top, body_bot):
-		for x in range(4, 12):
+		for x in range(4 + lean, 12 + lean):
 			img.set_pixel(x, y, cloth)
 
-	# Legs
-	for y in range(body_bot, H - 1):
-		for x in range(5, 7):
+	# Legs. Walking swings them in opposite directions; everything else is still.
+	var lx := 5
+	var rx := 9
+	if pose == "walk":
+		var swing: int = [0, 1, 0, -1][step % 4]
+		lx += swing
+		rx -= swing
+	for y in range(body_bot, leg_bot):
+		for x in range(lx, lx + 2):
 			img.set_pixel(x, y, skin)
-		for x in range(9, 11):
+		for x in range(rx, rx + 2):
 			img.set_pixel(x, y, skin)
 
 	return _outline(img, Color(0.15, 0.12, 0.18, 1.0))

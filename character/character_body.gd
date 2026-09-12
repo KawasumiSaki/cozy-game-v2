@@ -21,11 +21,20 @@ var move_speed := 5.0
 var uses_gravity := false
 var is_player := false
 
-var sprite: Sprite3D = null
+## AnimatedSprite3D, NOT AnimatedSprite2D — an AnimatedSprite2D is a CanvasItem
+## and cannot stand in a 3D world. The 3D one extends SpriteBase3D, so every
+## property this file sets below (billboard, pixel_size, alpha_cut) still applies
+## exactly as it did on Sprite3D; only `texture` became `sprite_frames`.
+var sprite: AnimatedSprite3D = null
+
+## Who this character looks like (ART-14). Data, not a scene — see
+## `CozyAppearanceDefs`. Assigning a new one only takes effect on `rebuild_visual`.
+var appearance: Dictionary = CozyAppearanceDefs.make_default()
 
 var _skin := Color(0.96, 0.80, 0.66)
 var _cloth := Color(0.55, 0.42, 0.72)
 var _hair := Color(0.32, 0.22, 0.16)
+var _playing := ""
 
 
 func setup(p_name: String, p_skin: Color, p_cloth: Color, p_hair: Color, p_is_player := false) -> void:
@@ -42,8 +51,8 @@ func _ready() -> void:
 
 
 func _build_visual() -> void:
-	sprite = Sprite3D.new()
-	sprite.texture = CozyPixelArt.make_character_texture(_skin, _cloth, _hair)
+	sprite = AnimatedSprite3D.new()
+	sprite.sprite_frames = CozyCharacterVisuals.frames_for(appearance)
 	sprite.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 	# Fixed-Y billboard: rotate around the vertical axis only, never follow the
 	# camera's pitch — otherwise the sprite lays down as the camera tilts.
@@ -57,7 +66,54 @@ func _build_visual() -> void:
 	# The texture centre is not the feet: lift by half the height so the
 	# sprite's feet land exactly on the node origin.
 	sprite.position = Vector3(0.0, CAPSULE_HEIGHT * 0.5, 0.0)
+	_playing = ""
 	add_child(sprite)
+	_update_animation()
+
+
+## Rebuild the sprite from `appearance`. Separate from `_build_visual` so a
+## resident can be re-dressed without being re-created — and so the caller can
+## assign `appearance` after `_ready()` has already run.
+func rebuild_visual() -> void:
+	if sprite != null and is_instance_valid(sprite):
+		sprite.queue_free()
+	_build_visual()
+
+
+## What this character believes it is doing. Overridden by residents; the player
+## only ever walks and stands.
+func current_activity() -> String:
+	return "work"
+
+
+## Is the character engaged in a task rather than idle? The player never is.
+func is_occupied() -> bool:
+	return false
+
+
+## Which animation should be playing right now. Derived from the ACTUAL velocity
+## rather than from a movement intent, so there is one source of truth for "am I
+## moving" — the physics — instead of two that can disagree.
+func current_animation() -> String:
+	var flat := Vector2(velocity.x, velocity.z)
+	return CozyCharacterVisuals.select(
+		current_activity(), flat.length_squared() > 0.01, is_occupied())
+
+
+## Idempotent by construction: it reads state and only calls into the sprite when
+## the answer changed, so running it N times is the same as running it once.
+func _update_animation() -> void:
+	if sprite == null or not is_instance_valid(sprite):
+		return
+	if sprite.sprite_frames == null:
+		return
+	var want := current_animation()
+	if want == _playing:
+		return
+	if not sprite.sprite_frames.has_animation(want):
+		return
+	_playing = want
+	sprite.play(want)
 
 
 func _build_collision() -> void:
@@ -77,6 +133,10 @@ func _physics_process(delta: float) -> void:
 		elif velocity.y < 0.0:
 			velocity.y = 0.0
 	move_and_slide()
+	# After move_and_slide, so the animation reads this frame's velocity rather
+	# than the previous frame's — one frame of lag is invisible in a still and
+	# obvious in a walk cycle.
+	_update_animation()
 
 
 ## Set this frame's horizontal movement intent (world-space, already normalised).

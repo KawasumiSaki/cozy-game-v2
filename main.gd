@@ -133,6 +133,7 @@ var _outline_preview: MeshInstance3D = null
 var _clock := 0.0
 var _is_headless := false
 var _build_test_done := false
+var _character_test_done := false
 var _npc_test_done := false
 var _occlusion_test_done := false
 var _occlusion_probe_done := false
@@ -1536,6 +1537,9 @@ func _run_headless_stages() -> void:
 	if not _vfx_test_done and f > 120:
 		_vfx_test_done = true
 		_check_vfx()
+	if not _character_test_done and f > 140:
+		_character_test_done = true
+		_check_character_visuals()
 	if not _outline_test_done and f > 1500:
 		_outline_test_done = true
 		_check_outline_build()
@@ -3169,6 +3173,154 @@ func _check_opening_shot() -> void:
 	print("[cozyv2] opening shot at spawn: %d opaque, %d faded  [%s]" % [
 		opaque, faded,
 		"OK" if opaque == 0 and faded == 0 else "FAIL, the opening view is not clear"])
+
+
+## ART-14: the character sheet contract (Hybrid Pixel Diorama pipeline).
+##
+## Four things that fail separately, so they are asserted separately:
+##
+##   1. the SELECTION is right — a resident asleep must not play `work`
+##   2. the sheet COVERS what selection can ask for, and nothing it cannot
+##   3. the NODE is wired, and its per-frame update is idempotent
+##   4. an appearance ID that does not exist is REPORTED, not silently absorbed
+func _check_character_visuals() -> void:
+	_check_character_selection()
+	_check_character_sheet()
+	_check_character_node()
+	_check_character_appearance()
+
+
+## Every case here is a fact about the game, not a restatement of the code.
+##
+## The first row is the whole reason this assertion exists. A resident's sleep
+## runs with `fsm_state == WORKING`, so selecting on the FSM alone plays `work`
+## for eight straight in-game hours — and the character just looks busy.
+func _check_character_selection() -> void:
+	var cases: Array = [
+		# activity, moving, busy, expected
+		["sleep",   false, true,  "sleep"],
+		["sleep",   true,  false, "walk"],     # walking to bed is WALKING
+		["eat",     false, true,  "sit"],
+		["leisure", false, true,  "sit"],      # third sit activity, from the table
+		["social",  false, true,  "sit"],
+		["work",    false, true,  "work"],
+		["work",    false, false, "idle"],
+		["wake",    false, false, "idle"],     # nothing to seek, so nothing to do
+	]
+	var bad: Array[String] = []
+	for c in cases:
+		var got := CozyCharacterVisuals.select(String(c[0]), bool(c[1]), bool(c[2]))
+		if got != String(c[3]):
+			bad.append("%s/moving=%s/busy=%s gave %s, wanted %s" % [c[0], c[1], c[2], got, c[3]])
+	print("[cozyv2] character anim select: %d case(s), sit=%s  [%s]" % [
+		cases.size(), ",".join(CozyCharacterVisuals.sit_activities()),
+		"OK" if bad.is_empty() else "FAIL, " + "; ".join(bad)])
+
+
+## Both directions, and the second is the one this project keeps needing.
+##
+## Forward: something the selector can return must exist, or the character goes
+## blank at that moment. Backward: an animation in the sheet that NO input can
+## reach is a sheet nobody will ever see — the "declared capability with no
+## consumer" trap, which this project has paid for five times. A `carry`
+## animation would land here today: hauling runs inside `fsm_state == WORKING`
+## and is indistinguishable from any other work.
+func _check_character_sheet() -> void:
+	var frames := CozyCharacterVisuals.frames_for(player.appearance)
+	var reachable := CozyCharacterVisuals.reachable_animations()
+	var missing: Array[String] = []
+	var orphans: Array[String] = []
+	var wrong: Array[String] = []
+	var names := frames.get_animation_names()
+	for anim in CozyCharacterVisuals.ANIMATIONS:
+		if not frames.has_animation(anim):
+			missing.append(anim)
+			continue
+		var want_frames := int(CozyCharacterVisuals.FRAMES[anim])
+		if frames.get_frame_count(anim) != want_frames:
+			wrong.append("%s has %d of %d" % [anim, frames.get_frame_count(anim), want_frames])
+	for i in names.size():
+		if not reachable.has(String(names[i])):
+			orphans.append(String(names[i]))
+	var ok := missing.is_empty() and orphans.is_empty() and wrong.is_empty()
+	print("[cozyv2] character sheet: %d animation(s), reachable=%s, orphan=%s%s  [%s]" % [
+		names.size(), ",".join(reachable),
+		"none" if orphans.is_empty() else ",".join(orphans),
+		"" if wrong.is_empty() else ", wrong frame count: " + "; ".join(wrong),
+		"OK" if ok else "FAIL, missing=%s" % ",".join(missing)])
+
+
+## The node itself. `AnimatedSprite3D` and not `AnimatedSprite2D` — a 2D one is a
+## CanvasItem and cannot render in a 3D world at all, which is a mistake that
+## shows up as an empty screen rather than as an error.
+##
+## The idempotence half is not decoration: `_update_animation()` runs every
+## physics frame, and this project has already paid three times for a per-frame
+## routine that only ever passed single-frame tests.
+func _check_character_node() -> void:
+	var s := player.sprite
+	if s == null or not is_instance_valid(s):
+		print("[cozyv2] character anim node: NOT BUILT  [FAIL]")
+		return
+	var wanted_pixel := CozyCharacter.SPRITE_WORLD_W / float(CozyCharacter.SPRITE_TEX_W)
+	var wired: Array[String] = []
+	if not (s is AnimatedSprite3D):
+		wired.append("node is %s, not AnimatedSprite3D" % s.get_class())
+	if s.sprite_frames == null:
+		wired.append("no sprite_frames")
+	if s.billboard != BaseMaterial3D.BILLBOARD_FIXED_Y:
+		wired.append("billboard is not FIXED_Y")
+	if not is_equal_approx(s.pixel_size, wanted_pixel):
+		wired.append("pixel_size %.4f, wanted %.4f" % [s.pixel_size, wanted_pixel])
+	if s.alpha_cut != SpriteBase3D.ALPHA_CUT_DISCARD:
+		wired.append("alpha_cut is not DISCARD")
+
+	# Idempotence: 240 per-frame updates must leave the same animation playing.
+	var before := s.animation
+	var before_playing := s.is_playing()
+	for _i in 240:
+		player._update_animation()
+	if s.animation != before or s.is_playing() != before_playing:
+		wired.append("animation drifted over 240 updates (%s -> %s)" % [before, s.animation])
+
+	# And the live NPC's answer must be the pure function of its own inputs —
+	# the wiring, not just the logic, has to be connected.
+	var npc_want := CozyCharacterVisuals.select(
+		npc.current_activity(),
+		Vector2(npc.velocity.x, npc.velocity.z).length_squared() > 0.01,
+		npc.is_occupied())
+	if npc.current_animation() != npc_want:
+		wired.append("npc current_animation disagrees with select()")
+
+	print("[cozyv2] character anim node: AnimatedSprite3D playing \"%s\", %d update(s) stable, npc=%s/%s  [%s]" % [
+		before, 240, npc.current_activity(), npc_want,
+		"OK" if wired.is_empty() else "FAIL, " + "; ".join(wired)])
+
+
+## A typo in an appearance id has to be REPORTED. Silently falling back to the
+## placeholder is how an id and a rendered sheet drift apart with nothing to see:
+## the character still draws, it just draws the wrong one.
+func _check_character_appearance() -> void:
+	var typo := CozyAppearanceDefs.make_default()
+	typo["hair"] = "hair_99"
+	var bad := CozyAppearanceDefs.unknown_slots(typo)
+	var repaired := CozyAppearanceDefs.normalise(typo)
+	var partial := CozyAppearanceDefs.normalise({"clothes": "clothes_04"})
+	var problems: Array[String] = []
+	if bad != ["hair"]:
+		problems.append("hair_99 reported as %s" % str(bad))
+	if String(repaired["hair"]) != String(CozyAppearanceDefs.DEFAULT["hair"]):
+		problems.append("normalise kept the bad id")
+	if String(partial["clothes"]) != "clothes_04" or String(partial["hair"]) != String(CozyAppearanceDefs.DEFAULT["hair"]):
+		problems.append("a partial appearance was not filled in")
+	if CozyAppearanceDefs.ids_for("hair").size() != CozyAppearanceDefs.HAIR.size():
+		problems.append("ids_for disagrees with the table")
+	print("[cozyv2] character appearance: %d slot(s), %d hair / %d face / %d clothes / %d body / %d color, typo caught=%s  [%s]" % [
+		CozyAppearanceDefs.SLOTS.size(),
+		CozyAppearanceDefs.HAIR.size(), CozyAppearanceDefs.FACE.size(),
+		CozyAppearanceDefs.CLOTHES.size(), CozyAppearanceDefs.BODY.size(),
+		CozyAppearanceDefs.COLOR.size(), str(bad == ["hair"]),
+		"OK" if problems.is_empty() else "FAIL, " + "; ".join(problems)])
 
 
 ## PROBE, not an assertion. Walk the followed character around the homestead and

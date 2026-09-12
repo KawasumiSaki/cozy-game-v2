@@ -201,6 +201,17 @@ func current_activity() -> String:
 	return "work"
 
 
+## Working is the only FSM state that has a task. IDLE has not acquired one and
+## GOING is walking to it — and `CozyCharacterVisuals.select` checks locomotion
+## first, so a resident on the way to bed walks rather than sleeps.
+##
+## Note what this does NOT decide: whether the task is work, eating or sleeping.
+## All three run while `fsm_state == WORKING`, which is why the animation cannot
+## be selected from the FSM alone.
+func is_occupied() -> bool:
+	return fsm_state == State.WORKING
+
+
 func _physics_process(delta: float) -> void:
 	match fsm_state:
 		State.IDLE:

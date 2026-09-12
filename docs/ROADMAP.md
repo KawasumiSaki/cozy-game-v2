@@ -102,8 +102,8 @@
 | ART-11 | Terrain scatter | ✅ |
 | ART-12 | Building material library | 🚧 assembly done, textures await assets |
 | ART-13 | Pixel VFX library | ✅ campfire |
-| ART-14 | NPC sprite pipeline | ⬜ |
-| ART-15 | NPC Skeleton2D | ⬜ |
+| ART-14 | NPC sprite pipeline | 🚧 game-side contract DONE 2026-09-12 — appearance data, animation selection, `AnimatedSprite3D`. Awaiting the Blender factory's sheets (step 2+). |
+| ART-15 | NPC Skeleton2D | ⬜ superseded in part: the skeleton now lives in Blender, not Godot. See `ART_PROFILE.md` §9. |
 | ART-16 | NPC animation controller | ⬜ |
 | ART-17 | Pixel corrective animation | ⬜ |
 | ART-18 | Art QA scene | ⬜ |
