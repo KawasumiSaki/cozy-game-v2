@@ -34,7 +34,7 @@
 | V2-01 | Orthographic camera | ✅ (now locked — see ART-09) |
 | V2-02 | Segment wall | ✅ |
 | V2-03 | Character billboard | ✅ |
-| V2-04 | Occlusion fade | 🚧 — two of three measured root causes fixed 2026-09-12 (stale fade list, slabs never registered); the ray still fades only the NEAREST blocker. Probe: `--cozy-probe-occlusion` |
+| V2-04 | Occlusion fade | ✅ mechanisms complete 2026-09-12 — stale fade list, slabs never registered, and the ray now marches past the nearest blocker. All 8 probe spots report 0 opaque at every yaw. Probe: `--cozy-probe-occlusion` |
 
 ### Phase 1 — Spatial core
 | ID | Block | Status |
@@ -117,7 +117,7 @@
 |---|---|---|
 | Axis mapping | `doc(x,y,z) -> godot(x,z,y)` — height is real elevation, never a render layer | doc §1.1 |
 | Render style | Real 3D + orthographic + 2D pixel billboards. **Characters are NOT 3D.** | doc §1.2, E.1.2 |
-| Camera | **Locked**, 5 zoom steps, `L` = debug unlock only. The ANGLE is **yaw 0 / pitch 40 + narrow-FOV perspective as of 2026-09-12 — provisional, awaiting Willow**. Zoom is remembered across runs; the angle deliberately is not. | doc E.1.1, Willow 2026-09-12 |
+| Camera | **Locked**, 5 zoom steps, `L` = debug unlock only. The ANGLE is **yaw 180 / pitch 40 + narrow-FOV perspective as of 2026-09-12**. The yaw is a measurement, not a taste call: the door is cut into the `z = 0` wall, so the front of the house faces `-Z`, and the camera has to be on that side or the game opens on the back of the building. Zoom is remembered across runs; the angle deliberately is not. | doc E.1.1, `_check_opening_shot` |
 | Resolution | **Native 1280×720**, `canvas_items` stretch. Pixel size comes from asset texel density, not a global downscale. | doc E.2 |
 | Buildings | Remain real 3D geometry | doc E.1.3 |
 | Everything else | Pixel sprite / billboard by default | doc E.1.4 |

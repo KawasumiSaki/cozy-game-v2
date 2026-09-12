@@ -34,6 +34,14 @@ const WELL_X1 := 7.0     ## ...to here. The ramp tops out at WELL_X1 and the
                          ## level floor instead of stepping off into a wall.
 const WELL_Z0 := 3.0
 
+## Where the game starts: in front of the door, on the south side of the house.
+##
+## The house's door is cut into the z = 0 wall, so the FRONT of the house faces
+## -Z — and the locked camera has to be on that side, or the game opens on the
+## back of the house with the whole building between the camera and the player.
+## Measured 2026-09-12 (see `_check_opening_shot`).
+const SPAWN_POINT := Vector3(3.25, 0.2, -3.5)
+
 const SNAP_M := 0.25     ## Wall snapping — assistance, not a cage (#84).
 const MIN_WALL_LEN := 0.5
 
@@ -775,7 +783,7 @@ func _build_characters() -> void:
 	player.uses_gravity = true
 	player.floor_max_angle = deg_to_rad(55.0)
 	add_child(player)
-	player.global_position = Vector3(3.25, 0.2, -3.5)
+	player.global_position = SPAWN_POINT
 
 	# The NPC starts on the GROUND floor while its workstation is UPSTAIRS, so
 	# its first job exercises the whole stack: local nav -> portal -> room graph
@@ -3129,6 +3137,39 @@ func _check_occlusion() -> void:
 		occlusion.fadables.size(), live.size(), freed, missing,
 		"OK" if freed == 0 and missing == 0 else "FAIL, the fade set is not the live views"])
 
+	_check_opening_shot()
+
+
+## The view the game OPENS ON, measured rather than assumed.
+##
+## The spawn point is the first place the player sees their own character, so the
+## camera must have a clear line to it — nothing between the two, and therefore
+## nothing that has to fade to make the player visible.
+##
+## BOTH NUMBERS ARE ASSERTED, and the second one is the one with teeth. An opaque
+## count of zero alone passes at any angle where the fade rule happens to rescue
+## the shot; requiring that NOTHING faded says the framing itself is right, and it
+## is what separates a camera on the front of the house from one on the back.
+##
+## Measured 2026-09-12 with the yaw sweep in `--cozy-probe-occlusion`: at yaw 0 the
+## spawn needs the roof and the upper south wall faded before the player is
+## visible, because the door is cut into the z = 0 wall and yaw 0 puts the camera
+## on the far side of the house. That was the whole "front yard is hidden" bug.
+func _check_opening_shot() -> void:
+	var keep := player.global_position
+	player.global_position = SPAWN_POINT
+	camera.snap_to_target()
+	occlusion.refresh()
+	var opaque := _count_opaque_blockers()
+	var faded := occlusion.faded_count()
+	# Hand the world back before anything downstream reads it.
+	player.global_position = keep
+	camera.snap_to_target()
+	occlusion.refresh()
+	print("[cozyv2] opening shot at spawn: %d opaque, %d faded  [%s]" % [
+		opaque, faded,
+		"OK" if opaque == 0 and faded == 0 else "FAIL, the opening view is not clear"])
+
 
 ## PROBE, not an assertion. Walk the followed character around the homestead and
 ## report what the occlusion ray actually does from each spot.
@@ -3154,7 +3195,7 @@ func _probe_occlusion_sweep() -> void:
 
 	var keep := player.global_position
 	var spots: Array = [
-		["front yard (spawn)", Vector3(3.25, 0.2, -3.5)],
+		["front yard (spawn)", SPAWN_POINT],
 		["at the door", Vector3(3.25, 0.2, -1.0)],
 		["inside floor 0 mid", Vector3(4.0, 0.2, 3.0)],
 		["inside floor 0 north", Vector3(4.0, 0.2, 5.0)],
@@ -3182,15 +3223,61 @@ func _probe_occlusion_sweep() -> void:
 		occlusion.refresh()
 		_probe_occlusion_at(spot[0])
 
+	_probe_yaw_sweep()
+
 	# A probe reads the world; it must hand it back the way it found it.
 	player.global_position = keep
 	camera.snap_to_target()
 	occlusion.refresh()
 
 
-## One spot: every collider along the camera->player ray, in order, each labelled
-## with whether it faded.
-func _probe_occlusion_at(label: String) -> void:
+## Hold the SPOTS fixed and move the CAMERA ANGLE.
+##
+## The sweep above answers "where is the player hidden" for one angle. That is not
+## enough to act on, because the same spot is clear or occluded depending on where
+## the camera stands — and the angle is exactly what is under discussion.
+##
+## The angle is the thing being measured, so it is varied here on purpose. That
+## needs the debug unlock; `lock_view()` puts it back before this returns, so the
+## camera-lock assertion still sees a locked camera.
+func _probe_yaw_sweep() -> void:
+	var spots: Array = [
+		["spawn", SPAWN_POINT],
+		["door", Vector3(3.25, 0.2, -1.0)],
+		["f0 mid", Vector3(4.0, 0.2, 3.0)],
+		["north yard", Vector3(4.0, 0.2, 9.0)],
+	]
+	print("[cozyv2] probe yaw sweep: pitch %.0f, opaque blockers per spot (0 = player visible)" % [
+		camera.pitch_deg])
+	for y in [0.0, 90.0, 180.0, 270.0]:
+		camera.free_look = true
+		camera.yaw_deg = y
+		camera._apply_angles()
+		var line: Array[String] = []
+		for s in spots:
+			player.global_position = s[1]
+			camera.snap_to_target()
+			occlusion.refresh()
+			line.append("%s=%d/%d" % [s[0], _count_opaque_blockers(), occlusion.faded_count()])
+		print("[cozyv2]   yaw %3.0f | cam_z=%7.1f | opaque/faded of %d: %s" % [
+			y, camera.global_position.z, occlusion.fadables.size(), "  ".join(line)])
+		for s in spots:
+			player.global_position = s[1]
+			camera.snap_to_target()
+			occlusion.refresh()
+			var who := _probe_opaque_names()
+			if who != "":
+				print("[cozyv2]     yaw %3.0f | %-11s blocked by: %s" % [y, s[0], who])
+	camera.lock_view()
+
+
+## Every collider along the camera->player ray, in order, nearest first.
+##
+## `intersect_ray` returns only the FIRST hit, so the rest are found by re-casting
+## with everything already found excluded. That march is the whole point of this
+## probe: the occlusion rule itself takes only the first hit, and the question is
+## what it is leaving behind.
+func _probe_ray_hits() -> Array:
 	var from: Vector3 = camera.global_position
 	var to: Vector3 = player.global_position + Vector3(0.0, CozyOcclusion.AIM_HEIGHT, 0.0)
 
@@ -3206,6 +3293,44 @@ func _probe_occlusion_at(label: String) -> void:
 			break
 		hits.append(h)
 		exclude.append(h["rid"])
+	return hits
+
+
+## How many colliders on the current camera->player ray did NOT fade.
+##
+## The number that matters for occlusion: above zero means the player is genuinely
+## hidden, whatever the "faded" count says.
+func _count_opaque_blockers() -> int:
+	var n := 0
+	for h in _probe_ray_hits():
+		var f: Object = _fadable_owning(h["collider"])
+		if f == null or not occlusion.is_faded(f):
+			n += 1
+	return n
+
+
+## The names of the blockers that did NOT fade, so a count of 1 says WHICH one.
+##
+## Without this, "f0 mid = 1 at every yaw" is only a number. The name says whether
+## the angle or the fade rule put it there.
+func _probe_opaque_names() -> String:
+	var names: Array[String] = []
+	for h in _probe_ray_hits():
+		var f: Object = _fadable_owning(h["collider"])
+		if f == null:
+			names.append("%s (not fadable)" % _describe_collider(h["collider"]))
+		elif not occlusion.is_faded(f):
+			names.append(_describe_fadable(f))
+	return ", ".join(names)
+
+
+## One spot: every collider along the camera->player ray, in order, each labelled
+## with whether it faded.
+func _probe_occlusion_at(label: String) -> void:
+	var from: Vector3 = camera.global_position
+	var to: Vector3 = player.global_position + Vector3(0.0, CozyOcclusion.AIM_HEIGHT, 0.0)
+
+	var hits := _probe_ray_hits()
 
 	var faded_n := 0
 	var opaque_n := 0

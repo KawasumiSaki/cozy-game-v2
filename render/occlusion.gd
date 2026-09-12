@@ -53,6 +53,13 @@ var watch_non_followed := false
 const FADE_ALPHA := 0.22
 const AIM_HEIGHT := 1.0   ## Aim at chest height, not at the feet
 
+## How many blockers one ray may walk through before giving up.
+##
+## A bound, not a budget: it exists so a degenerate ray (grazing a wall built from
+## many pieces) cannot spin. Crossing a house is a handful of hits, so this is far
+## above what a real line of sight produces.
+const MAX_BLOCKERS_PER_RAY := 24
+
 ## Diagnostics: which target's line of sight each faded object is blocking.
 ## Read by the self-check so the cause is measured rather than guessed.
 var _faded_by: Dictionary = {}
@@ -89,14 +96,31 @@ func refresh() -> void:
 		var t = watched[i]
 		if not is_instance_valid(t):
 			continue
+		var space := camera.get_world_3d().direct_space_state
 		var from: Vector3 = camera.global_position
 		var to: Vector3 = t.global_position + Vector3(0.0, AIM_HEIGHT, 0.0)
-		var q := PhysicsRayQueryParameters3D.create(from, to)
-		q.collide_with_areas = false
-		var hit := camera.get_world_3d().direct_space_state.intersect_ray(q)
-		if hit and hit.has("collider"):
+		# EVERY blocker on the ray, not just the nearest.
+		#
+		# `intersect_ray` returns one hit, and taking it alone leaves everything
+		# behind it opaque — so the character stays hidden. Measured 2026-09-12
+		# with the yaw sweep in `--cozy-probe-occlusion`: standing inside floor 0
+		# reports an opaque blocker at yaw 0, 90, 180 AND 270, and the blocker is
+		# always a slab. That is the upper floor acting as a ceiling, and no camera
+		# angle puts the camera under it. Fading only the first hit cannot fix a
+		# case where the first hit is not the one doing the hiding.
+		var exclude: Array[RID] = []
+		if t is CollisionObject3D:
+			exclude.append((t as CollisionObject3D).get_rid())
+		for _step in MAX_BLOCKERS_PER_RAY:
+			var q := PhysicsRayQueryParameters3D.create(from, to)
+			q.collide_with_areas = false
+			q.exclude = exclude
+			var hit := space.intersect_ray(q)
+			if hit.is_empty() or not hit.has("collider"):
+				break
 			blocked[hit["collider"]] = true
 			cause[hit["collider"]] = i
+			exclude.append(hit["rid"])
 
 	_faded_by.clear()
 	for w in fadables:

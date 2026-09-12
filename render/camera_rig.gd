@@ -31,7 +31,19 @@ extends Camera3D
 ## CHANGED 2026-09-12, Willow's call: front-on and a little higher, instead of
 ## the 45-degree oblique this started with. Tune these two numbers and nothing
 ## else moves — the lock, the occlusion rays and the self-check all read here.
-const FIXED_YAW := 0.0
+##
+## YAW IS 180, NOT 0, and that is a measurement rather than a preference. The
+## house's door is cut into its z = 0 wall and the player spawns south of it, so
+## the FRONT of the house faces -Z. At yaw 0 the camera sits at +Z — behind the
+## house — and the building is between the camera and the player from the first
+## frame. Measured with the yaw sweep in `--cozy-probe-occlusion`: at yaw 0 the
+## spawn needs the roof and the upper south wall faded before the player is
+## visible; at 180 it needs nothing faded at all. See `_check_opening_shot`.
+##
+## 90 and 270 are equally clear at the spawn (see that sweep) but put a gable
+## where the front door should be, which throws away the one thing the authored
+## house tells the camera about itself.
+const FIXED_YAW := 180.0
 const FIXED_PITCH := 40.0
 
 ## Projection (2026-09-12, Willow's call — "B: perspective with a narrow FOV").

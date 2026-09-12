@@ -279,6 +279,54 @@ Corollary: `CozyStair.set_fade(a)` takes the alpha and drops it (`_a` is never
 read). Stairs are deliberately NOT in the list — listing one would add a fadable
 that never fades, which is the same defect wearing the opposite mask.
 
+## Fading the NEAREST blocker is not the same as clearing the line of sight
+
+`intersect_ray` returns one hit. Taking it alone fades the first thing on the ray
+and leaves everything behind it opaque, so the character is still hidden — and
+`faded > 0` reads as success.
+
+Measured 2026-09-12 with the yaw sweep in `--cozy-probe-occlusion`: a player
+standing **inside floor 0** is reported hidden at yaw 0, 90, 180 **and** 270, and
+the blocker is always a `slab`. That slab is the upper floor acting as a ceiling,
+and **no camera angle puts the camera underneath it**. The bug is not the angle;
+a rule that fades one blocker cannot fix a case where the first blocker is not the
+one doing the hiding.
+
+So the ray is **marched**: re-cast from the same origin with everything already
+found excluded, until nothing is left. Bounded by `MAX_BLOCKERS_PER_RAY`.
+
+The tempting reasoning to distrust: "fading everything will turn the whole house
+to glass." That was the prediction; the measurement said otherwise. Worst case on
+the authored house is **3 fadables out of 13** (standing in the doorway at yaw 0),
+and each one is genuinely between the camera and the player. Fading exactly what
+blocks is the doc's rule (#57) — "fade only the geometry that actually blocks the
+line of sight". Predictions about how it *looks* are the ones to measure.
+
+## The camera belongs on the side the building faces
+
+A door is cut into a wall, and that wall is the front. The camera has to be on
+that side, or the game opens on the back of the house with the whole building
+between the camera and the player.
+
+Here the door is cut into the `z = 0` wall and the player spawns south of it, so
+the front faces `-Z`; **yaw 0 put the camera at `+Z`, i.e. behind the house**. The
+symptom was "the player is invisible in the front yard", which reads like an
+occlusion bug and is not one.
+
+Two rules fall out, and both are asserted rather than eyeballed:
+
+- **The opening shot must need NO fade.** `_check_opening_shot` asserts `0 opaque`
+  **and** `0 faded` at `SPAWN_POINT`. The opaque count alone passes at any angle
+  the fade rule happens to rescue; requiring that nothing faded is what says the
+  *framing* is right. At yaw 0 the spawn needs the roof and the upper south wall
+  faded; at 180 it needs nothing.
+- **One definition of the spawn.** `SPAWN_POINT` — the setup code, the probe and
+  the check all read it. A probe that teleports to a hardcoded copy of the spawn
+  point stops measuring the spawn the moment the spawn moves.
+
+`ground_forward()` / `ground_right()` derive from the yaw, so changing it does
+**not** change the controls — only which side of a building you see.
+
 ---
 
 ## Bugs this project has already paid for
@@ -308,10 +356,18 @@ log (`02-开发日志/游戏开发日志.md`).
 | 18 | `_sync_views` matched by id and never re-pointed `v.state` → views refreshed from replaced state | wall-connection (corner) assertion, after a live load |
 | 19 | The fade list held a freed roof, missed the live one, and had never contained a slab → no roof ever faded | occlusion probe (`occlusion fade set`) |
 | 20 | `0 faded` printed OK while the fade set was wrong — a count that several different wrong worlds produce | same probe, once bug 19 was fixed |
+| 21 | Occlusion faded only the NEAREST blocker; the player stayed hidden indoors at all four camera angles (always behind a slab) | yaw sweep in the occlusion probe |
+| 22 | The locked camera sat on the far side of the house from the door — the opening shot was the back of the building | `opening shot at spawn` assertion |
 
-**Eighteen of the twenty were found by an assertion, not by looking at the
+**Twenty of the twenty-two were found by an assertion, not by looking at the
 screen.** Several were invisible in a still frame. That is the whole argument
 for the assertion discipline in `03-流程/更新方案.md`.
+
+Bug 22 is the sharpest case of the pattern yet, because **the old assertion was
+still green while it was happening**: `occlusion, player outdoors:` printed
+`2 faded ... [OK]` at yaw 0 and `0 faded, 0 for non-followed [OK]` at yaw 180.
+The same `[OK]` for the broken angle and the correct one. Only a check that names
+the thing being asserted — *the opening view is clear* — could tell them apart.
 
 Bugs 15 and 16 share a shape worth naming: **both lived in code that had never
 once been executed.** Bug 15 was in a widget nothing instantiated; bug 16 was in
