@@ -23,6 +23,84 @@ extends RefCounted
 const VERSION := 1
 const DEFAULT_PATH := "user://world.json"
 
+## --- version policy (frozen 2026-09-12, Core Architecture V1.0) --------------
+##
+## WHEN TO BUMP `VERSION`:
+##
+##   adding a field that has a safe default   -> DO NOT bump. An old file still
+##                                               reads; the reader supplies the
+##                                               default. Bumping here would
+##                                               strand every existing world for
+##                                               no reason.
+##   changing what an existing field MEANS    -> bump, and register a step.
+##   removing a field                         -> bump, and register a step.
+##
+## A bump with no registered step is a fault, not a policy: the file becomes
+## unreadable and no migration can ever be written for it. `_migrations` is
+## walked from the file's version UP to `VERSION`, one step at a time, so a v1
+## file reaching v3 runs v1->v2 and then v2->v3 and each step is testable alone.
+
+## from_version -> Callable(world: Dictionary) -> Dictionary
+##
+## Empty today: `VERSION` is still 1, so there is nothing to migrate FROM. The
+## mechanism, the policy and the fixtures exist so that the first real bump is a
+## one-line registration rather than a redesign.
+static var _migrations: Dictionary = {}
+
+
+## Register the step that turns a `from_version` world into a `from_version + 1`
+## world. Registering twice for the same version replaces the step.
+static func register_migration(from_version: int, step: Callable) -> void:
+	_migrations[from_version] = step
+
+
+static func clear_migrations() -> void:
+	_migrations.clear()
+
+
+## Can a file at this version reach the current one?
+## `target` exists so the chain is TESTABLE while `VERSION` is still 1 and there
+## is nothing real to migrate. Without it the walk below could never execute and
+## the mechanism would be unverified code — which is the shape this project has
+## paid for repeatedly.
+static func can_migrate(from_version: int, target := VERSION) -> bool:
+	var v := from_version
+	while v < target:
+		if not _migrations.has(v):
+			return false
+		v += 1
+	return v == target
+
+
+## Walk a document up to `VERSION`, one registered step at a time.
+##
+## Returns {} when any step is missing, and that refusal is kept deliberately:
+## a partially-understood world is worse than no world, because it LOOKS like it
+## loaded. Same rule as the version check it replaces, applied per step.
+static func migrate(doc: Dictionary, target := VERSION) -> Dictionary:
+	var version := int(doc.get("version", -1))
+	if version < 1:
+		return {}                       # no usable version field: not our file
+	if version > target:
+		return {}                       # from the future: not migratable back
+	var current := {"version": version, "world": doc.get("world", {})}
+	var steps := 0
+	while version < target:
+		if not _migrations.has(version):
+			return {}
+		var world: Variant = (_migrations[version] as Callable).call(current["world"])
+		if typeof(world) != TYPE_DICTIONARY:
+			return {}
+		version += 1
+		steps += 1
+		current = {"version": version, "world": world}
+		# A step that forgets to advance the version would spin forever. Bound it
+		# by the number of versions there are, not by a number that looks big.
+		if steps > target + 1:
+			push_error("save: migration did not advance past version %d" % version)
+			return {}
+	return current
+
 
 static func save_world(world: Dictionary, path := DEFAULT_PATH) -> bool:
 	var f := FileAccess.open(path, FileAccess.WRITE)
@@ -57,9 +135,15 @@ static func load_world(path := DEFAULT_PATH) -> Dictionary:
 		return {}
 	var doc: Dictionary = parsed
 	if int(doc.get("version", -1)) != VERSION:
-		push_error("save: %s is version %s, expected %d — refusing rather than \
-half-reading it" % [path, str(doc.get("version", "none")), VERSION])
-		return {}
+		# An older file gets a chance to be brought forward. A missing step is
+		# still a refusal — see `migrate`.
+		var migrated := migrate(doc)
+		if migrated.is_empty():
+			push_error("save: %s is version %s, expected %d, and no migration \
+reaches it — refusing rather than half-reading it" % [
+				path, str(doc.get("version", "none")), VERSION])
+			return {}
+		doc = migrated
 	var world: Variant = doc.get("world", {})
 	if typeof(world) != TYPE_DICTIONARY:
 		push_error("save: %s has no world object" % path)
