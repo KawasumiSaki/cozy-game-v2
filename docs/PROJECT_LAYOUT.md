@@ -86,6 +86,13 @@ cozy-game-v2/
 │   ├── atlases/                          Packed sheets, by category.
 │   └── generated/{ai_raw,cleaned,approved}/   The AI asset pipeline.
 │
+├── tests/                  The self-check. See tests/README.md.
+│   ├── self_check.gd           The stage schedule. The checks themselves are
+│   │                           still on Main — see debt #1 below.
+│   ├── smoke/                  (empty) Runs that boot the real world.
+│   ├── unit/                   (empty) Pure-logic tests.
+│   └── fixtures/art/           Asset-library test data.
+│
 └── docs/                   The contracts. Read before changing behaviour.
     ├── INVARIANTS.md          22 bugs this project already paid for.
     ├── ART_PROFILE.md         Camera, pixel density, import rules, pipeline.
@@ -172,8 +179,8 @@ Honest list. These are known and not yet fixed.
 | # | Debt | Size |
 |---|---|---|
 | 1 | **`main.gd` is 3,879 lines — 28% of the codebase.** ~1,780 of those are the headless self-check (40 `_check_*` functions + 6 probes) | 🔴 the real problem |
-| 2 | Test fixtures live in the production asset tree (`assets/art/pixel/`, `assets/art/generated/ai_raw/`). Professional practice is a `tests/` tree — but the asset library scans `res://assets/art` recursively *and asserts the resulting counts*, so moving them changes a tested contract | 🟡 needs a decision |
-| 3 | No `tests/` folder exists at all; the self-check runs as an optional stage inside `Main._run_headless_stages()` | 🔴 |
+| 2 | ~~Test fixtures live in the production asset tree~~ — **FIXED 2026-09-12.** Moved to `tests/fixtures/art/`, and `CozyAssetLibrary.load_dir()` takes the path as a parameter: production passes `ART_ROOT`, the check passes `FIXTURE_ROOT`. Deleting the fixtures from `assets/art` had been impossible without breaking the count assertion — which is the tell that the assertion was measuring the folder rather than the loader | ✅ |
+| 3 | The self-check's **schedule** is separated (`tests/self_check.gd`), but its **40 checks** are still methods on `Main` | 🟡 half done |
 | 4 | `project.godot` and `README.md` still say 640×360; the project has run at 1280×720 since 2026-09-12 | 🟢 cosmetic |
 | 5 | 47 markdown files but no `CHANGELOG`. History lives in the Obsidian dev log, which is not in the repo | 🟢 |
 
@@ -206,3 +213,28 @@ Two extra rules learned here:
 - **A new `class_name` needs one `--import` run** before anything can reference
   it, or every reference fails to parse.
 - **`.uid` files are tracked** and must move with their script.
+- **`--quit-after` counts IDLE frames, not physics frames**, and under headless
+  the physics tick advances at roughly **0.42** of that rate: a 4500-frame run
+  reaches about physics frame 1880. A scheduled stage past that never fires, and
+  it fails *silently*. See `tests/README.md`.
+
+## 8. What "professional" meant here
+
+Willow asked which layout a studio would use. The honest answer, and the one
+that shaped this document:
+
+| Practice | Do pros do it? | Done here? |
+|---|---|---|
+| Feature-domain folders, not `scripts/`+`sprites/` | Yes, consensus | ✅ already |
+| Tests in their own tree | Yes, universally (GUT / UTF / Unreal Automation) | ✅ `tests/` |
+| Fixtures out of the production asset tree | Yes | ✅ 2026-09-12 |
+| Production paths injected, not hard-coded | Yes | ✅ `ART_ROOT` / `FIXTURE_ROOT` |
+| Tests never in the main scene script | Yes | ❌ **debt #1** |
+| A unit-test framework | Yes, once there is unit logic to test | ⏳ `unit/` is empty |
+
+**The disagreement worth recording:** the self-check here is an *integration
+smoke test* — it boots the real world for thousands of frames. A framework like
+GUT runs unit tests and would not help with it. Studios keep both layers, and
+this project currently has only the second. The next useful move is not a
+framework; it is writing the first `unit/` tests for logic that is already pure
+and already untested. See `tests/README.md`.

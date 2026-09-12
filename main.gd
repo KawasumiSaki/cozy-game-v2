@@ -42,6 +42,14 @@ const WELL_Z0 := 3.0
 ## Measured 2026-09-12 (see `_check_opening_shot`).
 const SPAWN_POINT := Vector3(3.25, 0.2, -3.5)
 
+## Where production art lives. EMPTY until real assets exist — that is the
+## correct state (doc 58.1: "美术资源可以为空，系统不能依赖资源本身才能运行").
+const ART_ROOT := "res://assets/art"
+
+## Where the asset-library fixtures live. The loader takes a path rather than
+## hard-coding one, so the test reads test data and production reads production.
+const FIXTURE_ROOT := "res://tests/fixtures/art"
+
 const SNAP_M := 0.25     ## Wall snapping — assistance, not a cage (#84).
 const MIN_WALL_LEN := 0.5
 
@@ -132,13 +140,11 @@ var _outline_preview: MeshInstance3D = null
 
 var _clock := 0.0
 var _is_headless := false
-var _build_test_done := false
-var _character_test_done := false
-var _npc_test_done := false
-var _occlusion_test_done := false
-var _occlusion_probe_done := false
-var _vfx_test_done := false
-var _outline_test_done := false
+## The headless self-check's schedule (tests/self_check.gd). It owns WHICH stages
+## exist and WHEN each is due; the checks themselves are still methods here.
+## One stage used to need a boolean member AND an if-block below; now it needs a
+## line in `_build_self_check()`.
+var self_check: CozySelfCheck = null
 
 
 func _ready() -> void:
@@ -149,6 +155,7 @@ func _ready() -> void:
 		print("[cozyv2] headless self-check start")
 	_build_environment()
 	_build_clock()
+	_build_self_check()
 	_build_assets()
 	_build_terrain()
 	# The homestead starts on ground that has already been cleared. Without
@@ -198,6 +205,38 @@ func _build_clock() -> void:
 	add_child(clock)
 
 
+# ---------------------------------------------------------------- self-check
+
+## Register the self-check's stages. ONE LINE PER STAGE, and the order here is
+## the order they are listed in, not the order they run — each fires on its own
+## frame.
+##
+## Frames are PHYSICS frames. `--quit-after` counts idle frames, and the two
+## diverge under a variable step, so a stage's frame is a measurement, not a
+## round number someone liked.
+##
+## The frame each stage sits at is not arbitrary either:
+##   * occlusion at 60 — the player is still outdoors with nothing in front of
+##     them. It is the only moment that answer is unambiguous.
+##   * the others wait for the systems they measure to have settled, which is
+##     why the two autopilot-dependent ones sit far later.
+func _build_self_check() -> void:
+	self_check = CozySelfCheck.new()
+	self_check.add("occlusion", 60, _check_occlusion)
+	# Probe only. Gated on the flag so the baseline run never pays for it.
+	self_check.add("occlusion_probe", 90, _probe_occlusion_sweep,
+		func() -> bool: return _has_arg("--cozy-probe-occlusion"))
+	self_check.add("vfx", 120, _check_vfx)
+	self_check.add("character", 140, _check_character_visuals)
+	self_check.add("outline", 1500, _check_outline_build)
+	self_check.add("live_rebuild", AUTOPILOT_DONE_FRAME, _run_live_rebuild_test)
+	self_check.add("npc_work", NPC_CHECK_FRAME, _check_npc_work)
+	# Last, so it observes every stage above it. It is itself a stage, which is
+	# what keeps a deliberately short run (`--quit-after 400`) honest: the report
+	# simply never fires rather than failing on stages the run could not reach.
+	self_check.add("schedule", 1600, _check_self_check)
+
+
 # ---------------------------------------------------------------- environment
 
 func _build_environment() -> void:
@@ -232,7 +271,7 @@ func _build_environment() -> void:
 ## "美术资源可以为空，系统不能依赖资源本身才能运行。"
 func _build_assets() -> void:
 	assets = CozyAssetLibrary.new()
-	assets.load_dir("res://assets/art")
+	assets.load_dir(ART_ROOT)
 
 
 # ---------------------------------------------------------------- scatter
@@ -1532,32 +1571,28 @@ func _handle_move_keys() -> void:
 
 
 ## Headless staged tests, run once each at fixed frames.
+## Run every stage that has come due. The schedule itself is data — see
+## `_build_self_check()` for the table and `tests/self_check.gd` for the runner.
+## Always fires, however the run ends.
+##
+## The assertion above can only report on a run that was long enough to reach it.
+## This is what makes an over-budget stage VISIBLE instead of silent — which is
+## the entire failure mode being guarded, so a report that shares the same blind
+## spot would be decoration.
+func _exit_tree() -> void:
+	if not _is_headless or self_check == null:
+		return
+	var pending: Array[String] = []
+	for name in self_check.required_names():
+		if not self_check.has_run(name):
+			pending.append(name)
+	print("[cozyv2] self-check at exit: %s, never ran=%s" % [
+		self_check.describe(),
+		"none" if pending.is_empty() else ",".join(pending)])
+
+
 func _run_headless_stages() -> void:
-	var f := Engine.get_physics_frames()
-	# Early, while the player is still out in the open with nothing in front
-	# of them — the only moment the occlusion answer is unambiguous.
-	if not _occlusion_test_done and f > 60:
-		_occlusion_test_done = true
-		_check_occlusion()
-	# Probe only, never in the baseline run: see `_probe_occlusion_sweep`.
-	if not _occlusion_probe_done and f > 90 and _has_arg("--cozy-probe-occlusion"):
-		_occlusion_probe_done = true
-		_probe_occlusion_sweep()
-	if not _vfx_test_done and f > 120:
-		_vfx_test_done = true
-		_check_vfx()
-	if not _character_test_done and f > 140:
-		_character_test_done = true
-		_check_character_visuals()
-	if not _outline_test_done and f > 1500:
-		_outline_test_done = true
-		_check_outline_build()
-	if not _build_test_done and f > AUTOPILOT_DONE_FRAME:
-		_build_test_done = true
-		_run_live_rebuild_test()
-	if not _npc_test_done and f > NPC_CHECK_FRAME:
-		_npc_test_done = true
-		_check_npc_work()
+	self_check.run_due(Engine.get_physics_frames())
 
 
 ## Headless autopilot: outside -> through the doorway -> up the stairs (#169).
@@ -2372,7 +2407,23 @@ func _check_assets() -> void:
 		print("[cozyv2] asset library: NOT BUILT  [FAIL]")
 		return
 
-	var s := assets.summary()
+	# The check reads a library pointed at the FIXTURE tree, not at the
+	# production one, and the path is a parameter rather than a constant buried
+	# in the loader. Two reasons, and the second is the real one:
+	#
+	#   * the fixtures are test data and belong in tests/ (see
+	#     docs/PROJECT_LAYOUT.md), and
+	#   * an assertion that counts what happens to be sitting in the production
+	#     asset folder is measuring the FOLDER, not the loader. Emptying
+	#     `res://assets/art` — which is the correct state until real art exists,
+	#     doc 58.1 — would otherwise turn this into a failing test.
+	#
+	# Nothing in production reads `assets` today: the library is built, and the
+	# scatter takes one in `setup()` and never looks at it. So this split changes
+	# what is TESTED, not what RUNS.
+	var fixtures := CozyAssetLibrary.new()
+	fixtures.load_dir(FIXTURE_ROOT)
+	var s := fixtures.summary()
 	var expected_loaded := 4
 	var expected_rejected := 1
 	var expected_runtime := 3
@@ -2382,21 +2433,21 @@ func _check_assets() -> void:
 			and s["runtime"] == expected_runtime else "FAIL, expected 4/1/3"])
 
 	# A rejected definition must say WHY (same rule as the terrain gate, doc #72).
-	var why := assets.rejection_report()
+	var why := fixtures.rejection_report()
 	print("[cozyv2] asset library rejects malformed_draft: %s  [%s]" % [
 		why, "OK" if why.contains("missing") else "FAIL, no reason given"])
 
 	# E.3.1 — the RAW asset must not appear in the runtime set.
 	var raw_leaked := false
-	for d in assets.runtime_definitions():
+	for d in fixtures.runtime_definitions():
 		if d.state_name() != "approved":
 			raw_leaked = true
-	var raw_visible_to_query := assets.by_category("vegetation").size()
+	var raw_visible_to_query := fixtures.by_category("vegetation").size()
 	print("[cozyv2] asset library raw exclusion: runtime=%d, vegetation query=%d  [%s]" % [
 		s["runtime"], raw_visible_to_query,
 		"OK" if not raw_leaked and raw_visible_to_query == 3 else "FAIL"])
 
-	var grassland := assets.by_biome_and_category("grassland", "vegetation")
+	var grassland := fixtures.by_biome_and_category("grassland", "vegetation")
 	print("[cozyv2] asset library biome query: grassland+vegetation -> %d  [%s]" % [
 		grassland.size(), "OK" if grassland.size() == 2 else "FAIL, expected 2"])
 
@@ -3218,6 +3269,33 @@ func _check_occlusion() -> void:
 		"OK" if freed == 0 and missing == 0 else "FAIL, the fade set is not the live views"])
 
 	_check_opening_shot()
+
+
+## The self-check's own bookkeeping: every UNGATED stage must have RUN.
+##
+## The failure this exists for is silent by construction. A stage scheduled at a
+## frame the run never reaches simply never fires — no error, no warning — and
+## the suite looks exactly as green as it does when the stage passed. Scheduling
+## one at 9000 against a 4500-frame baseline would quietly retire a check, and
+## nothing else in this file would notice.
+##
+## Gated stages are excluded: a probe behind a command-line flag not running is
+## the normal case, not a failure.
+##
+## ⚠️ THE FRAME BUDGET. `--quit-after` counts IDLE frames and the headless physics
+## tick advances at roughly 0.42 of that, so the 4500-frame baseline reaches only
+## about physics frame 1880. A stage scheduled past that NEVER FIRES, silently.
+## This check is scheduled at 1600 for exactly that reason, and `_exit_tree()`
+## reports the same thing even when the run was too short to reach here.
+func _check_self_check() -> void:
+	var pending: Array[String] = []
+	for name in self_check.required_names():
+		if not self_check.has_run(name):
+			pending.append(name)
+	print("[cozyv2] self-check schedule: %s, pending=%s  [%s]" % [
+		self_check.describe(),
+		"none" if pending.is_empty() else ",".join(pending),
+		"OK" if pending.is_empty() else "FAIL, a scheduled stage never ran"])
 
 
 ## The view the game OPENS ON, measured rather than assumed.
