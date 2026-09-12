@@ -87,10 +87,18 @@ doorway 1.5 m wide.
 | Asset kind | Pivot | Notes |
 |---|---|---|
 | Ground vegetation (grass, flower, pebble) | bottom-centre | Sits ON the ground plane |
-| Trees, bushes, props | bottom-centre | Trunk base at the pivot |
+| Trees, bushes | bottom-centre | Trunk base at the pivot |
+| **Props and furniture** | **not a sprite at all** | **3D geometry — see below** |
 | Characters | bottom-centre | Feet at the pivot — the billboard is already offset by half the capsule height in code |
 | Walls and building parts | centre of the footprint | Generated geometry, not authored sprites |
 | VFX | centre, unless it has a clear origin (fire: bottom) | |
+
+> **Furniture is 3D, decided 2026-09-12.** This table used to file "props" under
+> the bottom-centre billboard pivot, which contradicted the code —
+> `WorldObject._build()` makes a `BoxMesh`. The 3D path wins because a low object
+> does not read as a front-on sprite: a bed is 0.9 x 2.0 m, so from the front you
+> see only its 0.9 m edge. Furniture's real asset is therefore a **material
+> texture**, not a sprite.
 
 Billboards are drawn as **fixed-Y** (rotate about the vertical axis only, never
 follow the camera's pitch). An asset that only reads correctly when tilted does
