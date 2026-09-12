@@ -23,7 +23,14 @@ property, and one that must not be traded away for tidiness.
 ```bash
 # Occlusion probe: eight positions plus a camera-angle sweep
 "$GODOT" --headless --path D:/cozy/cozy-game-v2 --quit-after 400 -- --cozy-probe-occlusion
+
+# Unit tests — a SEPARATE entry point, no world booted
+"$GODOT" --headless --path D:/cozy/cozy-game-v2 --script res://tests/unit/run.gd
 ```
+
+**Two commands, and they do different jobs.** The game's self-check boots a real
+world and drives it for ~1,880 physics frames; the unit runner boots nothing and
+finishes in under a second. That split is the whole point of `unit/`.
 
 ---
 
@@ -34,7 +41,10 @@ tests/
 ├── self_check.gd     The schedule: which stages exist, when each is due, and
 │                     whether it ran. It owns everything AROUND the checks.
 ├── smoke/            (empty) Integration runs that boot the real world.
-├── unit/             (empty) Pure-logic tests. Nothing here yet.
+├── unit/             Pure-logic tests. 6 suites, 31 cases, 718 checks.
+│   ├── run.gd            The entry point. `--script` it; main.gd never sees it.
+│   ├── unit_test.gd      ~40 lines of assertion helpers. No framework.
+│   └── test_*.gd         One file per subject.
 └── fixtures/
     └── art/          Asset-library test data. 5 definitions: 3 APPROVED,
                       1 RAW, 1 deliberately malformed.
@@ -86,6 +96,27 @@ been imported once, every reference to it fails to parse with
 
 ---
 
+## What the first batch caught
+
+Two of the first 72 checks FAILED, and both times **the test was wrong, not the
+code** — which is the useful direction for a first batch:
+
+- `accepts_building()` is true for **PREPARED as well as BUILDABLE**. The
+  assumption that only BUILDABLE qualifies came from the doc's four-step chain
+  (`Grassland -> CLEARED -> PREPARED -> BUILDABLE`), but the code deliberately
+  treats "levelled and consolidated" as good enough.
+- `from_name()` falls back to NATURAL for a name it does not know. That fallback
+  is **silent**, but the direction is the safe one — refusing to build beats
+  allowing it. The real risk it leaves is a typo in a `default_buildability`
+  string, and that is now caught **at the source**:
+  `test_terrain_materials.every material names a real state`.
+
+The teeth test worth keeping: moving `farmland` from the end of `ORDER` into the
+middle produces six failures, including `stone resolves to index 3: got 4` —
+which is the saved-world corruption itself, named.
+
+---
+
 ## House rules
 
 | Rule | Why |
@@ -102,11 +133,16 @@ been imported once, every reference to it fails to parse with
 
 In the order the project will actually need it:
 
-1. **`unit/` — pure logic, no world.** Several real candidates already exist and
-   have NO test today: `CozyTerrainIntent.cells()` shape resolution,
-   `CozyTerrainMaterials.index_of()` (the APPEND-ONLY rule currently rests on a
-   single boolean inside an integration check), `CozyCharacterVisuals.select()`
-   (already a pure function), `CozyAppearanceDefs.normalise()`.
+1. ~~**`unit/` — pure logic, no world.**~~ **DONE 2026-09-12.** Six suites cover
+   the material table (including the APPEND-ONLY rule, which until now rested on
+   a single boolean inside an integration check), buildability, the animation
+   selector, the schedule bridge, the appearance table, and intent shapes.
+
+   **Next candidates**, found while writing these: `CozyMaterials.cost_for()`
+   (wall cost from volume — pure arithmetic with a `ceilf` on the end),
+   `CozyTraits` / `CozySkills` clamping, and `CozyWallAssembly.blocks_for_span()`
+   (the running-bond geometry, which currently has an integration check that
+   boots a world to compare block counts).
 2. **Extract the checks** out of `Main`, one domain at a time, starting with the
    ones that need the least world.
 3. **A framework** (GUT / GdUnit4) — only once `unit/` has enough in it to be
