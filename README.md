@@ -9,8 +9,8 @@ A pixel-art life / adventure / building sim. The world genuinely exists in 3D �
 X/Y/Z, real floors, real occlusion, real collision — while everything the player
 sees is pixel art.
 
-Rebuilt from scratch on the architecture in 《无冕之乡》技术架构 V2.2 (Obsidian vault,
-$00-架构总纲/$; V2.1 archived under ).
+Rebuilt from scratch on the architecture in 《无冕之乡》技术架构 **V2.2**
+(Obsidian vault, `xiansuwd/00-架构总纲/`; V2.1 is archived under `历史版本/`).
 The previous 2D prototype lives on separately in `~/cozy-game` and is **not**
 the ancestor of this code.
 
