@@ -234,3 +234,49 @@ size is not.
 `assets/art/generated/ai_raw/` -> `cleaned/` -> `approved/`. **RAW never reaches
 the runtime library** — `CozyAssetLibrary.runtime_definitions()` returns APPROVED
 only, and that is enforced in code rather than by convention (ART-10).
+
+---
+
+## 9. The Hybrid Pixel Diorama pipeline (Willow, 2026-09-12)
+
+Four asset classes, four different producers. **The runtime is never 3D-animated
+for anything in the "sprite" rows** — §1.2's "2D Pixel Characters" is unchanged.
+
+| Layer | Producer | Runtime form |
+|---|---|---|
+| Buildings, furniture | Procedural / authored 3D | Real 3D geometry |
+| **Large trees** | Blender, multi-layer concentric shells | **2.5D pseudo-3D mesh** |
+| Grass, flowers, small rocks | AI sprites | Quad + billboard |
+| **Characters / NPCs** | **Blender as a character factory** | **Sprite sheet** |
+
+### Characters: Blender renders, Godot plays sprites
+
+```
+concept art -> Blender low-poly -> Skeleton -> animation
+            -> ORTHOGRAPHIC render -> sprite sheet -> AnimatedSprite3D
+```
+
+Blender is a **factory**, not a runtime dependency. It bakes appearance
+(hair / face / clothes / body / colour) into a sheet; the game loads PNGs.
+
+Two details that decide the implementation:
+
+- **The node is `AnimatedSprite3D`, not `AnimatedSprite2D`.** Godot 4.7 has
+  `AnimatedSprite3D`, and it extends `SpriteBase3D` — so every property
+  `CozyCharacter._build_visual()` sets today (`billboard`, `pixel_size`,
+  `alpha_cut`, `texture_filter`, `shaded`, `double_sided`) still applies. The
+  migration is `sprite.texture` -> `sprite.sprite_frames` and nothing else.
+  An `AnimatedSprite2D` is a CanvasItem and cannot stand in a 3D world.
+- **Render ORTHOGRAPHIC even though the game camera is perspective.** A character
+  is a flat quad that always faces the camera, so it has no depth within itself
+  and orthographic vs perspective changes nothing about it. The camera is 40 m
+  out with a ~17 degree frame, so the scale at the focal plane matches too.
+
+### Large trees are 2.5D, and that has one consequence
+
+The multi-layer concentric-shell tree only reads if the mesh **does not
+billboard** — a billboard rotates to face the camera every frame, which cancels
+the parallax the layers exist to produce. So the tree asset needs a world-fixed
+path, while grass keeps `make_billboard_material()`. Measured payoff at the
+locked camera: about 4.6 px of layer separation at the screen edge at default
+zoom, 0 at the centre (see the yaw sweep in `--cozy-probe-occlusion`).

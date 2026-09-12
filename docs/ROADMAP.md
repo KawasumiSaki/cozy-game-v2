@@ -122,6 +122,7 @@
 | Buildings | Remain real 3D geometry | doc E.1.3 |
 | Everything else | Pixel sprite / billboard by default | doc E.1.4 |
 | Art | Placeholder only; nothing real committed | doc §58.1 |
+| **Art pipeline** | **Hybrid Pixel Diorama**: buildings/furniture = 3D, **large trees = 2.5D shells**, grass/small = sprites, **NPC = Blender-rendered sprite sheets**. Blender is a factory, not a runtime dependency — `Characters are NOT 3D` (§1.2) still holds. See `ART_PROFILE.md` §9. | Willow 2026-09-12 |
 | Language | Code and comments in English | Willow 2026-09-11 |
 | UI tool grouping | By OPERATION, not by resulting object — a Door is a wall opening, not a tool | doc #24 |
 | UI selection | Right-click probes what is under the cursor; the menu is built from that | Willow 2026-09-11 |
