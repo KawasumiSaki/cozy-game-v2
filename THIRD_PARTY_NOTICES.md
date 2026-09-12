@@ -6,7 +6,7 @@ The `godot-*` skills in `.claude/skills/` are taken from
 [vl4dt/godot-skills](https://github.com/vl4dt/godot-skills), used under the MIT
 Licence. The copyright notice is reproduced below as that licence requires.
 
-Included (13 of the 22 in the upstream set):
+Included (16 of the 22 in the upstream set):
 
     godot-47-migration        godot-animation          godot-architecture
     godot-code-review         godot-debugging          godot-gdscript-patterns
@@ -14,15 +14,24 @@ Included (13 of the 22 in the upstream set):
     godot-project-setup       godot-save-systems       godot-shaders-vfx
     godot-state-management
 
+    godot-input               godot-inventory-economy  godot-ui
+    ^ added 2026-09-12, when the roadmap moved: combat input (V0.2),
+      equipment and loot (V0.3) and the UI layers all became real work
+
 Omitted deliberately, so the set stays relevant to this project:
 
 | Skill | Why not |
 |---|---|
-| `godot-networking` | Frozen by the design doc §82 — no multiplayer before the vertical slice |
+| `godot-networking` | Still out of scope. The reason CHANGED on 2026-09-12: it is no longer "frozen by §82" — Willow's roadmap now puts multiplayer at V0.4 — but it is still well past the slice, and the architecture constraint that matters (world ownership, save boundary, simulation authority) is recorded in the master doc §82 rather than needing a skill |
 | `godot-csharp-patterns` | This project is GDScript only |
-| `godot-audio`, `godot-i18n`, `godot-dialog-systems` | No such systems yet, and none planned before the slice |
-| `godot-ui`, `godot-input`, `godot-inventory-economy` | Marginal today; revisit when those blocks start |
+| `godot-audio`, `godot-i18n` | No such systems yet. Game text is deliberately ASCII-only for now, which makes i18n premature by definition |
+| `godot-dialog-systems` | Dungeon events and quests are V0.2+, and no dialogue system is designed yet |
 | `godot-brainstorming` | Not applicable |
+
+**The rule this table encodes:** a skill is taken when the block it describes is
+about to start, not when it sounds useful. `godot-input` sat on the omitted list
+for a day and then earned its place the moment "combat view = top-down ARPG" was
+decided — which is the table working as intended.
 
 ### Licence
 
