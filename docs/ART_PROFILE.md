@@ -20,12 +20,24 @@ feature.
 
 | Property | Value | Where |
 |---|---|---|
-| Projection | Orthographic | `CozyCameraRig._ready()` |
-| Yaw | **45°** — locked | `CozyCameraRig.FIXED_YAW` |
-| Pitch | **52°** — locked | `CozyCameraRig.FIXED_PITCH` |
+| Projection | **Perspective, narrow FOV** (8–40°, derived from zoom) | `CozyCameraRig.USE_PERSPECTIVE` |
+| Yaw | **180°** — locked | `CozyCameraRig.FIXED_YAW` |
+| Pitch | **40°** — locked | `CozyCameraRig.FIXED_PITCH` |
 | Distance | 40 m back along the view axis | `CozyCameraRig.CAM_DISTANCE` |
 | Zoom | 5 discrete steps: 6 / 9 / 12 / 18 / 26 m visible height | `CozyCameraRig.ZOOM_STEPS` |
 | Follow | Position follows the player; **angle never changes** | `_process` |
+
+> **Changed 2026-09-12; this table used to read 45° / 52° / orthographic.** The
+> yaw moved to 180 for a measured reason, not a stylistic one: the house door is
+> cut into the `z = 0` wall, so the front of a building faces `-Z`, and a camera
+> at `+Z` opens the game on the back of the house. See
+> "The camera belongs on the side the building faces" in `INVARIANTS.md`.
+>
+> **What this means for an asset:** the view is now **front-on and 40° above the
+> horizon**, where it used to be a 45° three-quarter view. A sprite drawn as a
+> three-quarter view is now wrong. Sprites stay **straight-on** — do NOT bake the
+> downward tilt into the artwork; billboards are fixed-Y and the engine supplies
+> the tilt.
 
 "Fixed" means the ANGLE is fixed, not that the view is bolted to one spot — the
 camera must follow or the player could not walk anywhere.
@@ -160,12 +172,57 @@ vfx_fire_small_01_07.png
 
 - **No pixel assets exist.** Everything on screen is the procedural placeholder
   in `render/pixel_art.gd`; see the doc's own Art Policy (58.1).
-- **No scatter system.** Doc E.20's `VegetationScatterSystem` (ART-11) is not
-  built, so there is no vegetation to place.
-- **No deterministic art seed.** Doc E.21's
-  `WorldSeed + ChunkCoord + ObjectID + ArtRuleID` hierarchy (ART-09/ART-10) is
-  not implemented; the placeholder uses `hash()` per material.
-- **No atlas pipeline**, because there are no atlases.
+- **No atlas pipeline**, because there are no atlases. Sprites are currently
+  individual textures keyed by asset id in `VegetationScatter._texture_for()`.
+- **The terrain surface cannot take a tiling texture.** Each chunk is one quad
+  wearing a `CELLS x CELLS` (64 x 64) image in which **one cell is one pixel** —
+  a per-cell colour map at 4 px per world metre, not a texture. Ground "textures"
+  need `terrain_renderer.gd` changed first. See §8.
+- **Walls are vertex-coloured, not textured.** `CozyWallAssembly` shades each
+  block deterministically; there is no texture sampler on a wall face yet.
+
+Done since this section was first written (it used to say otherwise):
+
+- **The scatter system exists** — `CozyVegetationScatter` (ART-11), instanced
+  into one MultiMesh per asset, with real scatter rules.
+- **A deterministic art seed exists** — `CozyArtSeed` (doc E.21).
 
 The point of writing this file now is that the contract exists before the assets
 do. Doc 58.1: **美术资源可以为空，系统不能依赖资源本身才能运行。**
+
+---
+
+## 8. The four asset classes, and how each one plugs in
+
+They are genuinely different kinds of file. Authoring a ground texture the way
+you author a tree sprite produces something that cannot be used.
+
+| Class | Form | Plug-in point | Ready? |
+|---|---|---|---|
+| Vegetation, rocks, props, characters | **2D sprite**, transparent PNG, bottom-centre pivot | `VegetationScatter._texture_for()` / the billboard material | ✅ replacing a placeholder texture |
+| Building materials (wall, roof, slab) | **Seamless tiling texture**, applied to a 3D block face | `CozyWallAssembly` (vertex colour today) | ⚠️ needs the assembly to sample a texture |
+| Terrain ground (grass/soil/sand/stone/water) | **Per-cell colour map**, 1 cell = 1 px | `terrain_renderer._make_chunk_texture()` | ❌ needs the renderer reworked |
+| VFX | **2D sprite sequence**, centre or bottom pivot | VFX library | ✅ replacing a placeholder texture |
+
+### Resolution: `px = world_metres x 60`
+
+From §2 — at the default zoom, 60 screen px per world metre. A sprite's canvas
+should be `world_size x 60` px in **both** dimensions, because the billboard quad
+is square and the sprite is stretched to fill it:
+
+| Asset | World size | Canvas |
+|---|---|---|
+| `grass_tuft_01` | 0.55 m | 32 x 32 |
+| `flower_daisy_01` | 0.45 m | 32 x 32 |
+| `rock_small_01` | 0.40 m | 32 x 32 |
+| `tree_oak_01` | 2.40 m | 144 x 144 |
+
+Draw into the canvas with transparent margins rather than resizing it — a sprite
+that does not fill its canvas is correct, a canvas that does not match the world
+size is not.
+
+### Where generated art goes
+
+`assets/art/generated/ai_raw/` -> `cleaned/` -> `approved/`. **RAW never reaches
+the runtime library** — `CozyAssetLibrary.runtime_definitions()` returns APPROVED
+only, and that is enforced in code rather than by convention (ART-10).

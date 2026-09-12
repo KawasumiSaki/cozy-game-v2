@@ -55,9 +55,10 @@ Slabs carry collision. The project once had an upper floor that was only
 rendered: characters walked off the edge and dropped to the ground floor. The
 bug read as a navigation failure and was nothing of the sort.
 
-Slabs are also **fadable**. At a 52-degree camera pitch a slab sits between the
-camera and anyone under it, so a slab that cannot fade hides the player exactly
-the way a wall would.
+Slabs are also **fadable**. At the locked camera pitch a slab sits between the
+camera and anyone under it (measured at 40 degrees and at every yaw tested — see
+"Fading the NEAREST blocker"), so a slab that cannot fade hides the player
+exactly the way a wall would.
 
 ## Stairs need three things
 
