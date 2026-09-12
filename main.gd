@@ -2451,6 +2451,55 @@ func _check_assets() -> void:
 	print("[cozyv2] asset library biome query: grassland+vegetation -> %d  [%s]" % [
 		grassland.size(), "OK" if grassland.size() == 2 else "FAIL, expected 2"])
 
+	_check_asset_manifest()
+
+
+## The manifest is what an EXPORTED build reads: there are no loose files to
+## enumerate, so `DirAccess` cannot find assets at runtime and the manifest is
+## the list instead. Which means a manifest that disagrees with the tree ships
+## the WRONG ASSETS, silently — the build succeeds, it just contains the wrong
+## thing.
+##
+## So the two are compared, every run, in both directions.
+func _check_asset_manifest() -> void:
+	var manifest_path := FIXTURE_ROOT.path_join(CozyAssetLibrary.MANIFEST_NAME)
+	var listed: Array = []
+	var f := FileAccess.open(manifest_path, FileAccess.READ)
+	if f != null:
+		var parsed: Variant = JSON.parse_string(f.get_as_text())
+		f.close()
+		if typeof(parsed) == TYPE_DICTIONARY:
+			listed = (parsed as Dictionary).get("assets", [])
+
+	var walked := CozyAssetLibrary.scan_paths(FIXTURE_ROOT)
+	var in_manifest := {}
+	for entry in listed:
+		in_manifest[String(entry)] = true
+	var missing: Array[String] = []          # on disk, absent from the manifest
+	for entry in walked:
+		if not in_manifest.has(entry):
+			missing.append(entry)
+	var extra: Array[String] = []            # in the manifest, absent from disk
+	for entry in listed:
+		if not walked.has(String(entry)):
+			extra.append(String(entry))
+
+	# And loading THROUGH the manifest must reach the same definitions as
+	# scanning, or the manifest names files the loader cannot use.
+	var via := CozyAssetLibrary.new()
+	var sum := via.load_manifest(manifest_path)
+
+	# Every listed file must produce EITHER a definition or a rejection. A file
+	# that produces neither vanished inside the loader, which is the one failure
+	# the counts above cannot see.
+	var accounted := int(sum["loaded"]) + int(sum["rejected"]) == listed.size()
+	var ok := missing.is_empty() and extra.is_empty() and accounted
+	print("[cozyv2] asset manifest: %d listed, %d walked, loaded=%d refused=%d, stale(missing=%s extra=%s)  [%s]" % [
+		listed.size(), walked.size(), int(sum["loaded"]), int(sum["rejected"]),
+		"none" if missing.is_empty() else ",".join(missing),
+		"none" if extra.is_empty() else ",".join(extra),
+		"OK" if ok else "FAIL, the manifest disagrees with the tree"])
+
 
 ## The interface (built 2026-09-11).
 ##

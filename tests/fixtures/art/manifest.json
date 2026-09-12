@@ -1,0 +1,10 @@
+{
+  "assets": [
+    "generated/ai_raw/malformed_draft.json",
+    "pixel/props/rock_small_01.json",
+    "pixel/vegetation/fern_draft_01.json",
+    "pixel/vegetation/flower_daisy_01.json",
+    "pixel/vegetation/grass_tuft_01.json"
+  ],
+  "version": 1
+}
