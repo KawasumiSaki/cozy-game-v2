@@ -126,18 +126,17 @@ func _make_surface_mesh(chunk: CozyTerrainChunk, extent: float) -> ArrayMesh:
 	pm.subdivide_depth = CELLS - 1
 	var arrays := pm.get_mesh_arrays()
 
-	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-	var half := extent * 0.5
-	for i in verts.size():
-		var v := verts[i]
-		# PlaneMesh lies in XZ centred on its origin, so a vertex's own x/z IS its
-		# position within the chunk. Reading it back beats index arithmetic, which
-		# would depend on a vertex ordering the engine never promised.
-		var gx := int(round((v.x + half) / CELL_SIZE))
-		var gz := int(round((v.z + half) / CELL_SIZE))
-		verts[i] = Vector3(v.x, chunk.corner_height(gx, gz), v.z)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-
+	# FLAT, AND THAT IS THE POINT.
+	#
+	# The ground stopped being a heightfield on 2026-09-14 (Willow: heights can
+	# go). A half-offset tile grid has no third dimension to reconcile, and
+	# "不同海拔的地形编辑" was on the project's do-not-do list from the very first
+	# week — this makes the code agree with what the plan always said.
+	#
+	# The vertices are left exactly where `PlaneMesh` puts them. The loop that
+	# displaced them by `corner_height` is gone, and with it the only way the
+	# picture and the collider could ever disagree: both are now the same flat
+	# plane, so `chunk_collision_min_y` has nothing left to catch.
 	var am := ArrayMesh.new()
 	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return am

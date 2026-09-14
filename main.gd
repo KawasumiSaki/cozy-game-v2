@@ -136,7 +136,17 @@ const DEBUG_PHYSICS_PROBE := false
 ##
 ## The terrain tools make an existing system reachable for the first time:
 ## CozyTerrainIntent has had CLEAR/DIG/FILL since V2-11 with no way to invoke it.
-const TERRAIN_TOOLS: Array[String] = ["dig", "fill", "clear", "till"]
+## The terrain tools, minus the two that edited HEIGHT.
+##
+## `dig` and `fill` are gone (Willow, 2026-09-14: heights can go). The ground is
+## flat now, so a tool that raises or lowers it would change a number nothing
+## draws — a dead button, which is a claim that something is there. The INTENTS
+## are still in `CozyTerrainIntent` and the height field is still in the save;
+## what is removed is the way to reach them, so nothing offers an edit that has
+## no visible result.
+##
+## `clear` and `till` stay: both change the MATERIAL, which is what a tile is.
+const TERRAIN_TOOLS: Array[String] = ["clear", "till"]
 const BUILD_TOOLS: Array[String] = ["outline", "wall"]
 const PLACE_TOOLS: Array[String] = ["research_table", "chest", "bed", "chair",
 	"campfire"]
@@ -164,9 +174,9 @@ const NPC_JOB := "cook"
 ## the group boundaries and the hotkeys need a flat index, so they are held
 ## together by the `hud tools` assertion, which flattens the groups and compares.
 const TOOLS: Array[String] = (
-	["outline", "wall", "dig", "fill", "clear", "till",
+	["outline", "wall", "clear", "till",
 		"research_table", "chest", "bed", "chair", "campfire"] if BUILDING_ENABLED
-	else ["dig", "fill", "clear", "till",
+	else ["clear", "till",
 		"research_table", "chest", "bed", "chair", "campfire"])
 
 ## Brush radius for terrain tools, metres.
@@ -2033,7 +2043,6 @@ func _report() -> void:
 	_check_terrain_control()
 	_check_terrain()
 	_check_farming_chain()
-	_check_terrain_surface()
 	_check_scatter_incremental()
 	_check_resource_chain()
 
@@ -3028,7 +3037,17 @@ func _check_nav() -> void:
 ## and the failure between them is the worst of the three: displacing the picture
 ## without moving the collision gives a pit the player can see and walk straight
 ## across the top of. That is worse than no pit, because it is a lie.
-func _check_terrain_surface() -> void:
+## PARKED 2026-09-14 with the height field.
+##
+## Every number in here measures whether the RENDERED ground follows the CELL
+## heights, and the ground deliberately no longer does — it is flat, so DIG moves
+## a number and nothing else. The assertion below was still green-by-accident for
+## one run and then said `[FAIL, the ground did not follow the field]`, which is
+## exactly right: the ground did not, and should not.
+##
+## Kept rather than deleted because the height field is still in the data and
+## still saved; if heights ever come back, so does this.
+func _check_terrain_surface_parked() -> void:
 	# Inside the field and clear of the homestead.
 	var px := terrain.origin.x + 48.0
 	var pz := terrain.origin.y + 48.0
@@ -3313,7 +3332,9 @@ func _check_ui() -> void:
 		"OK" if order_ok else "FAIL, the palette and the hotkeys disagree"])
 
 	# (2) Reachability, through the same call a button click makes.
-	var dig_i := TOOLS.find("dig")
+	# `clear` rather than `dig`: the reachability check is about the palette
+	# wiring, and it has to name a tool that is still on the palette.
+	var dig_i := TOOLS.find("clear")
 	hud.select_tool(dig_i)
 	var reached := build_mode and _is_terrain_tool() and tool_idx == dig_i
 	# And the newest terrain tool, so adding one to TERRAIN_TOOLS without a button
