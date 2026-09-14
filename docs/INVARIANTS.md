@@ -209,6 +209,72 @@ So: re-point the view's state before refreshing it, and guard the re-assignment
 on object identity so the ordinary path stays a no-op (doc #32 — local edits
 rebuild locally).
 
+## Two outlines that touch emit their shared edge TWICE, and the rooms merge
+
+Measured 2026-09-12 with `tests/probe/dungeon_layout_probe.gd`, before building
+anything on top of the dungeon blueprint's `outlines` format. The probe runs
+outlines through the real pipeline — `CozyOutlineGenerator.plan()` into
+`CozyRoomDetector.detect()` — with no world, no nodes and no terrain, because
+that is the whole claim: **a dungeon is just another batch of walls.**
+
+`plan()` closes every outline into a loop. So two rooms laid out side by side
+each emit the edge they share, one wall in each direction on the same segment:
+
+| Layout | Rooms the detector returns |
+|---|---|
+| one room | 1 (48 m²) |
+| one L-shaped room | 1 (84 m²) — concave is fine, as documented |
+| **two rooms, each loop closed** | **1 (96 m²)** — the two rooms MERGED |
+| two rooms, shared edge emitted once | 2 (48 + 48) |
+| **two rooms + corridor, each loop closed** | **1 (104 m²)** — everything merged |
+| two rooms + corridor, corridor's end edges dropped | 3 (48 + 48 + 8) |
+
+**Nothing errors in the merged cases.** The traversal returns one room and the
+count is the only thing that knows. A dungeon generator built on the naive
+reading would ship a single-room dungeon and look like it worked.
+
+The rule that falls out: **an outline must never emit a wall segment that is
+already in the graph.** Where two outlines meet, the generator emits that edge
+ONCE, and the connection between them is a `CozyOpening` on that single wall —
+which is exactly why openings leave the centre-line intact: the two rooms stay
+two rooms, and the Portal is derived between them.
+
+The corridor case is the useful one to keep: its two long sides **butt into** the
+rooms' walls rather than coinciding with them, and that works, because the
+detector already subdivides T-junctions. Coincident is the trap; butting is not.
+
+---
+
+## An id is only unifying if one place refuses to be ambiguous
+
+Before the entity registry, every system kept its own list under its own id
+prefix, and nothing could answer "what is id X" without already knowing which
+system minted it. Unifying the ids adds one failure none of them could have had
+alone: **two kinds offering the same id**, which each of them would report as
+fine. So `state_of(id)` returns null for an ambiguous id rather than whichever
+kind registered first, and `duplicate_ids()` is the detector — the self-check
+asserts it empty on every run. A lookup whose answer depends on registration
+order means several different things, which is the shape of bug 20 (a count
+several different wrong worlds produce).
+
+Two corollaries that a tidy-up would undo:
+
+- **The id stays INSIDE the payload.** A saved entity is `{kind, state}`, and the
+  state carries its own id, because that is where every serializer here has
+  always written it. Drawing the id beside the payload as well would put one fact
+  in two places in one file, and the file could then disagree with itself.
+- **The id counters are NOT entities.** They travel under `next_ids`. Ids are
+  minted `wall_%03d`, so a load that dropped a counter would mint an id that
+  already exists on the very next wall someone drew — the collision the registry
+  refuses, arriving one action later.
+
+The registry holds **encoders but not decoders**, and that asymmetry is
+deliberate: it can index any state, but a decoded wall has to be appended to
+`building.state.walls` by the thing that owns that list. Encoding is "describe
+what you have"; decoding is "install this", and only the owner can do the second.
+
+---
+
 ## A declared capability with no consumer is not a feature
 
 `chest` advertised a `store` interaction point from Phase 4, and `CozyJobDefs`
@@ -222,6 +288,48 @@ Before trusting a data table, ask what reads it. Every interaction type in
 `CozyObjectDefs` and every `point_type` in `CozyJobDefs` should have a consumer;
 `grep` for the constant is the entire check. The same question applies to a
 `class_name` — if nothing instantiates it, it has never executed.
+
+## A format refuses what it cannot validate, by name
+
+The rule above, applied to a file format rather than a table. A field that is
+parsed and then never read is indistinguishable, from the author's side, from one
+that works — so `CozyDungeonBlueprint` refuses such fields rather than tolerating
+them, and says which field and what would have to exist first.
+
+The design doc's §3.3 example carries three fields this format does not, and the
+three are not the same kind of thing:
+
+- `links` — **never** stored. Which outlines meet, and along which stretch, is a
+  MEASUREMENT: `CozyDungeonLayout` derives it from the geometry. A stored copy is
+  a second answer to a question already answered, and the runtime answer is the
+  one that tracks an edit.
+- `spawns`, `content` — **not yet**. They need a vocabulary (what may be spawned,
+  what a "room hint" resolves to) that does not exist. They join the format on
+  the same day as the system that reads them, together with its validation.
+
+The same reasoning fixes the version policy: **a newer `version` is refused, not
+read as well as this build can.** A best-effort read would take the fields it
+recognises and DROP whatever the newer format added, and the only symptom would
+be a dungeon quietly missing a room — the file loads, the assertion passes, the
+world is smaller.
+
+An older version would be a migration step, the way `save_manager.gd` keeps one
+per version. **There is deliberately no chain while there is nothing to migrate:**
+a chain with one link and no data is the "declared capability with no consumer"
+above, just in a new place. When `VERSION` goes to 2, the step goes there, written
+against a real v1 file.
+
+Two mechanics that a tidy-up would undo:
+
+- **`reject_reason()` is static and single.** `from_dict()` builds only what it
+  accepts, so there is no route to a live blueprint that was never checked. A
+  `validate()` that callers may skip is not the same thing.
+- **A refusal never prints.** `JSON.parse_string` writes to the log on malformed
+  input, which is the trap recorded under "An id is only unifying if one place
+  refuses to be ambiguous": a line that means "the refusal worked" must not look
+  like the line that means "the build broke". `JSON.new().parse()` returns an
+  error code and stays quiet. Note that reverting this turns **no assertion red**
+  — the only witness is `0 ERROR` in the log.
 
 ## A per-frame refresh must be idempotent
 
@@ -359,8 +467,9 @@ log (`02-开发日志/游戏开发日志.md`).
 | 20 | `0 faded` printed OK while the fade set was wrong — a count that several different wrong worlds produce | same probe, once bug 19 was fixed |
 | 21 | Occlusion faded only the NEAREST blocker; the player stayed hidden indoors at all four camera angles (always behind a slab) | yaw sweep in the occlusion probe |
 | 22 | The locked camera sat on the far side of the house from the door — the opening shot was the back of the building | `opening shot at spawn` assertion |
+| 23 | `JSON.parse_string` printed on every malformed dungeon file, so refusing a bad file looked exactly like a broken build | mutation testing — see below |
 
-**Twenty of the twenty-two were found by an assertion, not by looking at the
+**Twenty of the twenty-three were found by an assertion, not by looking at the
 screen.** Several were invisible in a still frame. That is the whole argument
 for the assertion discipline in `03-流程/更新方案.md`.
 
@@ -374,3 +483,38 @@ Bugs 15 and 16 share a shape worth naming: **both lived in code that had never
 once been executed.** Bug 15 was in a widget nothing instantiated; bug 16 was in
 a function nothing called, whose only test never let it touch a file. Neither was
 reachable by looking at the game, because neither had ever run in it.
+
+Bug 23 is the first one on this list found by neither an assertion nor the
+screen, and it is worth saying how it turned up. The fix was already written and
+the suite was green. Reverting the fix — putting `JSON.parse_string` back — left
+**thirteen cases and sixty-seven checks passing exactly as before**, and the only
+difference in the whole run was one `ERROR: Parse JSON failed` line. Nothing was
+asserting the property that had been fixed.
+
+So the rule this list keeps arriving at has a corollary it had not stated:
+**an assertion is not the only thing that can be green while it is lying, so
+break the code on purpose and see what notices.** Six mutations were run against
+this file, and the reason to report all six is that **two of them turned no
+assertion red at all** — the flattering summary would have been "four for four".
+
+| mutation | assertions red | log |
+|---|---|---|
+| `to_dict` emits a `PackedVector2Array` | **6** (incl. the file round trip) | 2 script errors |
+| `_unknown_reason` accepts every key | **11** | quiet |
+| `_version_reason` allows a newer version | **5** | quiet |
+| `from_dict` drops the outlines | **5** | 3 script errors |
+| `parse` back to `JSON.parse_string` | **0** | 1 `ERROR: Parse JSON failed` |
+| `_to_polygon` loses its shape check | **0** | 2 `SCRIPT ERROR: Out of bounds` |
+
+The last row is the one worth keeping. The guard stops `flat[i + 1]` reading past
+the end of an odd-length list, and its removal is invisible to every assertion —
+but it is **not** invisible. GDScript raises `SCRIPT ERROR: Out of bounds get
+index '5' (on base: 'Array')`, measured directly, so the guard is the difference
+between a clean refusal and an error path. **It is exactly the kind of check a
+tidy-up deletes with the suite still green.** Do not delete it.
+
+Both log-only witnesses end in the same place, which is why the two bugs are
+adjacent: `0 ERROR` on a healthy build is a property nothing in `tests/unit/`
+asserts, and it is the only thing standing under either fix. **A check that has
+never been seen to fail is a check nobody has any evidence about — including the
+ones that are right.**

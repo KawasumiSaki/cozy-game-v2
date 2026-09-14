@@ -157,82 +157,102 @@ func floor_ids() -> Array[int]:
 	return out
 
 
-## Facts only — the shape a save file takes (doc #64).
+## Facts only — the shape one WALL takes in a save file (doc #64).
 ##
 ## WALLS, SLABS and STAIRS are all AUTHORED state: a slab is a floor someone drew,
 ## a stair is a route someone placed. All three have to be stored, and for a long
 ## time only walls were — which meant a load silently dropped the floors and the
-## staircase. Nothing caught it because nothing consumed this function.
+## staircase. Nothing caught it because nothing consumed this code.
 ##
-## ROOFS are deliberately absent. They are generated from the rooms, so storing
-## them would be storing a derived result and would let the file disagree with
-## the generator (doc #63 / #68).
+## One entity at a time, because the save holds ONE entity list and the registry
+## asks each owner to encode its own kind (Core Architecture V1.0, item 1). The
+## id stays inside the payload, where it has always been, so the file never
+## carries the same id twice.
 ##
-## `seed_val` is absent for the same reason: it is `hash(id)`, so it returns for
-## free on load and storing it would create a second source of truth.
-##
-## The id counters come along. Ids are minted as `"wall_%03d" % _next_wall_id`,
-## so a load that reset the counter would immediately mint ids that already exist.
-func to_dict() -> Dictionary:
-	var ws: Array = []
-	for w in walls:
-		var ops: Array = []
-		for o in w.openings:
-			ops.append({
-				"kind": o.kind_name(),
-				"offset": o.offset,
-				"width": o.width,
-				"sill": o.sill,
-				"head": o.head,
-			})
-		ws.append({
-			"id": w.id,
-			"start": [w.start.x, w.start.y, w.start.z],
-			"end": [w.end.x, w.end.y, w.end.z],
-			"height": w.height,
-			"thickness": w.thickness,
-			"material_id": w.material_id,
-			"floor_id": w.floor_id,
-			"openings": ops,
+## `seed_val` is absent on purpose: it is `hash(id)`, so it returns for free on
+## load and storing it would create a second source of truth.
+func wall_dict(w: CozyWallState) -> Dictionary:
+	var ops: Array = []
+	for o in w.openings:
+		ops.append({
+			"kind": o.kind_name(),
+			"offset": o.offset,
+			"width": o.width,
+			"sill": o.sill,
+			"head": o.head,
 		})
-
-	var ss: Array = []
-	for s in slabs:
-		ss.append({
-			"id": s.id,
-			"center": [s.center.x, s.center.y, s.center.z],
-			"size": [s.size.x, s.size.y, s.size.z],
-			"material_id": s.material_id,
-			"floor_id": s.floor_id,
-		})
-
-	var ts: Array = []
-	for t in stairs:
-		ts.append({
-			"id": t.id,
-			"start": [t.start.x, t.start.y, t.start.z],
-			"end": [t.end.x, t.end.y, t.end.z],
-			"width": t.width,
-			"material_id": t.material_id,
-			"floor_from": t.floor_from,
-			"floor_to": t.floor_to,
-			"steps": t.steps,
-		})
-
 	return {
-		"walls": ws,
-		"slabs": ss,
-		"stairs": ts,
-		"next_wall_id": _next_wall_id,
-		"next_slab_id": _next_slab_id,
-		"next_stair_id": _next_stair_id,
-		"next_roof_id": _next_roof_id,
+		"id": w.id,
+		"start": [w.start.x, w.start.y, w.start.z],
+		"end": [w.end.x, w.end.y, w.end.z],
+		"height": w.height,
+		"thickness": w.thickness,
+		"material_id": w.material_id,
+		"floor_id": w.floor_id,
+		"openings": ops,
 	}
+
+
+func slab_dict(s: CozySlabState) -> Dictionary:
+	return {
+		"id": s.id,
+		"center": [s.center.x, s.center.y, s.center.z],
+		"size": [s.size.x, s.size.y, s.size.z],
+		"material_id": s.material_id,
+		"floor_id": s.floor_id,
+	}
+
+
+func stair_dict(t: CozyStairState) -> Dictionary:
+	return {
+		"id": t.id,
+		"start": [t.start.x, t.start.y, t.start.z],
+		"end": [t.end.x, t.end.y, t.end.z],
+		"width": t.width,
+		"material_id": t.material_id,
+		"floor_from": t.floor_from,
+		"floor_to": t.floor_to,
+		"steps": t.steps,
+	}
+
+
+## The id counters, which travel with the world but are NOT entities.
+##
+## Ids are minted as `"wall_%03d" % _next_wall_id`, so a load that reset a counter
+## would immediately mint an id that already exists — the collision the registry
+## refuses would happen on the very next wall someone drew. They are split out
+## because they have no id of their own and cannot be addressed by one.
+##
+## ROOFS are absent from the entity list but their counter is here: roofs are
+## regenerated on load, and a regenerated roof must not reuse a live id.
+func counters_to_dict() -> Dictionary:
+	return {
+		"wall": _next_wall_id,
+		"slab": _next_slab_id,
+		"stair": _next_stair_id,
+		"roof": _next_roof_id,
+	}
+
+
+## Call AFTER `from_dict`: a missing key falls back to "one past the entities
+## that are actually here", which is only the right answer once they have loaded.
+## Every writer supplies all four keys, so the fallback exists for a file this
+## build did not write rather than for the ordinary path.
+func counters_from_dict(d: Dictionary) -> void:
+	_next_wall_id = int(d.get("wall", walls.size() + 1))
+	_next_slab_id = int(d.get("slab", slabs.size() + 1))
+	_next_stair_id = int(d.get("stair", stairs.size() + 1))
+	_next_roof_id = int(d.get("roof", 1))
 
 
 ## Rebuild in place, so `building.state` keeps its identity and every existing
 ## connection to its `changed` signal stays valid. Roofs are cleared rather than
 ## restored — the roof generator refills them from the rooms.
+##
+## ENTITIES ONLY. The id counters arrive separately through `counters_from_dict`,
+## because a caller that regroups a saved entity list by kind has no reason to
+## know what a counter is — and reading them here would give the same fact two
+## readers.
 func from_dict(d: Dictionary) -> void:
 	walls.clear()
 	slabs.clear()
@@ -276,10 +296,6 @@ func from_dict(d: Dictionary) -> void:
 		t.steps = int(td.get("steps", 8))
 		stairs.append(t)
 
-	_next_wall_id = int(d.get("next_wall_id", walls.size() + 1))
-	_next_slab_id = int(d.get("next_slab_id", slabs.size() + 1))
-	_next_stair_id = int(d.get("next_stair_id", stairs.size() + 1))
-	_next_roof_id = int(d.get("next_roof_id", 1))
 	changed.emit()
 
 

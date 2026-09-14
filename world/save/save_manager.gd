@@ -20,7 +20,7 @@ extends RefCounted
 ## every reader below wraps its values in `int()` / `float()` rather than
 ## trusting the type it wrote.
 
-const VERSION := 1
+const VERSION := 2
 const DEFAULT_PATH := "user://world.json"
 
 ## --- version policy (frozen 2026-09-12, Core Architecture V1.0) --------------
@@ -42,10 +42,25 @@ const DEFAULT_PATH := "user://world.json"
 
 ## from_version -> Callable(world: Dictionary) -> Dictionary
 ##
-## Empty today: `VERSION` is still 1, so there is nothing to migrate FROM. The
-## mechanism, the policy and the fixtures exist so that the first real bump is a
-## one-line registration rather than a redesign.
+## Holds one real step: v1 -> v2, the entity list (Core Architecture V1.0, item
+## 1). The mechanism and the policy were built and driven through a fake target
+## version first (②-1), so the first real bump was a registration rather than a
+## redesign of something unverified — which is exactly what it turned out to be.
 static var _migrations: Dictionary = {}
+
+
+## The real chain, registered when the class is first touched.
+static func _static_init() -> void:
+	register_builtin_migrations()
+
+
+## Re-register the built-in steps. Called once from `_static_init`, and again by
+## any test that clears the registry: a test which leaves the chain empty would
+## make every later LOAD in that process refuse a v1 file, and the failure would
+## land in whatever ran next rather than in the test that caused it.
+static func register_builtin_migrations() -> void:
+	_migrations.clear()
+	register_migration(1, _migrate_v1_to_v2)
 
 
 ## Register the step that turns a `from_version` world into a `from_version + 1`
@@ -54,8 +69,61 @@ static func register_migration(from_version: int, step: Callable) -> void:
 	_migrations[from_version] = step
 
 
+## Test-only. The real chain comes back with `register_builtin_migrations()`.
 static func clear_migrations() -> void:
 	_migrations.clear()
+
+
+## v1 -> v2 (Core Architecture V1.0, item 1): the world's top-level keys became
+## ONE entity list.
+##
+## v1 stored one section per system — `building` (walls / slabs / stairs),
+## `objects`, `npcs` — so "everything in this world" had as many answers as there
+## were systems, and an id could only be resolved by a reader who already knew
+## which system minted it. v2 stores an entity as `{"kind", "state"}`, with the id
+## inside the state where every serializer already wrote it.
+##
+## Two things do NOT become entities and keep a home of their own: terrain (a
+## field, not a thing with an id) and the id counters (`next_ids` — a counter has
+## no id to be addressed by). Roofs are absent from both versions, because they
+## are derived from the rooms.
+##
+## v1 furniture had no id at all — an object was identified by its INDEX in the
+## list — so this step MINTS one per object, in list order, and leaves the counter
+## past them.
+static func _migrate_v1_to_v2(w: Dictionary) -> Dictionary:
+	var b: Dictionary = w.get("building", {})
+	var ents: Array = []
+
+	# The singular of each v1 section name is the kind. This one table is the
+	# whole mapping, so it is written once rather than matched on four times.
+	for pair in [["walls", "wall"], ["slabs", "slab"], ["stairs", "stair"]]:
+		for s in b.get(pair[0], []):
+			ents.append({"kind": pair[1], "state": s})
+
+	var next_object := 1
+	for o in w.get("objects", []):
+		var od: Dictionary = (o as Dictionary).duplicate(true)
+		if String(od.get("id", "")) == "":
+			od["id"] = "obj_%03d" % next_object
+			next_object += 1
+		ents.append({"kind": "object", "state": od})
+
+	for n in w.get("npcs", []):
+		ents.append({"kind": "npc", "state": n})
+
+	return {
+		"entities": ents,
+		"next_ids": {
+			"wall": int(b.get("next_wall_id", 1)),
+			"slab": int(b.get("next_slab_id", 1)),
+			"stair": int(b.get("next_stair_id", 1)),
+			"roof": int(b.get("next_roof_id", 1)),
+			"object": next_object,
+		},
+		"terrain": w.get("terrain", {}),
+		"clock": w.get("clock", {}),
+	}
 
 
 ## Can a file at this version reach the current one?

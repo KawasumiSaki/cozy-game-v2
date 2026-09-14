@@ -18,7 +18,7 @@
 | Block detail + DoD + assertions | Obsidian `01-板块/<ID>-<名称>.md` |
 | Development log | Obsidian `02-开发日志/游戏开发日志.md` |
 | Start / finish protocol | Obsidian `03-流程/更新方案.md` |
-| Architecture master (113 KB — only when changing architecture) | Obsidian `00-架构总纲/V2.1-技术架构总纲.md` |
+| Architecture master (only when changing architecture) | Obsidian `00-架构总纲/V2.2-技术架构总纲.md` |
 | Art contract (camera, pixel density, import rules) | `docs/ART_PROFILE.md` |
 
 ---
@@ -80,7 +80,7 @@
 ### Phase 6 — Persistence
 | ID | Block | Status |
 |---|---|---|
-| V2-26 | Save / load | ✅ JSON facts to `user://`, F5/F9; no save slots yet |
+| V2-26 | Save / load | ✅ JSON facts to `user://`, F5/F9; no save slots yet. **2026-09-12: the file holds ONE entity list** (`entities: [{kind, state}]`, Core Architecture V1.0 ①) instead of one top-level key per system. `VERSION` is **2**, and the v1→v2 step is the first real migration in the chain. |
 
 ### UI — interface
 | ID | Block | Status |
@@ -93,6 +93,38 @@
 |---|---|---|
 | V2-27 | Gameplay | ⬜ frozen by doc §82 |
 | V2-28 | World | ⬜ frozen |
+
+### Dungeon lane (opened 2026-09-12)
+
+Runs in parallel with the home lane and is deliberately **file-disjoint** from
+it: a lane that edits another lane's files is not parallel, it is a conflict.
+Nothing here touches the running game yet, and nothing here will until the home
+loop closes.
+
+| ID | Block | Status |
+|---|---|---|
+| DG-01 | Outline → wall union | 🚧 **wall union done** 2026-09-12 — `dungeon/dungeon_layout.gd`. Pure logic; the generator is next |
+| DG-02 | Blueprint contract + validation | ✅ **2026-09-14** — `dungeon/dungeon_blueprint.gd`. 13 cases / 67 checks |
+| DG-03 | Generator into the building pipeline | ⬜ blocked on the home loop |
+
+**What the blueprint format refuses is most of what it does** (2026-09-14). The
+design doc's §3.3 example also carries `links`, `spawns` and `content`, and
+`CozyDungeonBlueprint` refuses all three BY NAME rather than parsing and ignoring
+them — a field that is accepted and never read is indistinguishable, from the
+author's side, from one that works. `links` is *never* stored (which outlines
+meet, and where, is derived from their geometry); `spawns` and `content` have no
+vocabulary to be validated against yet, and join the format together with the
+system that reads them. A newer `version` is refused too, rather than read as
+well as this build can: that would drop whatever the newer format added, and the
+only symptom would be a dungeon quietly missing a room.
+See `docs/INVARIANTS.md`.
+
+**The measurement that shaped it** (`tests/probe/dungeon_layout_probe.gd`): two
+outlines laid side by side each close their own loop, so the edge they share is
+emitted TWICE, and the planar face traversal **merges the two rooms into one**
+— silently. The naive reading ships a single-room dungeon that looks like it
+worked. `CozyDungeonLayout` resolves the outlines against each other first.
+See `docs/INVARIANTS.md`.
 
 ### ART — Art pipeline (doc Appendix E / K)
 | ID | Block | Status |
@@ -164,6 +196,13 @@ Stated plainly so it is not rediscovered later.
    nothing consumes them yet — they need V2-25's needs system.
 11. **The wall assembler does not tile roofs** — ART-12's idea applied to roofs
    is not built.
+12. **Object ids exist, but nothing re-resolves a reference through one yet.**
+   Furniture now has a stable id (`obj_%03d`) that survives a save, and
+   `CozyEntityRegistry.state_of(id)` can find it. `CozyNpcAgent._target_object`
+   is still a LIVE node reference, and a load frees every object and rebuilds
+   them — so pressing F9 while a resident is working can hand `_finish_work()`
+   a freed node. Nothing today does, which is why this is debt and not a bug.
+   The fix is now direct: store the id, re-resolve through the registry.
 
 ---
 
@@ -171,8 +210,10 @@ Stated plainly so it is not rediscovered later.
 
 ```bash
 GODOT="D:/privacy/Openclaw/Godot-4.7.2/Godot_v4.7.2-stable_win64.exe"
-"$GODOT" --path C:/Users/15598/cozy-game-v2                                  # play
-"$GODOT" --headless --path C:/Users/15598/cozy-game-v2 --quit-after 4500     # self-check
+"$GODOT" --path D:/cozy/cozy-game-v2                                   # play
+"$GODOT" --headless --path D:/cozy/cozy-game-v2 --quit-after 4500      # self-check
+"$GODOT" --headless --path D:/cozy/cozy-game-v2 \
+  --script res://tests/unit/run.gd                                     # unit tests
 ```
 
 Every block must end with the self-check green and the demo still runnable.

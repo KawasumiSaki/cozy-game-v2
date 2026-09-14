@@ -11,6 +11,16 @@ extends Node3D
 ## Each object ADVERTISES its interaction points (#87) rather than containing
 ## the behaviour of whoever uses it. The NPC side knows nothing about tables.
 
+## Entity id (Core Architecture V1.0, item 1), minted by whoever creates the
+## object — `_place_object` for an authored one.
+##
+## Until this existed an object was identified by its INDEX in `main.objects`,
+## which means its identity did not survive a save at all: a load frees every
+## object and rebuilds them from a list, so anything still holding a reference
+## held a freed node, and "give me the chest" could only be answered by walking
+## the list and comparing `def_id`.
+var id := ""
+
 var def_id := ""
 var floor_index := 0
 
@@ -177,6 +187,7 @@ func describe() -> String:
 ## derived results — and would let the file disagree with the definition.
 func to_dict() -> Dictionary:
 	var d := {
+		"id": id,
 		"def_id": def_id,
 		"floor_index": floor_index,
 		"position": [global_position.x, global_position.y, global_position.z],
@@ -195,6 +206,9 @@ func to_dict() -> Dictionary:
 ## per object, before this was a method. `_place_object` has the same ordering
 ## requirement for the same reason: add first, then set up, then re-phase.
 func apply_dict(d: Dictionary) -> void:
+	# The id first: `setup()` rebuilds derived things, and a replaced object that
+	# came back under a different id would be a duplicate the registry refuses.
+	id = String(d.get("id", ""))
 	setup(String(d.get("def_id", "")), int(d.get("floor_index", 0)))
 	var p: Array = d.get("position", [0.0, 0.0, 0.0])
 	global_position = Vector3(p[0], p[1], p[2])

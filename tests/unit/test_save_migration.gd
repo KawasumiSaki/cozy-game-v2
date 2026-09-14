@@ -7,17 +7,29 @@ extends "res://tests/unit/unit_test.gd"
 ## because a partially-understood world is worse than no world — it looks like it
 ## loaded.
 ##
-## `VERSION` is still 1, so no real migration exists yet. These cases drive the
-## MACHINERY through an explicit target version, so the first real bump is a
-## one-line registration rather than a redesign of something unverified.
+## `VERSION` is 2, and the step that got it there is REAL: v1 stored one
+## top-level section per system and v2 stores one entity list (Core Architecture
+## V1.0, item 1). The general machinery is still driven through explicit target
+## versions as well, so its shape stays covered by something other than the one
+## migration that happens to exist today.
 
 const FIXTURE := "res://tests/fixtures/saves/v1_world.json"
+
+## What the fixture holds, counted rather than assumed. A fixture that changed
+## shape while the migration carried on quietly is the failure this suite exists
+## to catch.
+const FIXTURE_WALLS := 10
+const FIXTURE_SLABS := 3
+const FIXTURE_STAIRS := 1
+const FIXTURE_OBJECTS := 6
+const FIXTURE_NPCS := 1
 
 
 func _init() -> void:
 	suite("save migration")
 	case("the v1 fixture is a real save", _fixture_is_real)
 	case("a current-version document passes through", _passthrough)
+	case("the real v1 step builds one entity list", _real_v1_step)
 	case("a document with no version is refused", _no_version)
 	case("a document from the future is refused", _from_the_future)
 	case("a missing step refuses the whole chain", _missing_step)
@@ -37,12 +49,66 @@ func _fixture_is_real() -> void:
 
 
 func _passthrough() -> void:
-	var doc := _read_fixture()
+	var doc := {"version": CozySaveManager.VERSION,
+		"world": {"terrain": {}, "clock": {}}}
 	var out := CozySaveManager.migrate(doc)
-	eq("a v1 file at VERSION 1 comes back at version 1", int(out.get("version", -1)), 1)
-	eq("and its world is the same one",
+	eq("a file already at VERSION comes back at VERSION",
+		int(out.get("version", -1)), CozySaveManager.VERSION)
+	eq("and its world is untouched",
 		str((out.get("world", {}) as Dictionary).keys()),
 		str((doc.get("world", {}) as Dictionary).keys()))
+
+
+## The migration that actually exists, driven by the real fixture.
+func _real_v1_step() -> void:
+	var out := CozySaveManager.migrate(_read_fixture())
+	eq("the v1 fixture is brought up to VERSION",
+		int(out.get("version", -1)), CozySaveManager.VERSION)
+
+	var world: Dictionary = out.get("world", {})
+	is_true("the per-system building section is gone", not world.has("building"))
+	is_true("and so are the old objects and npcs sections",
+		not world.has("objects") and not world.has("npcs"))
+	is_true("the world comes back as ONE entity list", world.has("entities"))
+
+	var by_kind := {}
+	for e in world.get("entities", []):
+		var k := String((e as Dictionary).get("kind", ""))
+		by_kind[k] = int(by_kind.get(k, 0)) + 1
+
+	eq("every wall arrived", int(by_kind.get("wall", 0)), FIXTURE_WALLS)
+	eq("every slab arrived", int(by_kind.get("slab", 0)), FIXTURE_SLABS)
+	eq("every stair arrived", int(by_kind.get("stair", 0)), FIXTURE_STAIRS)
+	eq("every object arrived", int(by_kind.get("object", 0)), FIXTURE_OBJECTS)
+	eq("every resident arrived", int(by_kind.get("npc", 0)), FIXTURE_NPCS)
+
+	# The id stays INSIDE the payload, where every serializer in this project has
+	# always written it — so the file never carries the same id twice.
+	var walls := CozyEntityRegistry.payloads(world, CozyEntityRegistry.WALL)
+	eq("a wall's id is still inside its payload",
+		String((walls[0] as Dictionary).get("id", "")), "wall_001")
+
+	# v1 furniture had no id at all — an object was identified by its index in a
+	# list — so the step has to mint one per object, and leave the counter clear
+	# of them. Without this, every object in an old save is anonymous.
+	var objs := CozyEntityRegistry.payloads(world, CozyEntityRegistry.OBJECT)
+	var obj_ids := PackedStringArray()
+	for o in objs:
+		obj_ids.append(String((o as Dictionary).get("id", "")))
+	eq("every object got an id", obj_ids.size(), FIXTURE_OBJECTS)
+	is_false("and no two are the same", _has_duplicates(obj_ids))
+	eq("the object counter sits past them",
+		int((world.get("next_ids", {}) as Dictionary).get("object", 0)),
+		FIXTURE_OBJECTS + 1)
+
+	# Terrain and the id counters are NOT entities and keep their own keys: one is
+	# a field, the other has no id to be addressed by.
+	is_true("terrain keeps its own key", world.has("terrain"))
+	is_true("and so does the clock", world.has("clock"))
+	eq("the wall counter came across",
+		int((world.get("next_ids", {}) as Dictionary).get("wall", 0)), 11)
+	eq("and the roof counter, which has no entity in the list",
+		int((world.get("next_ids", {}) as Dictionary).get("roof", 0)), 4)
 
 
 func _no_version() -> void:
@@ -68,6 +134,7 @@ func _missing_step() -> void:
 		CozySaveManager.can_migrate(1, 3))
 	is_true("and the walk gives back nothing",
 		CozySaveManager.migrate({"version": 1, "world": {}}, 3).is_empty())
+	CozySaveManager.register_builtin_migrations()
 
 
 ## The machinery itself: two steps, applied in order, each seeing the previous
@@ -91,8 +158,9 @@ func _chain_applied() -> void:
 	is_true("step 1 ran", world.get("seen_by_v2", false))
 	is_true("step 2 ran after it", world.get("v2_ran_first", false))
 
-	# Leaving a registration behind would leak into every later test in the run.
-	CozySaveManager.clear_migrations()
+	# Leaving the chain empty would leak into every later test in the run, and
+	# into any LOAD the same process does afterwards.
+	CozySaveManager.register_builtin_migrations()
 
 
 ## A step that returns a String, or one that forgets to advance, must not produce
@@ -102,7 +170,7 @@ func _bad_step() -> void:
 	CozySaveManager.register_migration(1, func(_w: Dictionary) -> Variant: return "nonsense")
 	is_true("a step returning a non-dictionary is refused",
 		CozySaveManager.migrate({"version": 1, "world": {}}, 2).is_empty())
-	CozySaveManager.clear_migrations()
+	CozySaveManager.register_builtin_migrations()
 
 
 func _read_fixture() -> Dictionary:
@@ -115,3 +183,12 @@ func _read_fixture() -> Dictionary:
 	f.close()
 	var parsed: Variant = JSON.parse_string(text)
 	return parsed if typeof(parsed) == TYPE_DICTIONARY else {}
+
+
+func _has_duplicates(ids: PackedStringArray) -> bool:
+	var seen := {}
+	for id in ids:
+		if seen.has(id):
+			return true
+		seen[id] = true
+	return false

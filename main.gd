@@ -114,6 +114,16 @@ var assets: CozyAssetLibrary = null
 var scatter: CozyVegetationScatter = null
 var objects: Array[CozyWorldObject] = []
 
+## Object ids are minted `obj_%03d`, the shape the building state already uses.
+## The counter travels in the save (`next_ids`), because a load that reset it
+## would immediately mint an id that already exists.
+var _next_object_id := 1
+
+## The entity index (Core Architecture V1.0, item 1). It answers the one question
+## no single system could: "what is id X". Built once, after the systems it
+## indexes exist; it PULLS from them on every query, so it cannot go stale.
+var entities: CozyEntityRegistry = null
+
 var floor_system: CozyFloorSystem = null
 var room_graph: CozyRoomGraph = null
 var world_navigator: CozyWorldNavigator = null
@@ -187,6 +197,8 @@ func _ready() -> void:
 	_build_roofs()
 	_build_scatter()
 	_build_characters()
+	# After every system that owns state, because it indexes all of them.
+	_build_entity_registry()
 	_build_camera()
 	_build_hud()
 	_report()
@@ -228,6 +240,11 @@ func _build_self_check() -> void:
 		func() -> bool: return _has_arg("--cozy-probe-occlusion"))
 	self_check.add("vfx", 120, _check_vfx)
 	self_check.add("character", 140, _check_character_visuals)
+	# Probe only, and LATE: the thing it measures is a resident that has been
+	# trying and failing for a while, which takes in-game minutes to produce.
+	self_check.add("npc_pathing_probe", 1000, _probe_npc_pathing,
+		func() -> bool: return _has_arg("--cozy-probe-npc-pathing"))
+	self_check.add("entity_registry", 160, _check_entity_registry)
 	self_check.add("outline", 1500, _check_outline_build)
 	self_check.add("live_rebuild", AUTOPILOT_DONE_FRAME, _run_live_rebuild_test)
 	self_check.add("npc_work", NPC_CHECK_FRAME, _check_npc_work)
@@ -598,10 +615,56 @@ func _place_initial_furniture() -> void:
 	_place_object("chair", 2.0, 5.0, 0)
 
 
+# ---------------------------------------------------------------- entities
+
+## The entity index (Core Architecture V1.0, item 1).
+##
+## ONE registration per kind, each a pair of lambdas over the system that already
+## owns that state. No system was rewritten to become indexable, and no list is
+## duplicated here: the providers read MEMBERS rather than capturing an Array, so
+## a list that is ever replaced wholesale is still seen.
+##
+## Roofs register WITHOUT an encoder. They are entities with ids and are
+## deliberately never saved, because they are derived from the rooms (doc #63) —
+## the exclusion lives in the registration rather than in a filter at the save
+## site, so a future derived kind cannot be saved by forgetting to skip it.
+func _build_entity_registry() -> void:
+	entities = CozyEntityRegistry.new()
+
+	entities.register_kind(CozyEntityRegistry.WALL,
+		func() -> Array: return building.state.walls,
+		func(w) -> Dictionary: return building.state.wall_dict(w))
+	entities.register_kind(CozyEntityRegistry.SLAB,
+		func() -> Array: return building.state.slabs,
+		func(s) -> Dictionary: return building.state.slab_dict(s))
+	entities.register_kind(CozyEntityRegistry.STAIR,
+		func() -> Array: return building.state.stairs,
+		func(s) -> Dictionary: return building.state.stair_dict(s))
+	entities.register_kind(CozyEntityRegistry.ROOF,
+		func() -> Array: return building.state.roofs)
+	entities.register_kind(CozyEntityRegistry.OBJECT,
+		func() -> Array: return objects,
+		func(o) -> Dictionary: return o.to_dict())
+	entities.register_kind(CozyEntityRegistry.NPC,
+		_resident_states,
+		func(n) -> Dictionary: return n.to_dict())
+
+
+## The residents, as a list the registry can pull like any other kind. A method
+## rather than a lambda because the two null checks are the whole content of it.
+func _resident_states() -> Array:
+	if npc == null or npc.npc_state == null:
+		return []
+	return [npc.npc_state]
+
+
 func _place_object(def_id: String, x: float, z: float, floor_index: int) -> CozyWorldObject:
 	if not CozyObjectDefs.exists(def_id):
 		return null
 	var obj := CozyWorldObject.new()
+	# The id first, so `setup()` and everything after it can be addressed by it.
+	obj.id = "obj_%03d" % _next_object_id
+	_next_object_id += 1
 	add_child(obj)
 	obj.setup(def_id, floor_index)
 	obj.global_position = Vector3(x, float(floor_index) * FLOOR_H, z)
@@ -2881,31 +2944,125 @@ func _check_eating() -> void:
 		"OK" if vocab_ok else "FAIL"])
 
 
+# ---------------------------------------------------------------- entity registry
+
+## A kind name that exists only inside the registry's tooth test below.
+const ENTITY_PROBE_KIND := "duplicate_probe"
+
+
+## The entity index (Core Architecture V1.0, item 1).
+##
+## Three claims, and the third is the one with teeth:
+##   1. every entity resolves by its own id, back to the very object that owns it
+##   2. no two entities offer the same id — which no single system could notice,
+##      because each one only ever saw its own list
+##   3. the registry CATCHES a duplicate when there is one. Claim 2 alone passes
+##      just as well when the detector is broken and there is nothing to find,
+##      which is the shape this project has paid for repeatedly.
+func _check_entity_registry() -> void:
+	if entities == null:
+		print("[cozyv2] entity registry: not built  [FAIL]")
+		return
+
+	# Counted against the lists the owners actually hold, not against another
+	# number from the registry: a provider that silently stopped returning a kind
+	# would agree with itself and go green.
+	var per_kind := {
+		CozyEntityRegistry.WALL: building.state.walls.size(),
+		CozyEntityRegistry.SLAB: building.state.slabs.size(),
+		CozyEntityRegistry.STAIR: building.state.stairs.size(),
+		CozyEntityRegistry.ROOF: building.state.roofs.size(),
+		CozyEntityRegistry.OBJECT: objects.size(),
+		CozyEntityRegistry.NPC: 1 if npc != null and npc.npc_state != null else 0,
+	}
+	var complete := true
+	for kind in per_kind:
+		if entities.all_of(kind).size() != int(per_kind[kind]):
+			complete = false
+
+	# A lookup that returns *something* is not the claim; returning THIS is.
+	var resolves := true
+	for e in entities.entities():
+		if entities.state_of(String(e["id"])) != e["state"]:
+			resolves = false
+			break
+
+	var dupes := entities.duplicate_ids()
+	print("[cozyv2] entity registry: %s; per-kind matches owners=%s, ids resolve=%s, duplicates=%s  [%s]" % [
+		entities.describe(), str(complete), str(resolves), str(dupes),
+		"OK" if complete and resolves and dupes.is_empty() else "FAIL"])
+
+	_check_entity_registry_teeth()
+
+
+## The detector, driven through a case it has to catch.
+##
+## A second kind is registered that offers an id the wall kind already has. The
+## duplicate must be REPORTED, and an unqualified lookup must REFUSE rather than
+## pick one — while a kind-scoped lookup still resolves, which is the escape
+## hatch that keeps `state_of` usable in a world that has gone wrong.
+func _check_entity_registry_teeth() -> void:
+	if building.state.walls.is_empty():
+		print("[cozyv2] entity registry teeth: no wall to duplicate  [FAIL]")
+		return
+	var victim: CozyWallState = building.state.walls[0]
+
+	entities.register_kind(ENTITY_PROBE_KIND, func() -> Array: return [victim])
+
+	var found := entities.duplicate_ids()
+	var refused := entities.state_of(victim.id) == null
+	var scoped: Object = entities.state_of(victim.id, CozyEntityRegistry.WALL)
+
+	# Removed whatever happened, so a failure here cannot poison the save that
+	# runs later in the same process.
+	entities.unregister_kind(ENTITY_PROBE_KIND)
+
+	var ok := found.has(victim.id) and refused and scoped == victim
+	print("[cozyv2] entity registry teeth: injected a second %s - reported=%s, unscoped lookup refused=%s, scoped found it=%s  [%s]" % [
+		victim.id, str(found), str(refused), str(scoped == victim),
+		"OK" if ok else "FAIL, the registry did not catch its own duplicate"])
+
+
 # ---------------------------------------------------------------- save / load
 
 ## The whole world, as facts (doc #63). Everything derived is excluded on
 ## purpose: meshes, room polygons, portals, navigation grids and paths are all
 ## rebuilt on load by the generators that built them the first time.
+##
+## ONE entity list, not one top-level key per system (Core Architecture V1.0,
+## item 1). The list comes from the registry, and which kinds are persisted is
+## decided at REGISTRATION rather than here — so a new derived kind cannot leak
+## into the file by being forgotten at this one call site.
+##
+## Terrain and the id counters keep their own keys because neither is an entity:
+## terrain is a field, and a counter has no id to be addressed by.
 func _world_to_dict() -> Dictionary:
-	var objs: Array = []
-	for o in objects:
-		if is_instance_valid(o):
-			objs.append(o.to_dict())
-	var npcs: Array = []
-	if npc != null and npc.npc_state != null:
-		npcs.append(npc.npc_state.to_dict())
+	var ents: Array = []
+	for e in entities.persisted_entities():
+		ents.append(entities.encode_entity(e))
 	return {
+		"entities": ents,
+		"next_ids": _next_ids_to_dict(),
 		"terrain": terrain.to_dict(),
-		"building": building.state.to_dict(),
-		"objects": objs,
-		"npcs": npcs,
 		"clock": {"day": clock.day, "hour": clock.hour},
 	}
+
+
+func _next_ids_to_dict() -> Dictionary:
+	var ids := building.state.counters_to_dict()
+	ids["object"] = _next_object_id
+	return ids
 
 
 ## Rebuild the world from facts. The order below is the order the world is built
 ## in the first place (see `_ready`), which is the only reason it works: terrain
 ## before building, building before rooms, rooms before roofs.
+##
+## The one entity list is regrouped by kind and handed to the system that owns
+## each kind. The registry can INDEX any state but it cannot INSTALL one — a
+## decoded wall has to be appended to `building.state.walls` by the thing that
+## owns that list — so the load path is where the split shows, and it is why the
+## registry carries encoders but not decoders.
 func _apply_world(d: Dictionary) -> void:
 	if d.is_empty():
 		return
@@ -2915,21 +3072,30 @@ func _apply_world(d: Dictionary) -> void:
 
 	# Roofs are cleared by `from_dict` rather than restored — `_build_roofs`
 	# refills them below from the rooms it just re-derived.
-	building.state.from_dict(d.get("building", {}))
+	building.state.from_dict({
+		"walls": CozyEntityRegistry.payloads(d, CozyEntityRegistry.WALL),
+		"slabs": CozyEntityRegistry.payloads(d, CozyEntityRegistry.SLAB),
+		"stairs": CozyEntityRegistry.payloads(d, CozyEntityRegistry.STAIR),
+	})
+	# After `from_dict`, so a missing counter falls back to one past the entities
+	# that are actually here rather than to one past nothing.
+	building.state.counters_from_dict(d.get("next_ids", {}))
 
 	for o in objects:
 		if is_instance_valid(o):
 			o.queue_free()
 	objects.clear()
-	for od in d.get("objects", []):
+	for od in CozyEntityRegistry.payloads(d, CozyEntityRegistry.OBJECT):
 		# Add first, exactly as `_place_object` does: setup() phases VFX from the
 		# world position, which does not exist until the node is parented.
 		var o := CozyWorldObject.new()
 		add_child(o)
-		o.apply_dict(od)
+		o.apply_dict(od)          # carries its own id back in
 		objects.append(o)
+	_next_object_id = int((d.get("next_ids", {}) as Dictionary).get(
+		"object", objects.size() + 1))
 
-	var npcs: Array = d.get("npcs", [])
+	var npcs := CozyEntityRegistry.payloads(d, CozyEntityRegistry.NPC)
 	if npc != null and not npcs.is_empty():
 		npc.npc_state = CozyNpcState.from_dict(npcs[0])
 
@@ -2967,6 +3133,17 @@ const XPROC_HUNGER := 37.0
 const XPROC_ENERGY := 61.0
 const XPROC_DAY := 4
 const XPROC_WOOD := 9.0
+
+## A real v1 save, kept in the repo so the migration is driven by output the game
+## actually produced rather than by a hand-written idea of the format.
+const V1_FIXTURE := "res://tests/fixtures/saves/v1_world.json"
+
+## What that file holds. Counted once, here, so a fixture that changes shape
+## cannot quietly stop being the thing this check is about.
+const V1_WALLS := 10
+const V1_SLABS := 3
+const V1_STAIRS := 1
+const V1_OBJECTS := 6
 
 ## Where pass 1 puts its marker wall. Checked by position rather than by counting
 ## walls: the assertion suite runs before this and mutates the default world (a
@@ -3117,7 +3294,11 @@ func _check_save_load() -> void:
 	# stored only walls, so a load silently dropped the floors and the staircase,
 	# and nothing caught it because nothing consumed the function.
 	var b := CozyBuildingState.new()
-	b.from_dict(loaded.get("building", {}))
+	b.from_dict({
+		"walls": CozyEntityRegistry.payloads(loaded, CozyEntityRegistry.WALL),
+		"slabs": CozyEntityRegistry.payloads(loaded, CozyEntityRegistry.SLAB),
+		"stairs": CozyEntityRegistry.payloads(loaded, CozyEntityRegistry.STAIR),
+	})
 	var openings := 0
 	for w in b.walls:
 		openings += w.openings.size()
@@ -3133,15 +3314,18 @@ func _check_save_load() -> void:
 		"OK" if building_ok else "FAIL"])
 
 	# (3) Objects, and the contents of the container inside one.
-	var live_objs: Array = before.get("objects", [])
-	var back_objs: Array = loaded.get("objects", [])
+	var live_objs: Array = CozyEntityRegistry.payloads(before, CozyEntityRegistry.OBJECT)
+	var back_objs: Array = CozyEntityRegistry.payloads(loaded, CozyEntityRegistry.OBJECT)
 	var object_ok := back_objs.size() == live_objs.size() and not back_objs.is_empty()
 	var container_note := "no container"
 	if object_ok:
 		for i in back_objs.size():
 			var a: Dictionary = live_objs[i]
 			var z: Dictionary = back_objs[i]
-			if String(a.get("def_id", "")) != String(z.get("def_id", "")):
+			# Identity as well as shape: an object that came back as a different
+			# object with the right definition is the failure this id was added for.
+			if String(a.get("id", "")) != String(z.get("id", "")) \
+					or String(a.get("def_id", "")) != String(z.get("def_id", "")):
 				object_ok = false
 			if a.has("container") != z.has("container"):
 				object_ok = false
@@ -3161,7 +3345,7 @@ func _check_save_load() -> void:
 
 	# (4) The resident.
 	var live_npc: CozyNpcState = npc.npc_state
-	var npcs: Array = loaded.get("npcs", [])
+	var npcs: Array = CozyEntityRegistry.payloads(loaded, CozyEntityRegistry.NPC)
 	var npc_ok := false
 	var npc_note := "no resident in the file"
 	if not npcs.is_empty() and live_npc != null:
@@ -3204,7 +3388,44 @@ func _check_save_load() -> void:
 		building.state.stairs.size(), floor_system.all_rooms().size(), objects.size(),
 		"OK" if applied else "FAIL"])
 
-	# (6) Put the world back and prove THAT round trip too — a check that leaves
+	# (6) An OLD file, through the real load path.
+	#
+	# The migration has its own unit tests, but they prove the SHAPE it produces
+	# and nothing more. This is the part they structurally cannot reach: that a
+	# v1 file goes through `load_world` -> `migrate` -> `_apply_world` and lands
+	# as a world. A migration nothing consumes is the "declared capability with
+	# no consumer" shape one layer down, and this project has paid for that shape
+	# seven times.
+	#
+	# The fixture is real output from the game (10 walls, 3 slabs, 1 stair, 6
+	# objects, 1 resident), so the counts below are the file's, not a guess.
+	var v1_ok := false
+	var v1_note := "fixture unreadable"
+	var v1_path := "user://selfcheck_v1.json"
+	var fixture := FileAccess.get_file_as_string(V1_FIXTURE)
+	if not fixture.is_empty():
+		var vf := FileAccess.open(v1_path, FileAccess.WRITE)
+		vf.store_string(fixture)
+		vf.close()
+		var old := CozySaveManager.load_world(v1_path)
+		if old.is_empty():
+			v1_note = "refused by load_world"
+		else:
+			_apply_world(old)
+			v1_ok = building.state.walls.size() == V1_WALLS \
+				and building.state.slabs.size() == V1_SLABS \
+				and building.state.stairs.size() == V1_STAIRS \
+				and objects.size() == V1_OBJECTS \
+				and npc.npc_state != null and npc.npc_state.id == "npc_001"
+			v1_note = "%d wall(s), %d slab(s), %d stair(s), %d object(s), resident %s" % [
+				building.state.walls.size(), building.state.slabs.size(),
+				building.state.stairs.size(), objects.size(),
+				npc.npc_state.id if npc.npc_state != null else "none"]
+		CozySaveManager.erase(v1_path)
+	print("[cozyv2] save/load a v1 file through the real path: %s  [%s]" % [
+		v1_note, "OK" if v1_ok else "FAIL"])
+
+	# (7) Put the world back and prove THAT round trip too — a check that leaves
 	# the scene different from how it found it corrupts every check after it.
 	_apply_world(before)
 	var restored := building.state.wall_count() == walls_before \
@@ -3345,6 +3566,154 @@ func _check_self_check() -> void:
 		self_check.describe(),
 		"none" if pending.is_empty() else ",".join(pending),
 		"OK" if pending.is_empty() else "FAIL, a scheduled stage never ran"])
+
+
+## PROBE, not an assertion. Where does the hauling resident actually get stuck?
+##
+## Added 2026-09-12 on debt 22. The evidence is `why=blocked, replanning`, which
+## says the agent is NOT MOVING — and rules nothing else out: an interaction point
+## on the wrong side of a wall, a path that crosses geometry, and a body pinned
+## against it all end in that same line.
+##
+## So it measures all four candidates the design names, instead of picking one
+## and looking for proof of it:
+##
+##   A  the interaction point's world position is wrong, or inside its own object
+##   B  the path the navigator returned crosses something it should not
+##   C  the path is fine and the BODY cannot follow it
+##   D  the point was chosen by straight-line distance and is not reachable
+##
+## Run:  godot --headless --path <repo> --quit-after 1500 -- --cozy-probe-npc-pathing
+func _probe_npc_pathing() -> void:
+	if npc == null or npc.navigator == null:
+		print("[cozyv2] probe npc pathing: NOT BUILT")
+		return
+
+	print("[cozyv2] probe npc pathing | %s" % npc.debug_line())
+
+	# ---- D: what it CHOSE, and what else was on offer -----------------------
+	var want := npc.want_point_type()
+	var chosen: CozyInteractionPoint = npc.target_point()
+	if chosen == null:
+		print("[cozyv2]   chose: nothing (no target point)")
+	else:
+		print("[cozyv2]   chose: %s  point=%s  straight=%.2f m" % [
+			_object_label(npc.target_object()), chosen.type,
+			npc.global_position.distance_to(chosen.world_position)])
+
+	# Every candidate, straight-line distance against reachability. This is the
+	# measurement that separates "nearest" from "reachable" — the two are the same
+	# number only when nothing is in the way.
+	print("[cozyv2]   candidates (straight-line vs reachable):")
+	for o in objects:
+		if not is_instance_valid(o):
+			continue
+		for pt in o.free_points_of_type(want):
+			var straight := npc.global_position.distance_to(pt.world_position)
+			var route: Array = npc.navigator.plan(npc.global_position, pt.world_position)
+			print("[cozyv2]     %-14s %-8s straight=%5.2f m  path=%s" % [
+				_object_label(o), pt.type, straight,
+				("%d wp" % route.size()) if not route.is_empty() else "NO ROUTE"])
+
+	# ---- B: the path itself -------------------------------------------------
+	var path: PackedVector3Array = npc.current_path()
+	print("[cozyv2]   path: %d waypoint(s)" % path.size())
+	for i in mini(path.size(), 24):
+		print("[cozyv2]     %2d (%.2f, %.2f, %.2f)" % [i, path[i].x, path[i].y, path[i].z])
+
+	# Does any leg of the path pass through geometry? A path that does is a
+	# navigator fault, and the body cannot follow it no matter how good it is.
+	var crossings := 0
+	var first_crossing := ""
+	var space := npc.get_world_3d().direct_space_state
+	for i in range(1, path.size()):
+		var q := PhysicsRayQueryParameters3D.create(
+			path[i - 1] + Vector3(0.0, 0.9, 0.0), path[i] + Vector3(0.0, 0.9, 0.0))
+		q.collide_with_areas = false
+		q.exclude = [npc.get_rid()]
+		var h := space.intersect_ray(q)
+		if not h.is_empty():
+			crossings += 1
+			if first_crossing == "":
+				first_crossing = "leg %d-%d hits %s" % [i - 1, i, _describe_collider(h["collider"])]
+	print("[cozyv2]   path crosses geometry: %d leg(s)%s" % [
+		crossings, "" if crossings == 0 else "  first: " + first_crossing])
+
+	# ---- C: what stops the BODY --------------------------------------------
+	# Cast from the agent toward its next waypoint. Whatever it hits is the thing
+	# the body is pressed against — named, not guessed.
+	if path.size() > 0:
+		var wp_i: int = npc.path_index()
+		var target_wp: Vector3 = path[mini(wp_i, path.size() - 1)]
+		var from := npc.global_position + Vector3(0.0, 0.9, 0.0)
+		var to := Vector3(target_wp.x, from.y, target_wp.z)
+		var q2 := PhysicsRayQueryParameters3D.create(from, to)
+		q2.collide_with_areas = false
+		q2.exclude = [npc.get_rid()]
+		var h2 := space.intersect_ray(q2)
+		if h2.is_empty():
+			print("[cozyv2]   blocking cast: nothing between the agent and waypoint %d" % wp_i)
+		else:
+			print("[cozyv2]   blocking cast: %s at %.2f m" % [
+				_describe_collider(h2["collider"]), from.distance_to(h2["position"])])
+			_probe_wall_openings(h2["collider"])
+
+	# ---- A: is the point where it claims to be? ----------------------------
+	if chosen != null:
+		var obj := npc.target_object()
+		if obj != null:
+			var inside := obj.footprint_rect().has_point(
+				Vector2(chosen.world_position.x, chosen.world_position.z))
+			var off := chosen.world_position.distance_to(
+				obj.to_global(Vector3.ZERO))
+			print("[cozyv2]   point geometry: %.2f m from the object's origin, inside_own_footprint=%s  [%s]" % [
+				off, str(inside),
+				"FAIL, the point is inside the object it belongs to" if inside else "OK"])
+
+
+## DECISIVE MEASUREMENT for the wall that is blocking.
+##
+## The hypothesis it tests: the wall's STATE carries a door opening while its
+## GENERATED GEOMETRY does not — because `WallState.add_opening()` only appends to
+## a list and `_rebuild_spatial()` rebuilds rooms, portals and navigation, not
+## wall meshes. Navigation reads the state and routes through the door; physics
+## reads the collider and stops at a solid wall.
+##
+## So: count the openings the state claims, then cast a ray straight through the
+## middle of the first one. A wall whose state says "door here" and whose
+## collider says "solid" is the whole bug, and it is measurable in one line.
+func _probe_wall_openings(collider: Object) -> void:
+	var parent: Node = collider.get_parent()
+	if not (parent is CozyWall):
+		return
+	var state: CozyWallState = parent.state
+	if state == null:
+		return
+	print("[cozyv2]   blocker %s claims %d opening(s)" % [state.id, state.openings.size()])
+	if state.openings.is_empty():
+		return
+	# Walk through the door's own centre, at chest height, along the wall's normal.
+	var o: CozyOpening = state.openings[0]
+	var along := (state.end - state.start).normalized()
+	var across := Vector3(-along.z, 0.0, along.x)
+	var centre: Vector3 = state.start + along * o.offset + Vector3(0.0, 0.9, 0.0)
+	var q := PhysicsRayQueryParameters3D.create(centre - across * 1.6, centre + across * 1.6)
+	q.collide_with_areas = false
+	var hit := npc.get_world_3d().direct_space_state.intersect_ray(q)
+	print("[cozyv2]   cast through %s's door centre: %s  [%s]" % [
+		state.id,
+		"SOLID" if not hit.is_empty() else "open",
+		"FAIL, navigation has a hole the collider does not" if not hit.is_empty() else "OK"])
+
+
+## A one-word label for an object, for probe output. Node names are
+## engine-generated (`@Node3D@88`) and identify nothing.
+func _object_label(o: Object) -> String:
+	if o == null or not is_instance_valid(o):
+		return "(none)"
+	if o is CozyWorldObject:
+		return String(o.def_id)
+	return o.get_class().to_lower()
 
 
 ## The view the game OPENS ON, measured rather than assumed.

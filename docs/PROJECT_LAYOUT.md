@@ -61,6 +61,12 @@ cozy-game-v2/
 │   ├── vfx/                    Effect definitions and instances.
 │   └── save/                   Serialization.
 │
+├── dungeon/                A dungeon — which is another batch of walls.
+│   ├── dungeon_layout.gd       Outlines -> the walls to build, resolved against
+│   │                           each other. No new State, no new Node.
+│   └── dungeon_blueprint.gd    The document: what a dungeon file may say, and
+│                               what it may not. Refuses what it cannot check.
+│
 ├── character/              Characters, in the 3D-space-plus-sprite sense.
 │   ├── character_body.gd       Position, collision, sprite, animation.
 │   ├── character_visuals.gd    Appearance -> sprite sheet -> animation choice.
@@ -90,7 +96,9 @@ cozy-game-v2/
 │   ├── self_check.gd           The stage schedule. The checks themselves are
 │   │                           still on Main — see debt #1 below.
 │   ├── smoke/                  (empty) Runs that boot the real world.
-│   ├── unit/                   (empty) Pure-logic tests.
+│   ├── unit/                   Pure-logic tests, run by `unit/run.gd`.
+│   ├── probe/                  Standalone MEASUREMENTS — they print numbers and
+│   │                           assert nothing. Run one with `--script`.
 │   └── fixtures/art/           Asset-library test data.
 │
 └── docs/                   The contracts. Read before changing behaviour.
@@ -111,6 +119,7 @@ Answer in order; the first match wins.
 | A table of ids, costs, or definitions | `data/` |
 | About walls, floors, roofs, stairs, openings | `building/` |
 | About land, rooms, navigation, objects, residents | `world/<subsystem>/` |
+| About a dungeon's layout or generation | `dungeon/` |
 | About a character's body, look, or behaviour | `character/` |
 | About how something is drawn or lit | `render/` |
 | A panel, menu, or widget | `ui/` |

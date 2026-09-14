@@ -525,6 +525,26 @@ func _withdraw_any(c: CozyContainerState, pack: CozyInventory) -> String:
 	return "took %.0f %s" % [n, id]
 
 
+## Read-only accessors (2026-09-12) so the pathing probe can see what the agent
+## chose without the probe having to guess. They ADD nothing to the agent's
+## behaviour — `_acquire_job` is deliberately untouched while debt 22 is being
+## measured rather than assumed.
+func target_point() -> CozyInteractionPoint:
+	return _target_point
+
+
+func target_object() -> CozyWorldObject:
+	return _target_object
+
+
+func current_path() -> PackedVector3Array:
+	return _path
+
+
+func path_index() -> int:
+	return _path_i
+
+
 func _abandon_job() -> void:
 	if _target_point != null:
 		_target_point.release()
