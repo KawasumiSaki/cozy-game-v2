@@ -34,12 +34,46 @@ const WELL_X1 := 7.0     ## ...to here. The ramp tops out at WELL_X1 and the
                          ## level floor instead of stepping off into a wall.
 const WELL_Z0 := 3.0
 
+## Is the demo house part of the world?
+##
+## OFF since 2026-09-14 (Willow): the loop being built now is farming, mining and
+## woodcutting on open ground, and the house is not part of it. The house, the
+## systems derived from its walls, and the checks that measure them are all
+## PARKED rather than deleted — flip this to `true` and every one of them comes
+## back unchanged.
+##
+## ONE SWITCH, NOT FIVE, and the reason is the project's first invariant: rooms
+## are DERIVED. `CozyRoomDetector` runs a planar face traversal over the wall
+## graph, portals are derived from openings in walls, and the room graph and the
+## roofs are derived from the rooms. With no walls there is nothing to derive,
+## which is why the four systems that depend on the house depend on it through
+## this one constant.
+##
+## PARKING IS REPORTED, NEVER SILENT. `_report()` prints which checks did not
+## run. A run that quietly measures less than it used to is the "green number
+## that lies" this project has paid for more than once, so the parked checks are
+## a LIST that gets printed when it is skipped rather than a comment saying so.
+##
+## WHAT IS NOT PARKED: the furniture. The chest, bed, chair, campfire and
+## research table are placed independently of the house and every one of them has
+## a consumer — the chest is where the §45 chain stores, the bed is where the
+## schedule sleeps. They survive with no walls, which is asserted.
+const HOUSE_ENABLED := false
+
+
 ## Where the game starts: in front of the door, on the south side of the house.
 ##
 ## The house's door is cut into the z = 0 wall, so the FRONT of the house faces
 ## -Z — and the locked camera has to be on that side, or the game opens on the
 ## back of the house with the whole building between the camera and the player.
 ## Measured 2026-09-12 (see `_check_opening_shot`).
+##
+## NOTE while `HOUSE_ENABLED` is false: the measurement above justifies yaw 180
+## for a world that HAS that house. With no house there is no evidence for any
+## particular yaw, so the camera is left exactly where it was rather than moved
+## to a new guess — and changing the yaw would change `ground_forward()`, which
+## is the controls. The reasoning is parked with the house; the value is not
+## disturbed.
 const SPAWN_POINT := Vector3(3.25, 0.2, -3.5)
 
 ## Where production art lives. EMPTY until real assets exist — that is the
@@ -74,15 +108,37 @@ const TERRAIN_TOOLS: Array[String] = ["dig", "fill", "clear", "till"]
 const BUILD_TOOLS: Array[String] = ["outline", "wall"]
 const PLACE_TOOLS: Array[String] = ["research_table", "chest", "bed", "chair",
 	"campfire"]
-const TOOL_GROUPS: Array = [BUILD_TOOLS, TERRAIN_TOOLS, PLACE_TOOLS]
+
+## The palette, parked with the house.
+##
+## `outline` and `wall` are the two tools that reach the building system, and
+## `_report_house()` — every check that covers them — is parked alongside. Keeping
+## them clickable would leave a player drawing walls that nothing measures any
+## more. A capability that is live while its coverage is not is the shape of bug
+## this project keeps paying for, so the two go off together.
+const TOOL_GROUPS: Array = (
+	[BUILD_TOOLS, TERRAIN_TOOLS, PLACE_TOOLS] if HOUSE_ENABLED
+	else [TERRAIN_TOOLS, PLACE_TOOLS])
+
 ## The live resident's trade. §45's production chain runs on THIS one, so it is
 ## asserted against the real resident rather than a synthetic one — a chain that
 ## only ever runs inside an assertion is the "declared with no consumer" shape
 ## this project has already paid for three times.
 const NPC_JOB := "cook"
 
-const TOOLS: Array[String] = ["outline", "wall", "dig", "fill", "clear", "till",
-	"research_table", "chest", "bed", "chair", "campfire"]
+## The flat list the HOTKEYS index, and it MUST equal `TOOL_GROUPS` flattened.
+##
+## These are two hand-kept lists that have to agree, which is normally a bug
+## waiting to happen: the HUD builds its buttons by flattening the groups, while
+## the number keys index THIS list, so the day the two disagree a key press picks
+## the wrong tool — silently. They cannot be one value, because the palette needs
+## the group boundaries and the hotkeys need a flat index, so they are held
+## together by the `hud tools` assertion, which flattens the groups and compares.
+const TOOLS: Array[String] = (
+	["outline", "wall", "dig", "fill", "clear", "till",
+		"research_table", "chest", "bed", "chair", "campfire"] if HOUSE_ENABLED
+	else ["dig", "fill", "clear", "till",
+		"research_table", "chest", "bed", "chair", "campfire"])
 
 ## Brush radius for terrain tools, metres.
 const TERRAIN_BRUSH := 2.5
@@ -189,7 +245,10 @@ func _ready() -> void:
 	building.inventory.add("brick", 150.0)
 	building.inventory.add("plaster", 100.0)
 
-	_build_house()
+	# Parked, not removed — see HOUSE_ENABLED. The furniture below is NOT part of
+	# the house: it is placed independently of it and every piece has a consumer.
+	if HOUSE_ENABLED:
+		_build_house()
 	_place_initial_furniture()
 	_rebuild_spatial()
 	# Roofs come after room detection: the generator needs the room polygon and
@@ -234,7 +293,13 @@ func _build_clock() -> void:
 ##     why the two autopilot-dependent ones sit far later.
 func _build_self_check() -> void:
 	self_check = CozySelfCheck.new()
-	self_check.add("occlusion", 60, _check_occlusion)
+	# Parked with the house, and gated rather than dropped so that the stage
+	# comes back with it. Occlusion fades whatever stands between the camera and
+	# the player, which here is always a wall or a slab; with no house there is
+	# nothing to fade, and `opening shot at spawn: 0 opaque` is true for a reason
+	# that has nothing to do with the camera being right.
+	self_check.add("occlusion", 60, _check_occlusion,
+		func() -> bool: return HOUSE_ENABLED)
 	# Probe only. Gated on the flag so the baseline run never pays for it.
 	self_check.add("occlusion_probe", 90, _probe_occlusion_sweep,
 		func() -> bool: return _has_arg("--cozy-probe-occlusion"))
@@ -246,7 +311,11 @@ func _build_self_check() -> void:
 		func() -> bool: return _has_arg("--cozy-probe-npc-pathing"))
 	self_check.add("entity_registry", 160, _check_entity_registry)
 	self_check.add("outline", 1500, _check_outline_build)
-	self_check.add("live_rebuild", AUTOPILOT_DONE_FRAME, _run_live_rebuild_test)
+	# Parked with the house: this test splits a room by adding a dividing wall,
+	# and with no rooms there is nothing to split — measured, it reported
+	# `floor-0 rooms 0 -> 0` and failed for the right reason.
+	self_check.add("live_rebuild", AUTOPILOT_DONE_FRAME, _run_live_rebuild_test,
+		func() -> bool: return HOUSE_ENABLED)
 	self_check.add("npc_work", NPC_CHECK_FRAME, _check_npc_work)
 	# Last, so it observes every stage above it. It is itself a stage, which is
 	# what keeps a deliberately short run (`--quit-after 400`) honest: the report
@@ -1678,23 +1747,6 @@ func _report() -> void:
 	print("[cozyv2] detected rooms:")
 	print(floor_system.describe())
 
-	_check_room_at(Vector3(4.0, 0.1, 3.0), "room_0_0")
-	_check_room_at(Vector3(4.0, FLOOR_H + 0.1, 3.0), "room_1_0")
-	_check_room_at(Vector3(4.0, 0.1, -6.0), "outdoors")
-
-	# Doors are derived from wall openings now, so the check looks for the
-	# connection rather than for a hand-chosen id.
-	_check_door_between("", "room_0_0")
-	_check_portal("stair_main", "room_0_0", "room_1_0")
-
-	# Asserted by the KIND of connector crossed, not by id: a door's portal id is
-	# generated from the wall that carries the opening, so a named expectation
-	# would break every time the walls are renumbered — and "through a door,
-	# then up a stair" is what this test actually means.
-	_check_route_kinds(CozyRoomGraph.OUTDOORS, "room_1_0", ["door", "stair"])
-	_check_route_kinds("room_0_0", "room_1_0", ["stair"])
-	_check_route_kinds("room_1_0", "room_1_0", [])
-
 	_check_camera()
 	_check_ui()
 	_check_container()
@@ -1703,19 +1755,76 @@ func _report() -> void:
 	_check_save_load()
 	_check_assets()
 	_check_scatter()
-	_check_nav()
 	_check_terrain()
 	_check_farming_chain()
 	_check_terrain_surface()
-	_check_wall_connection()
-	_check_openings()
-	_check_wall_assembly()
-	_check_building_state()
-	_check_roofs()
 	_check_scatter_incremental()
-	_check_outline_guard()
-	_check_roof_follows_room()
-	_check_npc_route_plan()
+
+	_report_house()
+
+
+## Everything that measures the house, and the systems derived from its walls.
+##
+## A LIST, not a run of calls, and that is the whole design. When
+## `HOUSE_ENABLED` is false the names are printed as NOT RUN — so a run that
+## measures less than it used to says so, in the log, where the numbers are.
+## A count kept by hand would drift the first time someone adds a check here.
+##
+## Each entry is `[what it measures, the callable]`. Grouping several calls under
+## one name (rooms, routes) keeps the report readable without dropping the calls.
+##
+## Three of these passed VACUOUSLY with no house, which is why they are parked
+## rather than left running: `npc route plan` planned "upstairs" in 1 waypoint and
+## still reported `crosses floor=true`; `routes` expected no route between two
+## rooms and got one because neither room exists; and the opening shot found
+## nothing opaque because there is nothing to be opaque. A green that holds for
+## the wrong reason is worse than a skip, because it reads as coverage.
+func _report_house() -> void:
+	var checks: Array = [
+		["rooms", func() -> void:
+			_check_room_at(Vector3(4.0, 0.1, 3.0), "room_0_0")
+			_check_room_at(Vector3(4.0, FLOOR_H + 0.1, 3.0), "room_1_0")
+			_check_room_at(Vector3(4.0, 0.1, -6.0), "outdoors")],
+		# Doors are derived from wall openings now, so the check looks for the
+		# connection rather than for a hand-chosen id.
+		["door + stair portals", func() -> void:
+			_check_door_between("", "room_0_0")
+			_check_portal("stair_main", "room_0_0", "room_1_0")],
+		# Asserted by the KIND of connector crossed, not by id: a door's portal id
+		# is generated from the wall that carries the opening, so a named
+		# expectation would break every time the walls are renumbered — and
+		# "through a door, then up a stair" is what this test actually means.
+		["routes", func() -> void:
+			_check_route_kinds(CozyRoomGraph.OUTDOORS, "room_1_0", ["door", "stair"])
+			_check_route_kinds("room_0_0", "room_1_0", ["stair"])
+			_check_route_kinds("room_1_0", "room_1_0", [])],
+		["local navigation + outdoor detour", _check_nav],
+		["wall connection + context", _check_wall_connection],
+		["openings", _check_openings],
+		["wall assembly", _check_wall_assembly],
+		["building state", _check_building_state],
+		["roofs", _check_roofs],
+		["roof follows its room", _check_roof_follows_room],
+		["outline guard", _check_outline_guard],
+		["npc route plan (upstairs)", _check_npc_route_plan],
+	]
+
+	if HOUSE_ENABLED:
+		for c in checks:
+			(c[1] as Callable).call()
+		return
+
+	var names: Array[String] = []
+	for c in checks:
+		names.append(String(c[0]))
+	# "group(s)", not "check(s)": several assertions hide behind one name
+	# (`rooms` is three), so a count of names is not a count of assertions and
+	# saying otherwise would understate what stopped being measured. The two
+	# totals — 122 assertions with the house, 88 without — are in the project
+	# notes, where a number that must be kept in step with the code belongs next
+	# to the reason it changes.
+	print("[cozyv2] house: PARKED, %d check group(s) NOT RUN (HOUSE_ENABLED=false): %s" % [
+		names.size(), ", ".join(names)])
 
 
 ## Doc #86 — the whole chain, end to end.
@@ -1953,6 +2062,19 @@ func _check_building_state() -> void:
 
 	# A stair steeper than an agent's floor_max_angle is climbed by nobody, so
 	# the constraint is asserted rather than trusted (doc #30).
+	#
+	# The two measurements below INDEX the world, so they have to say what they
+	# do when there is nothing there to index. They used to take `[0]` outright,
+	# which did not fail — it CRASHED, with a `SCRIPT ERROR: Out of bounds`, and
+	# took both measurements down with it. A checker that dies instead of
+	# reporting is worse than a missing one, because the crash reads as "the
+	# build is broken" rather than "this check had nothing to measure".
+	if s.stairs.is_empty() or s.slabs.is_empty():
+		print("[cozyv2] stair: nothing to measure (%d stair(s), %d slab(s))  [%s]" % [
+			s.stairs.size(), s.slabs.size(),
+			"FAIL, none built" if HOUSE_ENABLED else "SKIPPED, no house"])
+		return
+
 	var st: CozyStairState = s.stairs[0]
 	var deg := rad_to_deg(st.slope_angle())
 	var limit := rad_to_deg(player.floor_max_angle)
@@ -2258,7 +2380,13 @@ func _check_npc_work() -> void:
 	# counter it read).
 	_check_npc_state()
 	_check_schedule_and_needs()
-	_check_outdoor_nav()
+	# Parked with the house. This one is about walking AROUND a building: the
+	# navigation grid has to route the resident past an obstacle rather than
+	# through it. With no building the walk is a straight line, so the check
+	# would pass while measuring nothing — it failed instead, reporting
+	# `1 pt(s) inside the house` for a house that is not there.
+	if HOUSE_ENABLED:
+		_check_outdoor_nav()
 
 
 func _run_live_rebuild_test() -> void:
@@ -2582,6 +2710,19 @@ func _check_ui() -> void:
 		hud.panel_count(), hud.tool_button_count(), TOOLS.size(),
 		"OK" if hud.tool_button_count() == TOOLS.size() and hud.panel_count() >= 3 else "FAIL"])
 
+	# (1b) The palette's list and the hotkeys' list are two hand-kept values that
+	# must agree. If they drift, the buttons and the number keys address different
+	# tools and a key press silently picks the wrong one — so the agreement is
+	# asserted rather than trusted, by flattening the groups the way the HUD does.
+	var flattened: Array[String] = []
+	for g in TOOL_GROUPS:
+		for t in g:
+			flattened.append(String(t))
+	var order_ok := flattened == TOOLS
+	print("[cozyv2] hud tool order: %d group(s) flatten to %d tool(s), matches the hotkey list: %s  [%s]" % [
+		TOOL_GROUPS.size(), flattened.size(), order_ok,
+		"OK" if order_ok else "FAIL, the palette and the hotkeys disagree"])
+
 	# (2) Reachability, through the same call a button click makes.
 	var dig_i := TOOLS.find("dig")
 	hud.select_tool(dig_i)
@@ -2613,8 +2754,14 @@ func _check_ui() -> void:
 			probe_ok = false
 		if checked >= 3:
 			break
+	# "Nothing to resolve" is not a failure of the context menu, it is a fact
+	# about the world. The demand for a wall came from the demo house: with none,
+	# `checked` is 0 and the menu this check exists for is still perfectly wired.
 	print("[cozyv2] context probe: %d wall collider(s) resolved to their wall  [%s]" % [
-		checked, "OK" if probe_ok and checked > 0 else "FAIL"])
+		checked,
+		"OK" if probe_ok and checked > 0 else (
+			"SKIPPED, no wall in the world" if checked == 0 and not HOUSE_ENABLED
+			else "FAIL")])
 
 	# (3) The ground menu is the entry point for terrain editing, so its
 	# presence is the thing worth asserting — not merely that a menu opened.
@@ -3376,13 +3523,20 @@ func _check_save_load() -> void:
 	var walls_before := building.state.wall_count()
 	var objs_before := objects.size()
 	var rooms_before := floor_system.all_rooms().size()
+	var stairs_before := building.state.stairs.size()
 
 	_apply_world(loaded)
+	# A ROUND TRIP, not an absolute count. This used to end with
+	# `and building.state.stairs.size() > 0` — which asserts that a stair EXISTS,
+	# a fact about the demo house and not about saving at all. Every other clause
+	# here compares what went in with what came out; that one clause demanded a
+	# particular world. With the house parked the save was still a faithful round
+	# trip and this check failed anyway, which is how it was found.
 	var applied := building.state.wall_count() == walls_before \
 		and objects.size() == objs_before \
 		and floor_system.all_rooms().size() == rooms_before \
-		and npc.npc_state != null and npc.npc_state.id == live_npc.id \
-		and building.state.stairs.size() > 0
+		and building.state.stairs.size() == stairs_before \
+		and npc.npc_state != null and npc.npc_state.id == live_npc.id
 	print("[cozyv2] save/load applied live: %d wall(s), %d slab(s), %d stair(s), %d room(s), %d object(s)  [%s]" % [
 		building.state.wall_count(), building.state.slabs.size(),
 		building.state.stairs.size(), floor_system.all_rooms().size(), objects.size(),
