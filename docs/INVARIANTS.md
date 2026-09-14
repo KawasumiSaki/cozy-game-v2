@@ -618,6 +618,10 @@ ones that are right.**
 
 ## A navigation layer that nothing consults is not a navigation layer
 
+**FIXED 2026-09-14.** The one-line cause was in `_local()`; the rest of this entry
+is kept because the way it was found, and the two ways the check that found it
+first proved nothing, are the useful part.
+
 Found 2026-09-14 while building the resource line, by following a check that could
 not fail. The outdoors has its own navigation grid — synthesised from the terrain
 bounds with buildings registered as obstacles, coarser than a room's on purpose
@@ -655,3 +659,36 @@ Two things to carry forward, the second more important than the first:
 - **A self-check is not a consumer.** An assertion proves a system is correct; it
   does not prove anything uses it. When every reader of a thing is a check, the
   thing is not wired up, and the check will say it is.
+
+### What the fix was, and what the check had to survive
+
+`_local()` now looks the outdoors up like any other space. Measured before and
+after, by asking the navigator for three routes with the house between their ends:
+
+    before  -> 1 waypoint each, all three with a leg through geometry
+    after   -> 27, 35 and 34 waypoints, nothing hit
+
+Reverting the line brings all three back, naming `wall wall_001` and
+`wall wall_004` — the check is doing the work, not the fix's absence.
+
+**Three versions of that check were green while proving nothing**, and each fails
+in a way worth recognising:
+
+- **"A path exists" is not reachability.** The first version asked `plan()` — the
+  same function with the same straight-line branch — so a tree at (500, 500) was
+  "reachable". Ask the grid a body would stand on, or ask what the navigator does.
+- **A physics ray in `_ready()` sees an unpositioned world.** The first run from
+  `_report()` reported a 0.5 m ray hitting a table at (2, 3, 2) — the node's
+  position, not the body's. Cast-based checks belong in a scheduled stage; the
+  cast in `_report()` is not wrong, it is early.
+- **`plan()` does not include where the agent already is.** Counting legs from
+  index 1 means a one-waypoint path has zero legs and the loop never runs. A
+  canary — one cast that must hit something known — is what told the difference
+  between "nothing was hit" and "nothing was looked at". It is still in the check.
+
+**And the mutation test caught a fix of mine that was not one.** Objects ARE
+outdoor obstacles; the function that builds the list appends them at the bottom.
+Reading only its first line made them look missing, and switching the helper to
+the one that folds objects in delivered them twice — thirteen duplicate rects and
+no behaviour change. **The tell was that reverting the "fix" turned nothing red.**
+Read the whole function; a fix that changes a count but not a path is not a fix.
