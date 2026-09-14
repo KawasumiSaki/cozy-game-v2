@@ -35,6 +35,111 @@ extends RefCounted
 ## Override being late is the point: it is how a "set your speed to exactly this"
 ## effect works regardless of what else is on the character.
 
+## The V1 statistic vocabulary, from `副本世界_装备词条掉落系统_V1.0.md` section 4.
+##
+## IT IS SHORT ON PURPOSE, and the document says why: "不要一开始设计 50 个属性."
+## Adding one later is a row here and needs no change to the equipment system —
+## which is the same promise `CozyObjectDefs` makes, and the reason both are
+## tables rather than enums baked into call sites.
+##
+## `kind` is what the number MEANS, not how it is stored: a percentage stat is
+## still a float, and the distinction is what lets a tooltip print "+7%" instead
+## of "+0.07" without knowing the stat by name.
+##
+## `bounds` are the limits `resolve` clamps to. They are here rather than at the
+## call site because a resistance that can go negative is a bug waiting to be
+## found by a player rather than by an assertion.
+const KIND_FLAT := "flat"
+const KIND_PERCENT := "percent"
+
+const GROUP_CORE := "core"
+const GROUP_RESISTANCE := "resistance"
+const GROUP_SPECIAL := "special"
+
+const STATS := {
+	"max_hp": {"name": "Maximum Life", "kind": KIND_FLAT, "group": GROUP_CORE,
+		"min": 1.0, "max": 99999.0},
+	"attack": {"name": "Attack", "kind": KIND_FLAT, "group": GROUP_CORE,
+		"min": 0.0, "max": 99999.0},
+	"defense": {"name": "Defense", "kind": KIND_FLAT, "group": GROUP_CORE,
+		"min": 0.0, "max": 99999.0},
+	"attack_speed": {"name": "Attack Speed", "kind": KIND_PERCENT, "group": GROUP_CORE,
+		"min": -0.9, "max": 10.0},
+	"move_speed": {"name": "Move Speed", "kind": KIND_PERCENT, "group": GROUP_CORE,
+		"min": -0.9, "max": 10.0},
+	"crit_chance": {"name": "Critical Chance", "kind": KIND_PERCENT, "group": GROUP_CORE,
+		"min": 0.0, "max": 1.0},
+	"crit_damage": {"name": "Critical Damage", "kind": KIND_PERCENT, "group": GROUP_CORE,
+		"min": 0.0, "max": 50.0},
+
+	"physical_resistance": {"name": "Physical Resistance", "kind": KIND_PERCENT,
+		"group": GROUP_RESISTANCE, "min": -1.0, "max": 0.9},
+	"fire_resistance": {"name": "Fire Resistance", "kind": KIND_PERCENT,
+		"group": GROUP_RESISTANCE, "min": -1.0, "max": 0.9},
+	"ice_resistance": {"name": "Ice Resistance", "kind": KIND_PERCENT,
+		"group": GROUP_RESISTANCE, "min": -1.0, "max": 0.9},
+	"lightning_resistance": {"name": "Lightning Resistance", "kind": KIND_PERCENT,
+		"group": GROUP_RESISTANCE, "min": -1.0, "max": 0.9},
+	"poison_resistance": {"name": "Poison Resistance", "kind": KIND_PERCENT,
+		"group": GROUP_RESISTANCE, "min": -1.0, "max": 0.9},
+
+	"life_steal": {"name": "Life Steal", "kind": KIND_PERCENT, "group": GROUP_SPECIAL,
+		"min": 0.0, "max": 1.0},
+	"damage_reduction": {"name": "Damage Reduction", "kind": KIND_PERCENT,
+		"group": GROUP_SPECIAL, "min": 0.0, "max": 0.9},
+}
+
+## A stable order, so a panel lists the same stats in the same places every time.
+const ORDER: Array[String] = ["max_hp", "attack", "defense", "attack_speed",
+	"move_speed", "crit_chance", "crit_damage", "physical_resistance",
+	"fire_resistance", "ice_resistance", "lightning_resistance",
+	"poison_resistance", "life_steal", "damage_reduction"]
+
+
+## Everything a caller needs to know about one statistic, or an empty table.
+##
+## NOTE WHAT IS ABSENT: `hp`. Section 4 lists both HP and MAX_HP, and only one of
+## them is a statistic a modifier may touch — current life is runtime state that
+## a sword has no business setting. "+50 maximum life" is a row here; "you now
+## have 50 life" is not, and giving them the same shape would invite it.
+static func stat(stat_id: String) -> Dictionary:
+	return STATS.get(stat_id, {})
+
+
+static func is_stat(stat_id: String) -> bool:
+	return STATS.has(stat_id)
+
+
+static func display_name(stat_id: String) -> String:
+	return String(stat(stat_id).get("name", stat_id))
+
+
+static func kind(stat_id: String) -> String:
+	return String(stat(stat_id).get("kind", KIND_FLAT))
+
+
+## The limits this stat is held inside, in the shape `resolve` wants.
+static func bounds(stat_id: String) -> Dictionary:
+	var d := stat(stat_id)
+	if d.is_empty():
+		return {}
+	return {"min": float(d["min"]), "max": float(d["max"])}
+
+
+## Every stat in one group, in `ORDER` — so a panel can print the resistances
+## together without the table deciding where they go.
+static func in_group(group: String) -> Array[String]:
+	var out: Array[String] = []
+	for id in ORDER:
+		if kind_of_group(id) == group:
+			out.append(id)
+	return out
+
+
+static func kind_of_group(stat_id: String) -> String:
+	return String(stat(stat_id).get("group", GROUP_CORE))
+
+
 enum Op { ADD, MULTIPLY, OVERRIDE }
 
 const OP_NAMES := {
