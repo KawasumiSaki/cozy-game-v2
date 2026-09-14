@@ -615,3 +615,43 @@ adjacent: `0 ERROR` on a healthy build is a property nothing in `tests/unit/`
 asserts, and it is the only thing standing under either fix. **A check that has
 never been seen to fail is a check nobody has any evidence about — including the
 ones that are right.**
+
+## A navigation layer that nothing consults is not a navigation layer
+
+Found 2026-09-14 while building the resource line, by following a check that could
+not fail. The outdoors has its own navigation grid — synthesised from the terrain
+bounds with buildings registered as obstacles, coarser than a room's on purpose
+(see "The outdoors needs a navigation grid too"). It is built, it is asserted, and
+it is handed to `CozyWorldNavigator`. `_local()` never reads it:
+
+    if room_id == CozyRoomGraph.OUTDOORS or not nav_by_room.has(room_id):
+        out.append(to)
+        return out
+
+So **any move from one outdoor point to another is a straight line**, and a
+resident walking from the front of the house to the back walks through it. Every
+reader of that grid is a self-check:
+
+    main.gd:942   builds it
+    main.gd:918   hands it to the navigator      -> which returns early, above
+    main.gd:4537  _check_outdoor_nav             <- a self-check
+    main.gd:1863  _check_resource_chain          <- a self-check
+
+`_check_outdoor_nav` proves the grid routes around the house — 14.7 m walked
+against 12.7 m straight, no waypoint inside — and none of that reaches the
+navigator. **The check is green and the behaviour it describes never happens.**
+
+This is the same failure as "A declared capability with no consumer", one layer
+down: there the table had no reader, here the data structure has no reader, and
+the assertion written to prove it works is what made it look used.
+
+Two things to carry forward, the second more important than the first:
+
+- **Do not trust "a path exists" as a reachability test.** The straight-line
+  return makes it true for a target placed at (500, 500) — outside the world
+  entirely. The first version of the resource check did this and mutation testing
+  is what caught it. Ask the grid a body would stand on (`is_walkable`), or ask
+  what the navigator actually does.
+- **A self-check is not a consumer.** An assertion proves a system is correct; it
+  does not prove anything uses it. When every reader of a thing is a check, the
+  thing is not wired up, and the check will say it is.

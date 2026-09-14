@@ -129,6 +129,35 @@ chest is where §45 stores, the bed is where the schedule sleeps. The camera is
 deliberately untouched: yaw 180 was measured for this house, and with it present
 there is no reason to move it.
 
+### Resource line — chop, mine, harvest (opened 2026-09-14)
+
+The loop being built now is farming, woodcutting and mining on open ground. The
+vocabulary landed first, and it needed no new system: `_acquire_job()` already
+scans every object for `free_points_of_type(want_point_type())` and a job's point
+type is data, so three object rows, two jobs and three recipes feed a consumer
+written for furniture that does not care what it is looking at.
+
+`tree` / `rock` / `crop` offer `chop` / `mine` / `harvest`;
+`woodcutter` / `miner` work at them; `chop_tree` yields wood, `mine_rock` stone,
+`harvest_crop` wheat. Chopping is GATHERING — the doc fixes the skill list at ten,
+so a new skill would be a change to the doc rather than a row here.
+
+`farmer` used to sit at a `work` point, the same type a research table offers, so
+the resident farmed at a desk. It names `harvest` now.
+
+**`tests/unit/test_resource_chain.gd` asserts the vocabulary CLOSES** — every
+point an object offers is wanted by something, and every point a job or an
+activity wants is offered. That is the machine running the `grep` this project has
+done by hand, and "a declared capability with no consumer" is the mistake it has
+paid for seven times. Three trees, two rocks and three crops are placed in the
+world, and `_check_resource_chain()` asserts their points exist and that the
+outdoor grid says a body can stand at each one.
+
+Still to do: crops are not tied to farmland, nothing grows or is consumed, the
+placed trees are not the 165 instanced ones from `vegetation_scatter`, and a
+resident cannot both sow and reap until `want_point_type()` returns a ranked list
+rather than a single string.
+
 ### Dungeon lane (opened 2026-09-12)
 
 Runs in parallel with the home lane and is deliberately **file-disjoint** from
