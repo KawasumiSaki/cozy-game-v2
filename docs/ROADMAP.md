@@ -153,10 +153,23 @@ paid for seven times. Three trees, two rocks and three crops are placed in the
 world, and `_check_resource_chain()` asserts their points exist and that the
 outdoor grid says a body can stand at each one.
 
-Still to do: crops are not tied to farmland, nothing grows or is consumed, the
-placed trees are not the 165 instanced ones from `vegetation_scatter`, and a
-resident cannot both sow and reap until `want_point_type()` returns a ranked list
-rather than a single string.
+**A crop needs farmland, and the world farms the plot first** (2026-09-14).
+`Grass -> Soil -> Farmland` has been a chain since V2-11 and refuses to skip a
+step, and a crop could be dropped on virgin grass regardless. It is a row —
+`"requires_ground": ["farmland"]` — and `CozyObjectDefs.ground_problem(id, ground)`
+returns WHY it refuses rather than a bool, so the refusal can be asserted on. It
+lives with the data because a rule that lives only in a mouse handler is not a
+rule. `_place_object` consults it, silently, and the self-check reads the reason
+back by making a placement that must be refused.
+
+The world has to farm before it plants: `_prepare_crop_ground()` clears to soil
+and tills to farmland, in that order, and runs beside `_prepare_starter_plot`
+ending the same way — an edit after the renderer's `setup()` leaves the mesh stale
+and the dirty marks pending, and `describe()` reports those marks.
+
+Still to do: nothing grows or is consumed, the placed trees are not the 165
+instanced ones from `vegetation_scatter`, and a resident cannot both sow and reap
+until `want_point_type()` returns a ranked list rather than a single string.
 
 ### Dungeon lane (opened 2026-09-12)
 
