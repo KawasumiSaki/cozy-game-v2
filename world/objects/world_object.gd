@@ -36,6 +36,16 @@ var vfx: Array[CozyVfx] = []
 ## either. The point was decoration and the job could never complete a task.
 var container: CozyContainerState = null
 
+## What has been taken from this node in the current season, and when that season
+## began — in GAME hours, so a save reloads into the same season it was left in.
+##
+## FACTS, so they are saved. Everything else about growth is derived from them by
+## `CozyObjectDefs.available`, which is why nothing here counts `delta` and no
+## node owns a `Timer`: two reads at the same hour must agree, and a timer cannot
+## promise that across a save.
+var taken := 0
+var worked_at := -1.0
+
 var _def: Dictionary = {}
 var _size := Vector2.ONE
 var _specs: Array = []          ## {local: Vector3, ...} mirrors interaction_points
@@ -84,14 +94,7 @@ func _build() -> void:
 	_body.add_child(cs)
 	add_child(_body)
 
-	# Advertise how this object can be used. Points sit in front of the object,
-	# where a person would stand to use it.
-	for it in _def["interactions"]:
-		var reach: float = it["reach"]
-		var local := Vector3(0.0, 0.0, _size.y * 0.5 + reach)
-		_specs.append(local)
-		interaction_points.append(CozyInteractionPoint.new(
-			it["type"], Vector3.ZERO, it["skill"], it["duration"]))
+	_make_points()
 
 	# The other half of a `store` point: the point says "you can put things here",
 	# the container is where they actually go.
@@ -145,6 +148,66 @@ func _build_vfx() -> void:
 ## Also called immediately after placement: the first frame has not run yet at
 ## that point, and an agent asking for a work point before then would be handed
 ## (0,0,0) — which reads as "the work is on the ground floor at the origin".
+## Build the interaction points this definition advertises. Points sit in front
+## of the object, where a person would stand to use it.
+##
+## Separate from `_build()` because a gathered node loses and regains its points
+## as the seasons pass, and rebuilding them is the only honest way to express
+## "there is nothing here to take" — a point that exists and refuses is a point
+## an agent will walk to for nothing.
+func _make_points() -> void:
+	_specs.clear()
+	interaction_points.clear()
+	for it in _def["interactions"]:
+		var reach: float = it["reach"]
+		var local := Vector3(0.0, 0.0, _size.y * 0.5 + reach)
+		_specs.append(local)
+		interaction_points.append(CozyInteractionPoint.new(
+			it["type"], Vector3.ZERO, it["skill"], it["duration"]))
+	refresh_points()
+
+
+## Is there anything left here to take, at this hour?
+func is_available(now: float) -> bool:
+	return CozyObjectDefs.available(def_id, taken, worked_at, now)
+
+
+## Give the points back, or take them away, according to the clock.
+##
+## IDEMPOTENT, and that is the whole design: it recomputes from `taken` and
+## `worked_at` rather than toggling a flag, so calling it every hour and calling
+## it once an hour are the same thing. `INVARIANTS` demands exactly this of
+## anything refreshed repeatedly — a refresh that reads its own output
+## accumulates corruption at the rate it runs.
+##
+## Returns whether anything changed, so the caller can skip the work.
+func refresh_availability(now: float) -> bool:
+	var want := is_available(now)
+	if want == not interaction_points.is_empty():
+		return false
+	if want:
+		_make_points()
+	else:
+		_specs.clear()
+		interaction_points.clear()
+	return true
+
+
+## Take one from this node, at this hour.
+##
+## THE REGROW IS APPLIED HERE rather than by a tick, because this is the only
+## moment the counter needs to be right: a season that has already elapsed is a
+## new season, and `available()` would have said so. Doing it on the action keeps
+## the read pure and the write in one place.
+func take_one(now: float) -> void:
+	if taken >= int(_def.get("yields", 0)) and worked_at >= 0.0:
+		var regrow := float(_def.get("regrow_hours", 0.0))
+		if regrow > 0.0 and now - worked_at >= regrow:
+			taken = 0                      # A new season; the old count is spent.
+	taken += 1
+	worked_at = now
+
+
 func refresh_points() -> void:
 	for i in interaction_points.size():
 		interaction_points[i].world_position = to_global(_specs[i])
@@ -193,6 +256,12 @@ func to_dict() -> Dictionary:
 		"position": [global_position.x, global_position.y, global_position.z],
 		"yaw": rotation.y,
 	}
+	# Saved only when they say something. A chest has never been worked, and
+	# writing `taken: 0, worked_at: -1` for every piece of furniture would put a
+	# growth cycle in files that have no growth in them.
+	if taken != 0 or worked_at >= 0.0:
+		d["taken"] = taken
+		d["worked_at"] = worked_at
 	if container != null:
 		d["container"] = container.to_dict()
 	return d
@@ -213,6 +282,8 @@ func apply_dict(d: Dictionary) -> void:
 	var p: Array = d.get("position", [0.0, 0.0, 0.0])
 	global_position = Vector3(p[0], p[1], p[2])
 	rotation.y = float(d.get("yaw", 0.0))
+	taken = int(d.get("taken", 0))
+	worked_at = float(d.get("worked_at", -1.0))
 	# `setup()` built a container with the definition's capacity; the saved one
 	# replaces it wholesale, so contents and capacity can never drift apart.
 	if container != null and d.has("container"):

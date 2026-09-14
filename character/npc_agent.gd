@@ -47,7 +47,15 @@ var clock: CozyTimeSystem = null
 var navigator: CozyWorldNavigator = null
 var objects: Array = []        ## CozyWorldObject list, refreshed by the caller.
 
-var completions := 0           ## Finished jobs — the visible payoff.
+var completions := 0
+
+## In-game hours, handed over by whatever owns the clock.
+##
+## INJECTED rather than reached for: this project has no autoloads, and an agent
+## that could ask the time by itself would be an agent that cannot be tested
+## without a running world. `main.gd` sets it every hour, in the same pass that
+## grows the world.
+var now_hours := 0.0           ## Finished jobs — the visible payoff.
 
 ## Batches actually produced (doc #45's "Produce Output"). Counted separately from
 ## `completions` because they are different facts: a resident can finish a job and
@@ -368,6 +376,12 @@ func _finish_work() -> void:
 		# eating needing food. A chain that can run from an empty pack is not a
 		# chain, it is a conjuring trick.
 		haul = _produce(CozyRecipeDefs.for_job(npc_state.job_id))
+		# AND THE NODE IS THE POORER FOR IT. Only when something was actually
+		# made — a batch that produced nothing because the pack was empty did not
+		# take anything out of the ground either.
+		if haul != "" and finished_obj != null and is_instance_valid(finished_obj) 				and CozyObjectDefs.is_gathered(finished_obj.def_id):
+			finished_obj.take_one(now_hours)
+			finished_obj.refresh_availability(now_hours)
 
 	# Working trains the job's skill, scaled by passion (愿景 §10: ×1 / ×2 / ×4).
 	# This is what makes a resident grow into their role rather than staying a

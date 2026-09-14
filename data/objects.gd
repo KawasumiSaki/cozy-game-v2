@@ -102,6 +102,11 @@ const OBJECTS := {
 		"size": Vector2(0.8, 0.8),
 		"height": 4.0,
 		"color": Color(0.30, 0.46, 0.24),
+		# Three chops before it is a stump, and three days before it is a tree
+		# again. A yield count is what makes chopping feel like felling rather
+		# than plucking.
+		"yields": 3,
+		"regrow_hours": 72.0,
 		"interactions": [
 			{"type": "chop", "skill": "gathering", "duration": 5.0, "reach": 1.3},
 		],
@@ -112,6 +117,10 @@ const OBJECTS := {
 		"size": Vector2(1.2, 1.2),
 		"height": 0.9,
 		"color": Color(0.55, 0.55, 0.57),
+		# Two loads, and then it is worked out for good: `regrow_hours` 0 means
+		# the ground does not put it back. Stone has to be found, not waited for.
+		"yields": 2,
+		"regrow_hours": 0.0,
 		"interactions": [
 			{"type": "mine", "skill": "mining", "duration": 6.0, "reach": 1.3},
 		],
@@ -133,6 +142,11 @@ const OBJECTS := {
 		# to skip a step, and a crop could be dropped on virgin grass anyway.
 		# Empty means "anywhere", which is what every other object says.
 		"requires_ground": ["farmland"],
+		# One harvest, then a day before the field is worth walking back to. The
+		# crop stays where it is — a stump that grows again is reversible and
+		# survives a save; deleting the object is neither.
+		"yields": 1,
+		"regrow_hours": 24.0,
 		"interactions": [
 			{"type": "harvest", "skill": "farming", "duration": 3.0, "reach": 0.8},
 		],
@@ -155,6 +169,43 @@ static func get_def(id: String) -> Dictionary:
 
 static func exists(id: String) -> bool:
 	return OBJECTS.has(id)
+
+
+## How many times this can be worked before it is spent, and how long the world
+## takes to put it back. Both zero for anything that is not gathered.
+##
+## READ THIS AS A CYCLE, NOT A COUNTER. `yields` is what one growing season is
+## worth and `regrow_hours` is how long the season is; 0 hours means it never
+## comes back. A forge is not "gathered", so it has neither.
+const NO_YIELDS := 0
+
+
+## Can this node still be worked, given what has been taken and when?
+##
+## PURE, and derived from the clock rather than from a timer per object. The same
+## question asked twice at the same hour gives the same answer, which is the
+## property `INVARIANTS` demands of anything refreshed per frame — and it is why
+## nothing here holds a `Timer` node or accumulates `delta`.
+##
+## `worked_at` is a game-hour timestamp (`CozyTimeSystem`), not a wall clock, so
+## a save and a reload land in the same season they were left in.
+static func available(def_id: String, taken: int, worked_at: float, now: float) -> bool:
+	var d := get_def(def_id)
+	var yields := int(d.get("yields", NO_YIELDS))
+	if yields <= 0:
+		return true                      # Not gathered; nothing to exhaust.
+	if taken < yields:
+		return true
+	var regrow := float(d.get("regrow_hours", 0.0))
+	if regrow <= 0.0:
+		return false                     # Spent for good.
+	return now - worked_at >= regrow
+
+
+## Is this node gathered from the world at all? Used by the self-check so a table
+## that quietly stopped having any yields cannot pass.
+static func is_gathered(def_id: String) -> bool:
+	return int(get_def(def_id).get("yields", NO_YIELDS)) > 0
 
 
 ## Why this object may not stand on this ground, or "" when it may.

@@ -228,6 +228,11 @@ var tool_idx := 0
 ## Why the last placement was refused, or "" when it was not. The reason a
 ## refusal is a VALUE rather than a shrug: whoever asked can say what went wrong.
 var last_placement_refusal := ""
+
+## The last in-game hour growth was re-checked at. Growth is DERIVED from the
+## clock, so nothing has to run per frame — only when the answer can have
+## changed, which is at most once an hour.
+var _last_growth_hour := -1
 var _drag_active := false
 var _drag_start := Vector3.ZERO
 var _drag_end := Vector3.ZERO
@@ -1776,9 +1781,48 @@ func _unhandled_input(event: InputEvent) -> void:
 			camera.zoom_out()
 
 
+## Game hours since the world began, as one monotonically rising number.
+##
+## `hour` alone wraps every day, and a tree that takes 72 hours to come back would
+## regrow every midnight. Growth cycles are lengths of time, so they need a clock
+## that only goes forward.
+func _game_hours() -> float:
+	if clock == null:
+		return 0.0
+	return float((clock.day - 1) * CozyTimeSystem.HOURS_PER_DAY) + clock.hour
+
+
+## Let the world grow, once an hour.
+##
+## ONCE AN HOUR, NOT ONCE A FRAME, and the reason is the same one that makes the
+## growth itself derived: re-asking a question whose answer cannot have changed is
+## work for nothing, and a refresh that runs at frame rate is the shape
+## `INVARIANTS` warns about ("a per-frame refresh must be idempotent"). This one
+## is idempotent AND rare.
+##
+## A save and a reload need nothing extra: the stage is a function of `worked_at`
+## and the clock, both of which are saved.
+func _grow_the_world() -> void:
+	if clock == null:
+		return
+	var h := clock.hour_index()
+	if h == _last_growth_hour:
+		return
+	_last_growth_hour = h
+	var now := _game_hours()
+	for o in objects:
+		if is_instance_valid(o):
+			o.refresh_availability(now)
+	# The resident is told the hour too, because the node it works is taken from
+	# at the moment the work finishes — and that moment is not an hour boundary.
+	if npc != null and is_instance_valid(npc):
+		npc.now_hours = now
+
+
 func _process(delta: float) -> void:
 	_clock += delta
 	_expire_message()
+	_grow_the_world()
 	_handle_camera_keys(delta)
 
 	if _is_headless:
@@ -2004,6 +2048,40 @@ func _check_resource_chain() -> void:
 		"OK" if refused == null and objects.size() == objs_before
 			and reason.contains("farmland") and reason.contains(ground_there)
 		else "FAIL, the ground rule is not enforced by the placer"])
+
+	# THE CYCLE, ON A REAL OBJECT, without waiting for one. The clock is ASKED
+	# rather than advanced — that is what derived growth buys — so a day of it is
+	# asserted in the first frame of the run.
+	#
+	# It works on a real crop and puts it back, because the alternative is a
+	# synthetic object that shares none of the code being tested.
+	var probe: CozyWorldObject = null
+	for o in objects:
+		if is_instance_valid(o) and o.def_id == "crop":
+			probe = o
+			break
+	if probe == null:
+		print("[cozyv2] growth cycle: no crop to measure  [FAIL]")
+	else:
+		var hour := _game_hours()
+		var kept_taken := probe.taken
+		var kept_at := probe.worked_at
+		var fresh := probe.is_available(hour)
+		probe.take_one(hour)
+		probe.refresh_availability(hour)
+		var spent := probe.is_available(hour)
+		var spent_has := not probe.free_points_of_type("harvest").is_empty()
+		probe.refresh_availability(hour + 24.0)
+		var back := probe.is_available(hour + 24.0)
+		var back_has := not probe.free_points_of_type("harvest").is_empty()
+		probe.taken = kept_taken
+		probe.worked_at = kept_at
+		probe.refresh_availability(hour)
+
+		print("[cozyv2] growth cycle: fresh=%s, just taken=%s (point still offered=%s), next day=%s (point back=%s)  [%s]" % [
+			fresh, spent, spent_has, back, back_has,
+			"OK" if fresh and not spent and not spent_has and back and back_has
+			else "FAIL, a crop does not live through the day"])
 
 	# AND AN OBJECT MUST BLOCK ITS OWN CELL. This is what proves the outdoor grid
 	# has been told placed objects are there at all.

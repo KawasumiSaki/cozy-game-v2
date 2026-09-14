@@ -32,6 +32,7 @@ func _init() -> void:
 	case("every job can be assigned and can rest", _jobs_are_usable)
 	case("every placeable id is a real object", _placeables_exist)
 	case("a crop is refused on grass and allowed on farmland", _ground_rule)
+	case("a node gives its season, then waits", _yield_cycle)
 
 
 # ---------------------------------------------------------------- the teeth
@@ -196,6 +197,43 @@ func _ground_rule() -> void:
 	var constrained := CozyObjectDefs.constrained_ids()
 	is_true("something is constrained", constrained.size() > 0)
 	is_true("and the crop is one of them", constrained.has("crop"))
+
+
+## Growth is a FUNCTION of the clock, not a timer per object, and that is what
+## makes this suite possible at all: a day of growth is asserted here without
+## waiting a day, and two reads at the same hour cannot disagree.
+##
+## Every number below is the definition's, so changing `regrow_hours` moves the
+## expectations with it rather than leaving a test that passes for the wrong
+## reason.
+func _yield_cycle() -> void:
+	# A crop: one harvest, back the next day.
+	is_true("a fresh crop can be taken", CozyObjectDefs.available("crop", 0, -1.0, 100.0))
+	is_true("a crop just taken cannot", not CozyObjectDefs.available("crop", 1, 100.0, 100.0))
+	is_true("nor an hour later", not CozyObjectDefs.available("crop", 1, 100.0, 101.0))
+	is_true("but it can the next day", CozyObjectDefs.available("crop", 1, 100.0, 124.0))
+
+	# A rock: two loads, and then it is worked out for good.
+	is_true("a rock gives twice", CozyObjectDefs.available("rock", 1, 0.0, 5.0))
+	is_true("and then not", not CozyObjectDefs.available("rock", 2, 0.0, 5.0))
+	is_true("and never again, however long the world runs",
+		not CozyObjectDefs.available("rock", 2, 0.0, 999999.0))
+
+	# A tree: three chops, then three days of standing there.
+	is_true("a tree gives three", CozyObjectDefs.available("tree", 2, 0.0, 1.0))
+	is_true("then waits", not CozyObjectDefs.available("tree", 3, 10.0, 81.0))
+	is_true("and comes back after its own regrow time",
+		CozyObjectDefs.available("tree", 3, 10.0, 82.0))
+
+	# An object that is not gathered at all is never spent. Without this the
+	# rule above could be "everything is eventually spent" and every line would
+	# still pass.
+	is_true("a chest is never worked out", CozyObjectDefs.available("chest", 99, 0.0, 0.0))
+	is_true("nor is a bed", CozyObjectDefs.available("bed", 99, 0.0, 0.0))
+	is_true("and the three gathered kinds are the ones that are",
+		CozyObjectDefs.is_gathered("tree") and CozyObjectDefs.is_gathered("rock")
+		and CozyObjectDefs.is_gathered("crop"))
+	is_true("while furniture is not", not CozyObjectDefs.is_gathered("chair"))
 
 
 # ---------------------------------------------------------------- helpers
