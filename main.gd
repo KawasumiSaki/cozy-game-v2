@@ -2591,6 +2591,20 @@ func _check_terrain_shader() -> void:
 ## Found by running it in the wrong place the first time. Terrain is authored,
 ## then built, and anything that reads the built form has to run after the last
 ## authoring step, not before the next one.
+## The material INDEX at a world cell, or 0 when it is off the field.
+##
+## Index 0 is grass, which is what the field is by default, so reading past the
+## edge reports the same thing as reading the edge -- and the corner rule walks
+## one cell outside a chunk for every chunk boundary.
+func _terrain_index_at(cell_x: int, cell_z: int) -> int:
+	if terrain == null:
+		return 0
+	var world := terrain.origin + Vector2(float(cell_x), float(cell_z)) * CozyTerrainChunk.CELL_SIZE
+	var p := Vector2(world.x + CozyTerrainChunk.CELL_SIZE * 0.5,
+		world.y + CozyTerrainChunk.CELL_SIZE * 0.5)
+	return CozyTerrainMaterials.index_of(terrain.material_id_at(p.x, p.y))
+
+
 func _check_terrain_control() -> void:
 	if terrain_renderer == null or terrain == null:
 		print("[cozyv2] ground control: NOT BUILT  [FAIL]")
@@ -2628,6 +2642,43 @@ func _check_terrain_control() -> void:
 	# AND THE SAMPLE HAS TO HAVE SOMETHING IN IT. Without this, a world of one
 	# material would report zero disagreements for the same reason the corner
 	# chunk did — and the number would look like coverage.
+	# ------------------------------------------------------------------
+	# AND THE DUAL-TILE RULE HAS SOMETHING TO DO.
+	#
+	# The shader decides a fragment's material at the CELL CORNERS: the four
+	# cells meeting there are read and the highest-priority one wins, so a stone
+	# cell grows into the corners of the grass beside it and boundaries turn
+	# through corners instead of stepping around them.
+	#
+	# That rule only has any effect where two materials MEET. On a world of one
+	# material it is a no-op that renders identically, and nothing would say so --
+	# which is the same trap the control-texture check fell into when it read the
+	# first chunk, a corner of the field that is entirely grass. So the count of
+	# cells the rule would visibly change is asserted to be non-zero.
+	var changed := 0
+	for coord in coords:
+		var chunk: CozyTerrainChunk = terrain.chunks.get(coord, null)
+		if chunk == null:
+			continue
+		var base: Vector2i = coord * cells
+		for lz in cells:
+			for lx in cells:
+				var own := CozyTerrainMaterials.index_of(chunk.material_id_at(lx, lz))
+				for corner in [Vector2i(0, 0), Vector2i(1, 0), Vector2i(0, 1), Vector2i(1, 1)]:
+					var best := -1
+					for dz in [-1, 0]:
+						for dx in [-1, 0]:
+							var wx: int = base.x + lx + corner.x + int(dx)
+							var wz: int = base.y + lz + corner.y + int(dz)
+							best = maxi(best, _terrain_index_at(wx, wz))
+					if best != own:
+						changed += 1
+						break
+	print("[cozyv2] dual tile: on=%s, %d cell(s) the corner rule would change  [%s]" % [
+		terrain_renderer.dual_tile_enabled(), changed,
+		"OK" if terrain_renderer.dual_tile_enabled() and changed > 0
+		else "FAIL, the corner rule has nothing to do or is switched off"])
+
 	print("[cozyv2] ground control: %d cell(s) read back across %d chunk(s), %d material(s), %d disagreeing  [%s]" % [
 		read, coords.size(), kinds.size(), wrong,
 		"OK" if wrong == 0 and kinds.size() >= 2

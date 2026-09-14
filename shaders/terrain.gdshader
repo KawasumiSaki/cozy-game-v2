@@ -45,6 +45,10 @@ uniform float chunk_metres = 16.0;
 // without turning into noise at the locked camera distance.
 uniform float texture_metres = 1.0;
 
+// Dual tiling: the material decided at the corners where four cells meet,
+// rather than inside each cell. 1 is on, 0 is the plain per-cell read.
+uniform float dual_tile = 1.0;
+
 // Multiplied into the albedo, from the control texture's G channel. Narrow on
 // purpose: this is what stops a large field reading as flat paint.
 uniform float grain = 0.09;
@@ -64,10 +68,47 @@ void fragment() {
 	// Which cell this fragment is in, clamped so the top and right edges of the
 	// chunk read their own cell rather than a texel that is not there.
 	float cells = chunk_metres / 0.25;
-	ivec2 cell = ivec2(clamp(floor(uv * cells), vec2(0.0), vec2(cells - 1.0)));
+	vec2 cell_pos = uv * cells;
+	vec2 local = fract(cell_pos);
+	ivec2 cell = ivec2(clamp(floor(cell_pos), vec2(0.0), vec2(cells - 1.0)));
 	vec4 ctl = texelFetch(control, cell, 0);
 
 	int layer = int(ctl.r * 255.0 + 0.5);
+
+	// -------------------------------------------------------------------
+	// DUAL-TILE: the material is decided at the CORNERS, not inside the cell.
+	//
+	// A cell's material is authored per cell. Read straight, that puts every
+	// boundary on a cell edge and every corner at a right angle, which is what a
+	// grid looks like. Dual tiling moves the decision to the corner where four
+	// cells meet: the four of them are read, and the one with the highest
+	// priority wins the whole neighbourhood around that corner.
+	//
+	// The effect is that a higher-priority material grows outward into the
+	// corners of the cells beside it. Its region comes out rounded rather than
+	// squared off, and a boundary between two materials turns through the corner
+	// instead of stepping around it -- which is the look dual-grid tilemaps are
+	// used for.
+	//
+	// IT COSTS FOUR EXTRA TEXEL FETCHES AND MOVES NOTHING. The mesh, the
+	// triangles and the trimesh collision are exactly as they were: this decides
+	// which pixel gets which colour and nothing else. What it DOES move is the
+	// apparent position of a boundary -- by up to half a cell, 12.5 cm -- so a
+	// dug cell's edge shows a little off from the cell that was dug. `dual_tile`
+	// at 0 turns it off.
+	if (dual_tile > 0.5) {
+		// The cell corner nearest this fragment.
+		ivec2 corner = cell + ivec2(local.x > 0.5 ? 1 : 0, local.y > 0.5 ? 1 : 0);
+		int best = layer;
+		for (int dz = -1; dz <= 0; dz++) {
+			for (int dx = -1; dx <= 0; dx++) {
+				ivec2 c = clamp(corner + ivec2(dx, dz),
+					ivec2(0), ivec2(int(cells) - 1));
+				best = max(best, int(texelFetch(control, c, 0).r * 255.0 + 0.5));
+			}
+		}
+		layer = best;
+	}
 
 	// CONTINUOUS ACROSS THE WHOLE CHUNK, not restarted per cell: the texture
 	// flows over the ground and only the material changes underneath it. A

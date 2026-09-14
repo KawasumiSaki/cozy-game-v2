@@ -29,6 +29,15 @@ const CELLS := CozyTerrainChunk.CELLS
 ## near the 16 px/m the art profile assumes.
 const MATERIAL_TEXELS := 16
 
+## Is the ground read at the CELL CORNERS (dual tiling) or per cell?
+##
+## SET EXPLICITLY, never left to the shader's own default, and the assertion that
+## reads it back is why: `get_shader_parameter` answers null for a uniform that
+## nothing has set, so the check reported the feature OFF while the GPU was
+## drawing it ON. A value that exists only inside the shader is a value this side
+## cannot assert about, and cannot switch off in a hurry.
+const DUAL_TILE := true
+
 ## Where the ground shader lives.
 const TERRAIN_SHADER := "res://shaders/terrain.gdshader"
 
@@ -230,6 +239,7 @@ func _make_shader_material() -> ShaderMaterial:
 	mat.set_shader_parameter("materials", _material_array_or_build())
 	# The mesh spans the chunk exactly, and a cell is a quarter of a metre.
 	mat.set_shader_parameter("chunk_metres", float(CELLS) * CELL_SIZE)
+	mat.set_shader_parameter("dual_tile", 1.0 if DUAL_TILE else 0.0)
 	return mat
 
 
@@ -260,6 +270,19 @@ func control_image(coord: Vector2i) -> Image:
 		return null
 	var tex: Texture2D = mat.get_shader_parameter("control")
 	return tex.get_image() if tex != null else null
+
+
+## Is the ground reading its material at the corners rather than per cell?
+##
+## Read back from the shader rather than assumed, because it is a uniform with a
+## default: a material that was never told would render the plain per-cell version
+## and look exactly like a deliberate choice.
+func dual_tile_enabled() -> bool:
+	for coord in _meshes:
+		var mat := (_meshes[coord] as MeshInstance3D).material_override as ShaderMaterial
+		if mat != null:
+			return float(mat.get_shader_parameter("dual_tile")) > 0.5
+	return false
 
 
 ## The chunks this renderer currently holds, sorted.
