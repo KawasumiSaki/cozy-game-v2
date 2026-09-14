@@ -99,6 +99,44 @@ Two traps, both met:
   project builds, conservative for a diagonal one. Over-blocking is the safe
   direction: a longer walk is a nuisance, walking through a wall is a defect.
 
+## A wall added at runtime, with a door in it, breaks the navigation
+
+Debt 22, root-caused 2026-09-14 by differential experiment. The resident that
+"spent ten hours going in circles" was not a pathfinding failure. A wall added
+AFTER the navigation was built, with an opening cut into it, leaves the navigation
+grid routing through that opening while the collider is solid at its centre:
+
+    cast through wall_010's door centre: SOLID
+    [FAIL, navigation has a hole the collider does not]
+
+The resident paths through the door, walks into the wall, gets stuck, replans, and
+repeats. Measured by changing only that one thing:
+
+    house present, live-rebuild test running    -> path crosses geometry: 2 leg(s)
+    house present, live-rebuild test gated off  -> path crosses geometry: 0 leg(s)
+
+**The house's own door has never been the problem.** It is cut at startup, before
+any navigation exists, and `door gap (walkable) open` has been green since V2-16.
+Only a wall that appears afterwards does this.
+
+So `main.gd` has a switch, `BUILDING_ENABLED`, that is currently false and gates
+the only two things that draw a wall at runtime: the palette's `outline` and `wall`
+tools, and the live-rebuild stage. **Turning it back on brings the bug back** —
+verified the same way, same wall, same leg:
+
+    BUILDING_ENABLED = true  ->  path crosses geometry: 2 leg(s), leg 11-12 hits wall_010
+
+Fixing the nav/collider disagreement for runtime-added openings is the price of
+player building. It is recorded here so that turning the switch on is a decision
+rather than a rediscovery.
+
+**Corollary — the probe's own assertion under-reports.** The
+`[FAIL, navigation has a hole the collider does not]` line is gated on the resident
+being pressed against the wall at the instant the probe samples. In one run it
+sampled at waypoint 12 and fired; in another, with the bug equally present, it
+sampled at waypoint 11 and stayed silent. `path crosses geometry` is computed from
+the whole path and is the signal to trust. A green probe is not a clean path.
+
 ## Everything procedural is deterministic
 
 Position, shading, scatter and VFX phase all come from `CozyArtSeed` —
@@ -526,8 +564,9 @@ log (`02-开发日志/游戏开发日志.md`).
 | 22 | The locked camera sat on the far side of the house from the door — the opening shot was the back of the building | `opening shot at spawn` assertion |
 | 23 | `JSON.parse_string` printed on every malformed dungeon file, so refusing a bad file looked exactly like a broken build | mutation testing — see below |
 | 24 | `_check_building_state()` took `s.stairs[0]` outright: with no stair in the world it CRASHED rather than failing, and took its two neighbouring measurements with it | removing the demo house — the check died instead of reporting |
+| 25 | A wall added at RUNTIME with a door cut into it leaves the navigation routing through a door the collider keeps shut — the resident walks into the wall forever (debt 22) | the pathing probe, then a differential experiment on that one cause |
 
-**Twenty of the twenty-four were found by an assertion, not by looking at the
+**Twenty of the twenty-five were found by an assertion, not by looking at the
 screen.** Several were invisible in a still frame. That is the whole argument
 for the assertion discipline in `03-流程/更新方案.md`.
 

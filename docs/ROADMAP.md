@@ -94,32 +94,40 @@
 | V2-27 | Gameplay | ⬜ frozen by doc §82 |
 | V2-28 | World | ⬜ frozen |
 
-### The demo house is PARKED (2026-09-14)
+### The house is a PREFAB, and nothing draws walls at runtime (2026-09-14)
 
-`const HOUSE_ENABLED := false` in `main.gd`. The house, both build tools, and the
-twelve check groups that measure the world's rooms, portals, routes, local
-navigation, openings, wall assembly, building state and roofs are off together —
-because they are not five systems that happen to need a wall. Rooms are DERIVED
-from the wall graph, portals are derived from openings, and the room graph and
-roofs are derived from the rooms; with no walls there is nothing to derive.
+Two switches in `main.gd`, and they say different things.
 
-**Parked, not deleted.** Verified both ways, in a scratch copy, before commit:
+`HOUSE_ENABLED` — **true**. The house was never the auto-generated path:
+`_build_house()` is a hand-authored list of eight walls, three slabs and a stair
+and never goes through `CozyOutlineGenerator`. What is derived from it — rooms,
+portals, room graph, roof — is derived the way everything else is, and none of
+those has a known bug.
+
+`BUILDING_ENABLED` — **false**. It gates the only two things that draw a wall at
+runtime: the palette's `outline` and `wall` tools, and the live-rebuild stage.
+
+**That second switch is the fix for debt 22, not a workaround around it.** A wall
+added after the navigation was built, with a door cut into it, leaves the grid
+routing through the door while the collider is solid there — and the resident
+walks into the wall forever. The house's own door is cut at startup and has never
+been the problem. See `docs/INVARIANTS.md`, "A wall added at runtime, with a door
+in it, breaks the navigation".
+
+Four states measured in a scratch copy; the last is what makes it causal:
 
 ```
-HOUSE_ENABLED = false  ->   89 OK / 0 FAIL / 0 ERROR  + a PARKED line naming
-                            the twelve groups that did not run
-HOUSE_ENABLED = true   ->  123 OK / 0 FAIL / 0 ERROR  (the house comes back whole)
+prefab ON,  runtime building OFF   ->  122 OK / 0 FAIL / 0 ERROR
+   + the pathing probe             ->  0 crossings, and the resident reaches
+                                       the chest and works (wp=20/20, stuck=0.0)
+HOUSE_ENABLED = false              ->   89 OK / 0 FAIL / 0 ERROR
+BUILDING_ENABLED = true (teeth)    ->  2 crossings RETURN, same wall, same leg
 ```
 
-The reason now is the settled loop being built: farming, mining and woodcutting on
-open ground. The furniture is **not** parked — the chest is where §45 stores and
-the bed is where the schedule sleeps, and both are placed independently of the
-house. The camera is deliberately untouched: yaw 180 was measured for a world that
-has that house, and with no house there is no evidence for any particular yaw, so
-it stays where it is rather than moving to a new guess.
-
-See `docs/INVARIANTS.md` — "A check that passes for the wrong reason is worse than
-a skip" and "Parking must be reported, never silent".
+The furniture is placed independently of the house and stays either way — the
+chest is where §45 stores, the bed is where the schedule sleeps. The camera is
+deliberately untouched: yaw 180 was measured for this house, and with it present
+there is no reason to move it.
 
 ### Dungeon lane (opened 2026-09-12)
 
