@@ -22,9 +22,48 @@ extends CanvasLayer
 
 signal tool_selected(index: int)
 signal build_mode_toggled(on: bool)
+## A category was opened. `main.gd` listens because opening one is not always a
+## HUD matter — the resident panel belongs to the game, not to the bar.
+signal category_selected(id: String)
+
+## The seven categories, in Willow's order (2026-09-14).
+##
+## ASCII NAMES, because game text has to be ASCII: a font that cannot draw a
+## character draws a box, and the rule exists because this project has paid for
+## it once already.
+##
+## `built` IS NOT DECORATION. A category with nothing behind it opens onto a line
+## saying what it is WAITING FOR rather than a button that does nothing when
+## pressed. A dead button is a claim that something is there — the same
+## "declared capability with no consumer" this project has seven entries about.
+##
+## The names are the document's, translated: Plan / Tools / Inventory / Craft /
+## Build / Trade / People. Building is parked (`BUILDING_ENABLED`), and the note
+## says so rather than leaving the category empty for no stated reason.
+const CATEGORIES := [
+	{"id": "plan", "name": "Plan", "built": false,
+		"note": "work priorities, and who does what when"},
+	{"id": "tools", "name": "Tools", "built": true, "note": ""},
+	{"id": "inventory", "name": "Inventory", "built": false,
+		"note": "the pack the player carries"},
+	{"id": "craft", "name": "Craft", "built": false, "note": "recipes"},
+	{"id": "build", "name": "Build", "built": false,
+		"note": "parked with the building system"},
+	{"id": "trade", "name": "Trade", "built": false, "note": "buying and selling"},
+	{"id": "people", "name": "People", "built": true, "note": ""},
+]
 
 const TOP_H := CozyUiTheme.STRIP_H
 const BOTTOM_H := CozyUiTheme.BAR_H
+
+## Which category is open. Tools by default, because it is the one with content
+## — an app that opens on an empty page teaches the player it is empty.
+var _active_category := 1
+var _category_box: HBoxContainer = null
+var _category_buttons: Array[Button] = []
+var _category_panel: PanelContainer = null
+var _category_note: Label = null
+var _category_open := true
 
 var _tools: Array[String] = []
 var _tool_buttons: Array[Button] = []
@@ -53,7 +92,9 @@ var _info_body: Label = null
 func _ready() -> void:
 	_build_top()
 	_build_bottom()
+	_build_category_panel()
 	_build_info()
+	_apply_category()
 
 
 func _build_info() -> void:
@@ -163,9 +204,25 @@ func _build_bottom() -> void:
 	spacer_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(spacer_l)
 
-	_tools_box = HBoxContainer.new()
-	_tools_box.add_theme_constant_override("separation", CozyUiTheme.GAP)
-	row.add_child(_tools_box)
+	_category_box = HBoxContainer.new()
+	_category_box.add_theme_constant_override("separation", CozyUiTheme.GAP)
+	row.add_child(_category_box)
+	for i in CATEGORIES.size():
+		var c: Dictionary = CATEGORIES[i]
+		var b := Button.new()
+		b.focus_mode = Control.FOCUS_NONE
+		b.custom_minimum_size = Vector2(0, 22)
+		b.text = String(c["name"])
+		b.add_theme_font_size_override("font_size", CozyUiTheme.FONT_SIZE_SMALL)
+		b.add_theme_stylebox_override("normal", CozyUiTheme.button_style(false))
+		b.add_theme_stylebox_override("hover", CozyUiTheme.button_style_hover())
+		b.add_theme_stylebox_override("pressed", CozyUiTheme.button_style(true))
+		b.add_theme_stylebox_override("focus", CozyUiTheme.button_style(false))
+		b.add_theme_color_override("font_color",
+			CozyUiTheme.TEXT if bool(c["built"]) else CozyUiTheme.TEXT_DIM)
+		b.pressed.connect(_on_category_pressed.bind(i))
+		_category_box.add_child(b)
+		_category_buttons.append(b)
 
 	var spacer_r := Control.new()
 	spacer_r.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -180,6 +237,92 @@ func _build_bottom() -> void:
 
 
 var _tools_box: HBoxContainer = null
+
+
+## The strip above the bar that the open category fills.
+##
+## A second row rather than a wider first one: seven category buttons AND nine
+## tools AND the resource list AND the context line did not fit on one line, and
+## the result read as clutter — which is what Willow reported seeing. Splitting
+## them means the bar answers "which part of the game am I in" and the strip
+## answers "what can I do here".
+func _build_category_panel() -> void:
+	_category_panel = PanelContainer.new()
+	_category_panel.add_theme_stylebox_override("panel", CozyUiTheme.panel_style())
+	_category_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	_category_panel.offset_top = -(BOTTOM_H + CozyUiTheme.BAR_H)
+	_category_panel.offset_bottom = -BOTTOM_H
+	add_child(_category_panel)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", CozyUiTheme.GAP * 2)
+	_category_panel.add_child(row)
+
+	_tools_box = HBoxContainer.new()
+	_tools_box.add_theme_constant_override("separation", CozyUiTheme.GAP)
+	row.add_child(_tools_box)
+
+	_category_note = _mk_label(CozyUiTheme.TEXT_DIM)
+	row.add_child(_category_note)
+
+	_panel_count += 1
+
+
+func _on_category_pressed(i: int) -> void:
+	# Pressing the open one closes it, so the strip can be put away.
+	if i == _active_category and _category_open:
+		_category_open = false
+		_apply_category()
+		return
+	_active_category = i
+	_category_open = true
+	_apply_category()
+
+
+func select_category(i: int) -> void:
+	if i < 0 or i >= CATEGORIES.size():
+		return
+	_active_category = i
+	_category_open = true
+	_apply_category()
+
+
+func _apply_category() -> void:
+	for i in _category_buttons.size():
+		var colour := CozyUiTheme.TEXT_DIM
+		if i == _active_category and _category_open:
+			colour = CozyUiTheme.TEXT_STRONG
+		elif bool(CATEGORIES[i]["built"]):
+			colour = CozyUiTheme.TEXT
+		_category_buttons[i].add_theme_color_override("font_color", colour)
+
+	var c: Dictionary = CATEGORIES[_active_category]
+	var is_tools := String(c["id"]) == "tools"
+	_tools_box.visible = is_tools
+	_category_note.visible = not is_tools
+	_category_note.text = "" if is_tools else "%s - not built yet: %s" % [c["name"], c["note"]]
+	_category_panel.visible = _category_open
+	category_selected.emit(String(c["id"]))
+
+
+func active_category() -> String:
+	return String(CATEGORIES[_active_category]["id"])
+
+
+func category_open() -> bool:
+	return _category_open
+
+
+func category_count() -> int:
+	return CATEGORIES.size()
+
+
+func category_name(i: int) -> String:
+	return String(CATEGORIES[i]["name"])
+
+
+func category_is_built(i: int) -> bool:
+	return bool(CATEGORIES[i]["built"])
 
 
 func _mk_label(colour: Color) -> Label:

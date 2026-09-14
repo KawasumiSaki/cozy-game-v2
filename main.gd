@@ -1162,6 +1162,10 @@ func _build_hud() -> void:
 	add_child(hud)
 	hud.set_tool_groups(TOOL_GROUPS)
 	hud.tool_selected.connect(_on_hud_tool_selected)
+	# Opening a category is not always a HUD matter: the resident panel belongs to
+	# the game. The bar says WHICH part of the game the player asked for; what that
+	# part does is decided here.
+	hud.category_selected.connect(_on_hud_category)
 
 	menu = CozyContextMenu.new()
 	add_child(menu)
@@ -1184,6 +1188,17 @@ func _build_hud() -> void:
 
 ## The HUD is now the single place a tool can be chosen, so a click and the TAB
 ## key go through the same path rather than two that can drift apart.
+## A category was opened on the bottom bar.
+##
+## Only the ones with something behind them do anything, and the ones without say
+## so on the bar itself — so this is a dispatch, not a place for rules.
+func _on_hud_category(id: String) -> void:
+	if id == "people" and hud.category_open():
+		_open_npc_panel(npc)
+	elif id != "people":
+		_close_npc_panel()
+
+
 func _on_hud_tool_selected(i: int) -> void:
 	tool_idx = i
 	if not build_mode:
