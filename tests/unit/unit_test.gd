@@ -22,6 +22,7 @@ var _suite := ""
 var _cases: Array = []              ## {name: String, call: Callable}
 var _failures: Array[String] = []
 var _checks := 0
+var _silent: Array[String] = []     ## cases that ran without asserting anything
 
 
 func suite(p_name: String) -> void:
@@ -70,9 +71,25 @@ func near(case_name: String, got: float, want: float, tol := 0.0001) -> void:
 
 # ---------------------------------------------------------------- results
 
+## Each case is counted, because a case that asserts NOTHING is a case that
+## cannot fail — and the way that happens is not a mistake in the case, it is a
+## GDScript runtime error partway through it.
+##
+## There is no `try` in GDScript. An invalid call aborts the FUNCTION and returns
+## to here, so every assertion after it is skipped, the suite stays green, and the
+## only mark left is a `SCRIPT ERROR` on stderr. That is the same shape as the
+## `[FAIL` counting bug and the `JSON.parse_string` one: a green number that is
+## green because nothing looked.
+##
+## This catches the case that aborted BEFORE its first assertion. One that aborts
+## after three of them still counts three, and only the log can tell — which is
+## why `tests/README.md` makes counting `ERROR` part of running this, not advice.
 func run() -> void:
 	for c in _cases:
+		var before := _checks
 		(c["call"] as Callable).call()
+		if _checks == before:
+			_silent.append(String(c["name"]))
 
 
 func suite_name() -> String:
@@ -81,6 +98,12 @@ func suite_name() -> String:
 
 func failures() -> Array[String]:
 	return _failures
+
+
+## Cases that ran and asserted nothing. Reported as failures by `run.gd`: a case
+## nobody can watch fail is not coverage.
+func silent_cases() -> Array[String]:
+	return _silent
 
 
 func checks() -> int:

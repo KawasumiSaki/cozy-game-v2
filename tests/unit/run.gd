@@ -43,15 +43,19 @@ func _initialize() -> void:
 		total_cases += t.case_count()
 		total_checks += t.checks()
 		var bad: Array = t.failures()
-		if bad.is_empty():
+		var silent: Array = t.silent_cases()
+		if bad.is_empty() and silent.is_empty():
 			print("%s %-28s %2d case(s), %3d check(s)  [OK]" % [
 				PREFIX, t.suite_name(), t.case_count(), t.checks()])
 		else:
-			failed += bad.size()
+			failed += bad.size() + silent.size()
 			print("%s %-28s %2d case(s), %3d check(s)  [FAIL, %d problem(s)]" % [
-				PREFIX, t.suite_name(), t.case_count(), t.checks(), bad.size()])
+				PREFIX, t.suite_name(), t.case_count(), t.checks(),
+				bad.size() + silent.size()])
 			for b in bad:
 				print("%s   - %s" % [PREFIX, b])
+			for s in silent:
+				print("%s   - %s: ran, but made 0 assertion(s)" % [PREFIX, s])
 
 	print("%s %d suite(s), %d case(s), %d check(s), %d failure(s)  [%s]" % [
 		PREFIX, paths.size(), total_cases, total_checks, failed,

@@ -24,6 +24,10 @@ func _init() -> void:
 	case("one outline is left alone", _single_outline)
 	case("a concave outline is one room", _concave)
 	case("the entrance defaults to the biggest space", _centre)
+	case("the conversion loses no wall and no door", _intents_are_total)
+	case("plan axes become Godot axes, at the floor asked for", _axes_and_elevation)
+	case("a door lands in the middle of its wall", _door_lands_centred)
+	case("the intents derive the same two rooms the walls did", _intents_derive_rooms)
 
 
 # ---------------------------------------------------------------- the tooth
@@ -108,6 +112,97 @@ func _centre() -> void:
 		c.distance_to(Vector2(19, 4)) < 0.001)
 
 
+# ------------------------------------------------- the last link: intents
+#
+# `to_intents()` is where this lane stops being able to check itself. Up to here
+# every number is a wall or a door; after it, the wall graph is handed to systems
+# that already exist. So the cases below check the two things that conversion can
+# get wrong and nothing downstream could notice: an axis, and half a door.
+
+## Total or nothing. A conversion that quietly drops a wall still produces a
+## dungeon — a smaller one — and every assertion downstream would agree with it.
+func _intents_are_total() -> void:
+	var layout := _layout([_room_a(), _room_b()])
+	var walls := layout.walls()
+	var intents := layout.to_intents()
+
+	eq("one intent per wall", intents.size(), walls.size())
+	eq("all of them walls to draw", _draw_walls(intents), intents.size())
+
+	var wanted := 0
+	for w in walls:
+		wanted += (w["doors"] as Array).size()
+	eq("every door survived as an opening", _openings(intents), wanted)
+	# The canary. Without it "0 openings, 0 wanted" passes just as well as a
+	# conversion that works — and it is the layout that would have gone quiet.
+	eq("and there were doors to survive", wanted, 1)
+
+
+## The conversion has to speak two coordinate systems, and nothing downstream can
+## tell whether it did: a dungeon drawn in the wrong plane is still a dungeon.
+func _axes_and_elevation() -> void:
+	var layout := _layout([_room_a()])
+	var intents := layout.to_intents(3.0)
+
+	eq("four walls, four intents", intents.size(), 4)
+	var north := _intent_at(intents, Vector2(0, 0), Vector2(8, 0))
+	is_true("the north wall is there", north != null)
+	if north == null:
+		return
+	near("plan x -> godot x", north.a.x, 0.0)
+	near("plan z -> godot z", north.b.z, 0.0)
+	near("the far end keeps its x", north.b.x, 8.0)
+	near("and the floor's elevation is threaded through", north.a.y, 3.0)
+	near("on both ends of the wall", north.b.y, 3.0)
+	eq("nothing else was promoted to a wall kind", _draw_walls(intents), 4)
+
+
+## The tooth for the one arithmetic this file could plausibly get wrong.
+##
+## The shared wall is 6 m and both outlines cover all of it, so the doorway
+## belongs at 3.0 m. `walls()` used to report the door's NEAR EDGE (`3.0 - 1.5/2`
+## = 2.25) and `CozyOpening.offset` means the CENTRE — `CozyOutlineGenerator`
+## cuts its own doorway at `edge_len * 0.5`. Passing one through as the other
+## moves every door in the dungeon 0.75 m sideways: far enough to matter, near
+## enough to look right.
+func _door_lands_centred() -> void:
+	var layout := _layout([_room_a(), _room_b()])
+	var shared := _intent_at(layout.to_intents(), Vector2(8, 0), Vector2(8, 6))
+
+	is_true("the shared wall survives the conversion", shared != null)
+	if shared == null:
+		return
+	eq("carrying exactly one opening", shared.openings.size(), 1)
+	if shared.openings.is_empty():
+		return
+	near("centred on the wall, not at its near edge", shared.openings[0].offset, 3.0)
+	near("and it is the same size door the rest of the game cuts",
+		shared.openings[0].width, 1.5)
+	eq("as a door, not a window", shared.openings[0].kind, CozyOpening.Kind.DOOR)
+
+
+## End to end, through the REAL state: intents -> `CozyBuildingState` -> the room
+## detector. This is the assertion that says the conversion is complete, because
+## a lost wall, a lost door or a flipped axis all change the room count — and
+## `CozyBuildingState` is what the game actually feeds.
+func _intents_derive_rooms() -> void:
+	var layout := _layout([_room_a(), _room_b()])
+	var state := CozyBuildingState.new()
+	for it in layout.to_intents():
+		var w := state.add_wall(it.a, it.b, it.height, it.thickness,
+			it.material_id, it.floor_id)
+		for o in it.openings:
+			w.add_opening(o)
+
+	eq("seven walls in the state", state.wall_count(), 7)
+	eq("one opening, on the wall that earned it", _state_openings(state), 1)
+	eq("and still two rooms, not the merged one", _rooms(_centrelines(state)), 2)
+	# The nail that the first case in this file drives from the other side: same
+	# outlines through the RAW generator give one room. Both halves are needed.
+	eq("the naive path still merges them, as it always did",
+		_rooms(_segments_naive([_room_a(), _room_b()])), 1)
+
+
 # ---------------------------------------------------------------- outlines
 #
 # Plan coordinates (x, z). A and B share the edge x = 8. A and C are 4 m apart
@@ -169,6 +264,49 @@ func _segments_naive(outlines: Array) -> Array:
 		for it in intents:
 			out.append([Vector2(it.a.x, it.a.z), Vector2(it.b.x, it.b.z)])
 	return out
+
+
+## The wall between two PLAN points, either way round, among the layout's intents.
+## Empty when there is none — which is itself a thing worth being able to assert.
+func _intent_at(intents: Array, a: Vector2, b: Vector2) -> CozyBuildingIntent:
+	for it in intents:
+		var ia := Vector2(it.a.x, it.a.z)
+		var ib := Vector2(it.b.x, it.b.z)
+		if (ia.distance_to(a) < 0.001 and ib.distance_to(b) < 0.001) \
+				or (ia.distance_to(b) < 0.001 and ib.distance_to(a) < 0.001):
+			return it
+	return null
+
+
+func _draw_walls(intents: Array) -> int:
+	var n := 0
+	for it in intents:
+		if it.kind == CozyBuildingIntent.Kind.DRAW_WALL:
+			n += 1
+	return n
+
+
+func _openings(intents: Array) -> int:
+	var n := 0
+	for it in intents:
+		n += it.openings.size()
+	return n
+
+
+## The state's walls in the shape the detector wants, straight off the state —
+## not re-derived from the intents, so a wall the state refused would show up.
+func _centrelines(state: CozyBuildingState) -> Array:
+	var out: Array = []
+	for w in state.walls:
+		out.append(w.centreline())
+	return out
+
+
+func _state_openings(state: CozyBuildingState) -> int:
+	var n := 0
+	for w in state.walls:
+		n += w.openings.size()
+	return n
 
 
 func _rooms(segments: Array) -> int:

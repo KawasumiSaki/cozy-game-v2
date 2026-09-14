@@ -69,7 +69,18 @@ func set_outlines(p_outlines: Array) -> void:
 ## The walls to build, with every shared edge resolved.
 ##
 ## Returns an Array of `{ "a": Vector2, "b": Vector2, "doors": Array }` where a
-## door is `{ "offset": float, "width": float }` measured from `a` along the wall.
+## door is `{ "centre": float, "width": float }` — the CENTRE measured in metres
+## from `a` along the wall, which is exactly what `CozyOpening.offset` means.
+##
+## That is stated twice on purpose. This used to emit the door's NEAR EDGE
+## (`centre - width * 0.5`), which is a fine thing for a builder to know and a
+## trap for everyone else: `CozyOutlineGenerator.plan()` cuts its doorway at
+## `edge_len * 0.5`, the middle of the edge, so a conversion that passed the near
+## edge straight through would shift every dungeon door by half its width. On the
+## 1.5 m doors this file cuts that is 0.75 m — a door that is off by enough to
+## matter and by too little to look wrong. Nothing consumed the old field, so the
+## convention was settled at the source instead of being repaired at the one call
+## site with a `+ width * 0.5` nobody would ever question.
 ##
 ## The shape is deliberately not `CozyBuildingIntent`: which wall material, which
 ## floor and how tall are the CALLER's business, and a layout that had opinions
@@ -88,6 +99,46 @@ func walls() -> Array:
 			"doors": _doors_for(e, edges, span),
 		})
 
+	return out
+
+
+## The walls as INTENTS, ready for the building pipeline this game already runs.
+##
+## This is the last link of "a dungeon is just another batch of walls", and the
+## only one that has to speak both vocabularies: a layout wall is plan
+## coordinates (`Vector2(x, z)`) plus metre offsets, while `CozyBuildingIntent`
+## is `Vector3` in Godot axes carrying its own `CozyOpening`s. Everything upstream
+## is this file; everything downstream — `CozyBuildingState`, the room detector,
+## the roof generator, the save — is existing and asserted, and is not modified
+## here. Which is the whole claim: the conversion is total or it is nothing.
+##
+## WHAT THIS DELIBERATELY DOES NOT DO: there is no entrance. What comes out is a
+## sealed shell whose rooms connect to each other and to nothing else, and that is
+## the honest state of the format rather than an oversight. The design doc
+## expresses the entrance as a SPAWN (`{"room_hint": "entrance", "kind":
+## "player"}`), and `CozyDungeonBlueprint` refuses `spawns` until there is a spawn
+## vocabulary to validate it against — the same reason it refuses `content`.
+## Cutting a door on a guessed wall here would be the eighth "declared with no
+## consumer". `centre()` is the hint that will feed it when the vocabulary lands.
+##
+## `base_y` is the elevation the walls stand on, so a dungeon on a lower floor is
+## the same call with a different number. Same parameter in the same position as
+## `CozyOutlineGenerator.plan()`, so the two read alike.
+func to_intents(base_y := 0.0, height := 3.0, thickness := 0.25,
+		material := "wood", floor_id := 0) -> Array:
+	var out: Array = []
+	for w in walls():
+		var a: Vector2 = w["a"]
+		var b: Vector2 = w["b"]
+		# Plan (x, z) -> Godot (x, base_y, z), the project's one axis mapping.
+		var intent := CozyBuildingIntent.draw_wall(
+			Vector3(a.x, base_y, a.y), Vector3(b.x, base_y, b.y),
+			height, thickness, material, floor_id)
+		for d in w["doors"]:
+			# `centre` is already what CozyOpening.offset means, so this line has
+			# no arithmetic in it — nothing here to get half a door wrong.
+			intent.with_opening(CozyOpening.door(float(d["centre"]), float(d["width"])))
+		out.append(intent)
 	return out
 
 
@@ -166,6 +217,13 @@ func _is_butt_edge(e: Dictionary, edges: Array) -> bool:
 
 ## Where this wall is walked through: the whole span when two outlines share it,
 ## plus every stretch a neighbouring outline opens onto it.
+##
+## One door per merged stretch, centred on it, and clamped to the stretch's own
+## width — a neighbour that opens onto 0.9 m of this wall gets a 0.9 m door, not a
+## 1.5 m door wider than the gap it is supposed to be.
+##
+## `span` is the wall's length in metres, so the [0, 1] parameter intervals become
+## the metre offsets `CozyOpening` wants.
 func _doors_for(e: Dictionary, edges: Array, span: float) -> Array:
 	var covered: Array = []
 
@@ -194,7 +252,7 @@ func _doors_for(e: Dictionary, edges: Array, span: float) -> Array:
 		if width < MIN_DOOR:
 			continue
 		var mid: float = (t0 + t1) * 0.5 * span
-		out.append({"offset": mid - width * 0.5, "width": width})
+		out.append({"centre": mid, "width": width})
 	return out
 
 
