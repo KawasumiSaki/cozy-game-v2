@@ -242,6 +242,18 @@ static func _unknown_reason(d: Dictionary) -> String:
 ## is not one. Empty is the sentinel because it is never a legal outline, and the
 ## count minimum is left to the outline guard so that "needs at least 3 points"
 ## is said in one place rather than two.
+##
+## ---------------------------------------------------------------------------
+## DO NOT DELETE THE LENGTH AND PARITY CHECK. It looks redundant — removing it
+## turns no assertion in this project red, because `_is_number(null)` refuses the
+## value a bad read would produce, so the outline is refused either way. That is
+## how it was found: it was mutated on purpose and nothing went red.
+##
+## What it actually prevents is `flat[i + 1]` reading past the end of an
+## odd-length list. Measured: GDScript raises `SCRIPT ERROR: Out of bounds get
+## index '5' (on base: 'Array')`. So the difference the guard makes is a clean
+## refusal versus an error path — a difference **no test here can see**, which is
+## precisely why it is written down instead of left to the suite.
 static func _to_polygon(raw: Variant) -> PackedVector2Array:
 	var out := PackedVector2Array()
 	if not (raw is Array):
