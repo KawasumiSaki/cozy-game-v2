@@ -243,6 +243,76 @@ var last_placement_refusal := ""
 ## clock, so nothing has to run per frame — only when the answer can have
 ## changed, which is at most once an hour.
 var _last_growth_hour := -1
+
+## The environment and the sun, kept so the clock can move them.
+var world_env: Environment = null
+var day_sun: DirectionalLight3D = null
+
+## The day, in hours. Dawn and dusk are RAMPS rather than a switch: a world that
+## goes from full sun to night between one hour and the next reads as a bug.
+const DAWN := 5.0
+const SUNRISE := 8.0
+const SUNSET := 17.0
+const DUSK := 20.0
+
+## HOW DARK NIGHT GETS, and it is deliberately not very.
+##
+## Willow, 2026-09-14: "黑夜也不要太黑，有一点点月光就行了". So the floor is
+## MOONLIGHT rather than black — the layout stays readable, colours stay
+## distinguishable, and the lamps are warmth added on top of a scene you can
+## already see rather than the only thing between you and a void. A survival game
+## wants the dark to be a threat; a game about a village you are proud of does not.
+const SKY_DAY := Color(0.53, 0.74, 0.92)
+const SKY_NIGHT := Color(0.11, 0.13, 0.24)
+const AMBIENT_DAY := Color(0.78, 0.82, 0.88)
+const AMBIENT_NIGHT := Color(0.34, 0.37, 0.52)   ## Moonlight, cool and blue.
+const SUN_ENERGY_DAY := 1.15
+const SUN_ENERGY_NIGHT := 0.18
+const SUN_COLOR_DAY := Color(1.0, 0.97, 0.90)
+const SUN_COLOR_NIGHT := Color(0.62, 0.70, 0.95)
+
+
+## How much daylight there is: 0 at night, 1 in the middle of the day.
+##
+## A PURE FUNCTION OF THE CLOCK, so it can be asked at any hour — which is how
+## the assertion checks noon and midnight without waiting nine hours.
+func _daylight() -> float:
+	if clock == null:
+		return 1.0
+	var h := fmod(clock.hour, 24.0)
+	if h <= DAWN or h >= DUSK:
+		return 0.0
+	if h < SUNRISE:
+		return (h - DAWN) / (SUNRISE - DAWN)
+	if h > SUNSET:
+		return 1.0 - (h - SUNSET) / (DUSK - SUNSET)
+	return 1.0
+
+
+## Move the sky, the ambient and the sun with the clock, and tell every lamp how
+## dark it is.
+##
+## RUNS EVERY FRAME, and that is affordable and honest: it is a pure function of
+## the hour, so calling it sixty times a second and calling it once give the same
+## answer — the property `INVARIANTS` demands of anything refreshed repeatedly.
+## A per-hour version would make dusk arrive in steps.
+func _light_the_world() -> void:
+	if clock == null:
+		return
+	var light := _daylight()
+	var dark := 1.0 - light
+
+	if world_env != null:
+		world_env.background_color = SKY_NIGHT.lerp(SKY_DAY, light)
+		world_env.ambient_light_color = AMBIENT_NIGHT.lerp(AMBIENT_DAY, light)
+		world_env.ambient_light_energy = lerpf(0.55, 1.0, light)
+	if day_sun != null:
+		day_sun.light_energy = lerpf(SUN_ENERGY_NIGHT, SUN_ENERGY_DAY, light)
+		day_sun.light_color = SUN_COLOR_NIGHT.lerp(SUN_COLOR_DAY, light)
+
+	for o in objects:
+		if is_instance_valid(o):
+			o.set_light_level(dark)
 var _drag_active := false
 var _drag_start := Vector3.ZERO
 var _drag_end := Vector3.ZERO
@@ -393,6 +463,9 @@ func _build_environment() -> void:
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
+	# Kept, because these three numbers are no longer a constant: `_light_the_world`
+	# moves them with the clock.
+	world_env = env
 
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-52.0, -38.0, 0.0)
@@ -400,6 +473,7 @@ func _build_environment() -> void:
 	sun.light_color = Color(1.0, 0.97, 0.90)
 	sun.shadow_enabled = true
 	add_child(sun)
+	day_sun = sun
 
 
 # ---------------------------------------------------------------- assets
@@ -772,6 +846,12 @@ func _place_resource_nodes() -> void:
 	_place_object("crop", -4.5, -3.0, 0)
 	_place_object("crop", -6.0, -3.0, 0)
 	_place_object("crop", -7.5, -3.0, 0)
+
+	# A lamp post by the door and one inside, so the night has something to show.
+	# The door is at x = 3.25 on the z = 0 wall, so the post stands just south of
+	# it and lights the way in; the floor lamp sits where a person would put one.
+	_place_object("lamp_post", 5.2, -1.6, 0)
+	_place_object("floor_lamp", 1.2, 4.4, 0)
 
 
 ## Break the ground the crops are going into: grass -> soil -> farmland.
@@ -1931,6 +2011,7 @@ func _process(delta: float) -> void:
 	_clock += delta
 	_expire_message()
 	_grow_the_world()
+	_light_the_world()
 	_handle_camera_keys(delta)
 
 	if _is_headless:
@@ -2039,6 +2120,7 @@ func _report() -> void:
 	_check_save_load()
 	_check_assets()
 	_check_scatter()
+	_check_lights()
 	_check_terrain_shader()
 	_check_terrain_control()
 	_check_terrain()
@@ -2791,6 +2873,60 @@ func _check_terrain_control() -> void:
 		read, coords.size(), kinds.size(), wrong,
 		"OK" if wrong == 0 and kinds.size() >= 2
 		else "FAIL, the shader would draw the wrong ground"])
+
+
+## The day/night cycle, and the lamps it turns on.
+##
+## IT MOVES THE CLOCK AND PUTS IT BACK. The curve is a function of the hour and
+## there is no other way to ask about midnight at nine in the morning — the same
+## trick the growth check uses when it asks about `now + 24`.
+##
+## BOTH DIRECTIONS ARE ASSERTED, which is the whole point of doing it this way:
+## `night < noon` catches a world stuck in daylight, and `night > 0` catches one
+## that goes black. A single "it gets darker" would pass on a world that goes
+## pitch black, and Willow asked for the opposite of that. "黑夜也不要太黑，
+## 有一点点月光就行了."
+func _check_lights() -> void:
+	if clock == null or world_env == null or day_sun == null:
+		print("[cozyv2] lights: NOT BUILT  [FAIL]")
+		return
+
+	var kept := clock.hour
+
+	clock.hour = 12.0
+	_light_the_world()
+	var noon := _daylight()
+	var noon_sun := day_sun.light_energy
+	var noon_ambient := world_env.ambient_light_energy
+
+	clock.hour = 0.0
+	_light_the_world()
+	var midnight := _daylight()
+	var night_sun := day_sun.light_energy
+	var night_ambient := world_env.ambient_light_energy
+
+	# Dawn is a RAMP: an hour after it starts it is neither day nor night.
+	clock.hour = DAWN + 1.0
+	_light_the_world()
+	var dawn := _daylight()
+
+	var lamps := 0
+	var lit := 0
+	for o in objects:
+		if is_instance_valid(o) and o.has_light():
+			lamps += 1
+			if o.light_energy() > 0.0:
+				lit += 1
+
+	clock.hour = kept
+	_light_the_world()
+
+	print("[cozyv2] lights: noon daylight=%.2f sun=%.2f amb=%.2f | midnight daylight=%.2f sun=%.2f amb=%.2f | dawn=%0.2f | %d of %d lamp(s) lit at midnight  [%s]" % [
+		noon, noon_sun, noon_ambient, midnight, night_sun, night_ambient, dawn, lit, lamps,
+		"OK" if noon > 0.99 and midnight == 0.0 and dawn > 0.0 and dawn < 1.0
+			and night_sun < noon_sun and night_sun > 0.0
+			and night_ambient > 0.0 and lamps > 0 and lit == lamps
+		else "FAIL, the night is not what it should be"])
 
 
 func _check_terrain() -> void:

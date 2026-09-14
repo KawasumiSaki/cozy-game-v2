@@ -52,6 +52,15 @@ var _specs: Array = []          ## {local: Vector3, ...} mirrors interaction_poi
 var _mat: StandardMaterial3D = null
 var _body: StaticBody3D = null
 
+## The light this object casts, or null when its definition declares none.
+##
+## At FULL dark it burns at the definition's `energy`; how bright it actually is
+## at any moment is the world's business, which is why the level arrives from
+## outside rather than being read from a clock in here. An object that owned a
+## clock could not be placed in a test.
+var _light: OmniLight3D = null
+var _light_energy := 0.0
+
 
 func setup(p_def_id: String, p_floor := 0) -> void:
 	def_id = p_def_id
@@ -95,6 +104,23 @@ func _build() -> void:
 	add_child(_body)
 
 	_make_points()
+
+	# A light, if the definition declares one. Built here rather than by a system
+	# of its own, because a lamp is a property of the thing that is lit — the same
+	# reason `vfx` is a row on the definition rather than a list somewhere.
+	_light = null
+	_light_energy = 0.0
+	var light_def: Dictionary = _def.get("light", {})
+	if not light_def.is_empty():
+		_light_energy = float(light_def.get("energy", 0.0))
+		_light = OmniLight3D.new()
+		_light.light_color = light_def.get("color", Color.WHITE)
+		_light.omni_range = float(light_def.get("range", 6.0))
+		_light.light_energy = 0.0          # The world says how dark it is.
+		_light.shadow_enabled = false      # Compatibility renderer; one per lamp is
+		                                   # more than this art needs.
+		_light.position = Vector3(0.0, h * 0.9, 0.0)
+		add_child(_light)
 
 	# The other half of a `store` point: the point says "you can put things here",
 	# the container is where they actually go.
@@ -290,3 +316,29 @@ func apply_dict(d: Dictionary) -> void:
 		container = CozyContainerState.from_dict(d["container"])
 	refresh_points()
 	refresh_vfx_phase()
+
+
+## How bright this object's light should be, given how dark the world is.
+##
+## `darkness` is 0 in full day and 1 at midnight. A lamp therefore comes on by
+## itself at dusk and goes out at dawn, and nothing anywhere had to decide when
+## a lamp should be lit — which is the sort of rule this project insists belongs
+## in a system rather than in a special case per object.
+##
+## Nothing happens without a light, so furniture pays one comparison.
+func set_light_level(darkness: float) -> void:
+	if _light == null:
+		return
+	var energy := _light_energy * clampf(darkness, 0.0, 1.0)
+	_light.light_energy = energy
+	# A light at zero still costs a slot in the renderer's light list. Turning the
+	# NODE off is what actually removes it.
+	_light.visible = energy > 0.01
+
+
+func has_light() -> bool:
+	return _light != null
+
+
+func light_energy() -> float:
+	return 0.0 if _light == null else _light.light_energy

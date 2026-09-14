@@ -70,6 +70,9 @@ const OBJECTS := {
 		# Effects this object emits (doc E.18). Declared as data so adding a
 		# lantern or a forge chimney later needs no object-system change.
 		"vfx": ["fire", "smoke"],
+		# A fire is a light, and it always was. Before this the campfire glowed
+		# in a world with no night to glow against.
+		"light": {"color": Color(1.0, 0.72, 0.36), "energy": 3.2, "range": 7.0},
 		"interactions": [
 			{"type": "sit", "skill": "", "duration": 4.0, "reach": 1.0},
 		],
@@ -151,6 +154,34 @@ const OBJECTS := {
 			{"type": "harvest", "skill": "farming", "duration": 3.0, "reach": 0.8},
 		],
 	},
+	# ---- lights (2026-09-14) --------------------------------------------------
+	#
+	# THE SAME ROW SHAPE AS EVERYTHING ELSE. A lamp is an object with a footprint,
+	# a colour and an interaction list that happens to be empty — so it is placed,
+	# saved, indexed and faded by code that already existed, and the only new
+	# thing in the whole system is the `light` row below.
+	#
+	# `energy` is what the lamp is worth at FULL dark. The world multiplies it by
+	# how dark it actually is, so a lamp needs no clock of its own and turns
+	# itself on at dusk without anything deciding that it should.
+	"lamp_post": {
+		"name": "Lamp Post",
+		"kind": "light",
+		"size": Vector2(0.3, 0.3),
+		"height": 3.2,
+		"color": Color(0.32, 0.30, 0.28),
+		"light": {"color": Color(1.0, 0.88, 0.66), "energy": 5.0, "range": 9.0},
+		"interactions": [],
+	},
+	"floor_lamp": {
+		"name": "Floor Lamp",
+		"kind": "light",
+		"size": Vector2(0.4, 0.4),
+		"height": 1.4,
+		"color": Color(0.44, 0.36, 0.28),
+		"light": {"color": Color(1.0, 0.82, 0.58), "energy": 2.6, "range": 6.0},
+		"interactions": [],
+	},
 }
 
 ## Order used when cycling build choices in-game.
@@ -160,7 +191,7 @@ const OBJECTS := {
 ## drift. It is kept in step by `test_resource_chain.gd`, which asserts every id
 ## here is a real object; making it the single source is a separate tidy-up.
 const PLACEABLE: Array[String] = ["research_table", "chest", "bed", "chair", "campfire",
-	"tree", "rock", "crop"]
+	"tree", "rock", "crop", "lamp_post", "floor_lamp"]
 
 
 static func get_def(id: String) -> Dictionary:
