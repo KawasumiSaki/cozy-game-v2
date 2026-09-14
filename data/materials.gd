@@ -74,8 +74,8 @@ const MATERIALS := {
 		"color": Color(0.84, 0.68, 0.40),
 		"nourishment": 45.0,
 	},
-	# What `grow_crop` produces and `bake_bread` consumes (doc #45's chain). Not
-	# edible as it stands, which is why it is an ingredient and not food.
+	# What `harvest_crop` produces and `bake_bread` consumes (doc #45's chain).
+	# Not edible as it stands, which is why it is an ingredient and not food.
 	"wheat": {
 		"name": "Wheat",
 		"kind": "ingredient",

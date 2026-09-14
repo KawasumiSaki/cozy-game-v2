@@ -279,6 +279,7 @@ func _ready() -> void:
 	if HOUSE_ENABLED:
 		_build_house()
 	_place_initial_furniture()
+	_place_resource_nodes()
 	_rebuild_spatial()
 	# Roofs come after room detection: the generator needs the room polygon and
 	# the floor elevations, and neither exists until _rebuild_spatial has run.
@@ -713,6 +714,35 @@ func _place_initial_furniture() -> void:
 	# hand for now — build-mode placement is how a player would do it.
 	_place_object("bed", 1.5, 1.5, 0)
 	_place_object("chair", 2.0, 5.0, 0)
+
+
+## The resource nodes the gathering trades work at (2026-09-14).
+##
+## These exist so that `chop`, `mine` and `harvest` are not just table rows: the
+## jobs name a point type, an object has to OFFER one, and a resident has to be
+## able to walk to it. Without a single tree in the world, `woodcutter` would be
+## the eighth "declared capability with no consumer" this project has written.
+##
+## Placed by hand at fixed coordinates, the way the furniture is, and
+## deliberately WEST and SOUTH of the door axis: the spawn-to-door line runs
+## north along x = 3.25, and putting a grove across it would turn the walk every
+## resident makes into a detour for no reason.
+##
+## NOT YET LINKED TO ANYTHING. A crop does not have to be on farmland, a tree is
+## not one of `vegetation_scatter`'s 165 instanced trees, and nothing removes a
+## node when it is worked. Those are the next steps; this one makes the
+## vocabulary real, which has to happen first.
+func _place_resource_nodes() -> void:
+	# A small stand of trees, and a rock each side of it.
+	_place_object("tree", -4.0, 1.0, 0)
+	_place_object("tree", -6.0, 3.0, 0)
+	_place_object("tree", -4.0, 5.5, 0)
+	_place_object("rock", -8.0, -1.5, 0)
+	_place_object("rock", -7.0, 6.5, 0)
+	# A row of crops, out where the ground is clear.
+	_place_object("crop", -3.0, -3.0, 0)
+	_place_object("crop", -4.5, -3.0, 0)
+	_place_object("crop", -6.0, -3.0, 0)
 
 
 # ---------------------------------------------------------------- entities
@@ -1790,6 +1820,7 @@ func _report() -> void:
 	_check_farming_chain()
 	_check_terrain_surface()
 	_check_scatter_incremental()
+	_check_resource_chain()
 
 	_report_house()
 	_report_runtime_building()
@@ -1809,6 +1840,69 @@ func _report_runtime_building() -> void:
 	]
 	print("[cozyv2] runtime building: PARKED, %d thing(s) NOT DONE (BUILDING_ENABLED=false): %s" % [
 		parked.size(), ", ".join(parked)])
+
+
+## Every gathering trade has somewhere to work, and a resident can walk there.
+##
+## This is the half of the resource vocabulary that a pure-logic suite cannot
+## see. `tests/unit/test_resource_chain.gd` proves the three tables agree — every
+## point offered is wanted and every point wanted is offered — but a table that
+## agrees with itself still describes a world with no tree in it.
+##
+## "A declared capability with no consumer" is this project's most expensive
+## mistake, and it has two halves: nobody reading the row, and nothing in the
+## world to read. So this checks the second one.
+##
+## ASK THE GRID, NOT THE NAVIGATOR, and that is not a shortcut — it was found by
+## mutation testing. `world_navigator.plan()` returns `[to]` for ANY outdoor
+## target without consulting the outdoor grid at all (see `_local` in
+## world_navigator.gd), so "a path exists" is true for a tree placed at
+## (500, 500). The first version of this check did exactly that and a mutation
+## that put a tree outside the world went green.
+##
+## The point an object offers is deliberately OUTSIDE its own footprint
+## (`inside_own_footprint=false`), because it is where the resident stands — so
+## the honest question is whether the grid says a body can stand there.
+func _check_resource_chain() -> void:
+	var outdoor: CozyLocalNav = _nav_by_room.get(CozyRoomGraph.OUTDOORS)
+	if outdoor == null:
+		print("[cozyv2] resource chain: no outdoor grid to stand on  [FAIL]")
+		return
+
+	for trade in [["woodcutter", "chop"], ["miner", "mine"], ["farmer", "harvest"]]:
+		var job := String(trade[0])
+		var want := String(trade[1])
+		var found := 0
+		var standable := 0
+		for o in objects:
+			if not is_instance_valid(o):
+				continue
+			for p in o.free_points_of_type(want):
+				found += 1
+				var cell := outdoor.world_to_cell(Vector2(p.world_position.x, p.world_position.z))
+				if outdoor.is_walkable(cell):
+					standable += 1
+		# EVERY point, not merely one of them. A node whose point cannot be
+		# stood at is a node nobody can work, however many others there are —
+		# and "more than zero" was the second thing mutation testing caught
+		# here: putting one tree out of the world left the count at 2 and the
+		# check green.
+		print("[cozyv2] resource '%s' for the %s: %d point(s) in the world, %d standable  [%s]" % [
+			want, job, found, standable,
+			"OK" if found > 0 and standable == found
+			else "FAIL, %d of %d point(s) have nowhere to stand" % [found - standable, found]])
+
+	# And the job that does the work must name a point the world actually has —
+	# the table check cannot tell a name from a place.
+	for job in ["woodcutter", "miner", "farmer"]:
+		var want := CozyJobDefs.point_type(job)
+		var offered := 0
+		for o in objects:
+			if is_instance_valid(o):
+				offered += o.free_points_of_type(want).size()
+		print("[cozyv2] resource job '%s' seeks '%s': %d in the world  [%s]" % [
+			job, want, offered,
+			"OK" if offered > 0 else "FAIL, a job that can never finish"])
 
 
 ## Everything that measures the house, and the systems derived from its walls.

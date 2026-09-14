@@ -28,12 +28,35 @@ extends RefCounted
 const POINT_WORK := "work"
 
 const RECIPES := {
-	# The PRIMARY producer: the land does the work, so there are no inputs. This
-	# is the bottom of the chain — without one of these, every other recipe is
-	# waiting on materials nothing can create.
-	"grow_crop": {
+	# ---- the gathering legs (2026-09-14) -------------------------------------
+	#
+	# Each names a point type that an object in `CozyObjectDefs` actually offers.
+	# That is asserted rather than assumed: a recipe whose point type nothing
+	# offers is a resident that can never finish a task, which is exactly the
+	# failure this project has paid for repeatedly.
+	"chop_tree": {
+		"job": "woodcutter",
+		"point_type": "chop",
+		"inputs": {},
+		"outputs": {"wood": 4.0},
+	},
+	"mine_rock": {
+		"job": "miner",
+		"point_type": "mine",
+		"inputs": {},
+		"outputs": {"stone": 3.0},
+	},
+	# The PRIMARY producer of the food chain: the land does the work, so there
+	# are no inputs. Without it `bake_bread` is waiting on wheat nothing can
+	# create.
+	#
+	# It used to be `grow_crop` at a `work` point — the same type a research
+	# table offers — so the resident farmed at a desk and wheat appeared next to
+	# it. `harvest` is a point a crop actually has, and the name says what the
+	# resident does rather than what happens to the field afterwards.
+	"harvest_crop": {
 		"job": "farmer",
-		"point_type": "work",
+		"point_type": "harvest",
 		"inputs": {},
 		"outputs": {"wheat": 2.0},
 	},

@@ -47,9 +47,33 @@ const JOBS := {
 	},
 	"farmer": {
 		"name": "Farmer",
-		"point_type": "work",
+		"point_type": "harvest",
 		"preferred_skills": ["farming"],
-		"preferred_interactions": ["plant", "harvest"],
+		"preferred_interactions": ["harvest"],
+		"rest_point_type": "sit",
+	},
+	# The three gathering trades (2026-09-14). They are rows rather than a
+	# system: each names the point TYPE its work happens at, and the agent
+	# already knows how to find one of those on any object.
+	#
+	# `farmer` used to sit at a `work` point — the same type a research table
+	# offers — which meant the resident farmed at a desk and wheat appeared. It
+	# now names `harvest`, which is a point a crop actually offers. The old
+	# `preferred_interactions: ["plant", "harvest"]` has lost "plant" for the
+	# same reason: no object offers one, and a declared interaction with no
+	# consumer is the shape this project has paid for seven times.
+	"woodcutter": {
+		"name": "Woodcutter",
+		"point_type": "chop",
+		"preferred_skills": ["gathering"],
+		"preferred_interactions": ["chop"],
+		"rest_point_type": "sit",
+	},
+	"miner": {
+		"name": "Miner",
+		"point_type": "mine",
+		"preferred_skills": ["mining"],
+		"preferred_interactions": ["mine"],
 		"rest_point_type": "sit",
 	},
 }
