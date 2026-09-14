@@ -34,31 +34,63 @@ const WELL_X1 := 7.0     ## ...to here. The ramp tops out at WELL_X1 and the
                          ## level floor instead of stepping off into a wall.
 const WELL_Z0 := 3.0
 
-## Is the demo house part of the world?
+## Is the house part of the world?
 ##
-## OFF since 2026-09-14 (Willow): the loop being built now is farming, mining and
-## woodcutting on open ground, and the house is not part of it. The house, the
-## systems derived from its walls, and the checks that measure them are all
-## PARKED rather than deleted — flip this to `true` and every one of them comes
-## back unchanged.
+## ON, and it is a PREFAB. `_build_house()` is a hand-authored list of eight
+## walls, three slabs and a stair — it never went through `CozyOutlineGenerator`,
+## which is the "auto-generated" path Willow ruled out on 2026-09-14. What IS
+## derived from it — the rooms, the portals, the room graph and the roof — is
+## derived the way everything else here is, and none of those has a known bug:
 ##
-## ONE SWITCH, NOT FIVE, and the reason is the project's first invariant: rooms
-## are DERIVED. `CozyRoomDetector` runs a planar face traversal over the wall
-## graph, portals are derived from openings in walls, and the room graph and the
-## roofs are derived from the rooms. With no walls there is nothing to derive,
-## which is why the four systems that depend on the house depend on it through
-## this one constant.
+##     outline guard: L-shape and square allowed=true       [OK]
+##     door gap (walkable) open / door lintel (solid)       [OK]
+##     roof over room_1_0: style=gable, 4 face(s), ridge=2  [OK]
 ##
-## PARKING IS REPORTED, NEVER SILENT. `_report()` prints which checks did not
-## run. A run that quietly measures less than it used to is the "green number
-## that lies" this project has paid for more than once, so the parked checks are
-## a LIST that gets printed when it is skipped rather than a comment saying so.
+## So the prefab is not a different mechanism, it is the same one with the input
+## written down instead of drawn. What changed is the OTHER switch below: nothing
+## draws walls while the game is running any more.
 ##
-## WHAT IS NOT PARKED: the furniture. The chest, bed, chair, campfire and
-## research table are placed independently of the house and every one of them has
-## a consumer — the chest is where the §45 chain stores, the bed is where the
-## schedule sleeps. They survive with no walls, which is asserted.
-const HOUSE_ENABLED := false
+## OFF means the house is absent and the checks that measure it are parked. That
+## state is worth keeping reachable — it is how the ground was cleared for the
+## farming lane — and both directions are verified: false gives 89 OK, true gives
+## 122 OK, both with 0 FAIL and 0 ERROR.
+const HOUSE_ENABLED := true
+
+
+## Can a wall be drawn while the game is RUNNING?
+##
+## OFF, and this single switch is the fix for debt 22 — not a workaround.
+##
+## Measured 2026-09-14 by differential experiment. A wall added AFTER the
+## navigation was built, with a door cut into it, leaves the navigation grid
+## routing through that door while the collider is solid at its centre:
+##
+##     cast through wall_010's door centre: SOLID
+##     [FAIL, navigation has a hole the collider does not]
+##
+## A resident that paths through it walks into the wall, gets stuck, replans and
+## never arrives — which is exactly the ten-hours-in-place this project has been
+## describing as debt 22. Gating the live-rebuild test off took the resident's
+## path from 2 crossings to 0, and nothing else about the run changed:
+##
+##     house ON, live-rebuild test running   -> path crosses geometry: 2 leg(s)
+##     house ON, live-rebuild test gated off -> path crosses geometry: 0 leg(s)
+##
+## THE HOUSE DOES NOT TRIGGER IT, and that is the whole reason a prefab is the
+## answer rather than a fix. Its door is cut at startup, before any navigation
+## exists, and `door gap (walkable) open` has been green since V2-16. Only a wall
+## that appears after the navigation does.
+##
+## Willow 2026-09-14: "别修了，我们直接换建筑逻辑，放一个预制房". Understood as:
+## keep the house, stop generating buildings at runtime. So the two producers of
+## runtime walls — the build palette and the live-rebuild test — are off, and the
+## palette's two tools are parked rather than deleted.
+##
+## WHEN THIS GOES BACK ON, THE BUG IS BACK. Fixing the nav/collider disagreement
+## for runtime-added openings is the price of player building, and it is recorded
+## in `docs/INVARIANTS.md` so that turning this on is a decision rather than a
+## rediscovery.
+const BUILDING_ENABLED := false
 
 
 ## Where the game starts: in front of the door, on the south side of the house.
@@ -109,15 +141,12 @@ const BUILD_TOOLS: Array[String] = ["outline", "wall"]
 const PLACE_TOOLS: Array[String] = ["research_table", "chest", "bed", "chair",
 	"campfire"]
 
-## The palette, parked with the house.
-##
-## `outline` and `wall` are the two tools that reach the building system, and
-## `_report_house()` — every check that covers them — is parked alongside. Keeping
-## them clickable would leave a player drawing walls that nothing measures any
-## more. A capability that is live while its coverage is not is the shape of bug
-## this project keeps paying for, so the two go off together.
+## The palette. `outline` and `wall` are the two tools that DRAW A WALL, which is
+## the one act `BUILDING_ENABLED` exists to prevent — see above, and the bug is
+## not in these buttons but in what they produce. The house is unaffected: it is
+## authored at startup, not drawn.
 const TOOL_GROUPS: Array = (
-	[BUILD_TOOLS, TERRAIN_TOOLS, PLACE_TOOLS] if HOUSE_ENABLED
+	[BUILD_TOOLS, TERRAIN_TOOLS, PLACE_TOOLS] if BUILDING_ENABLED
 	else [TERRAIN_TOOLS, PLACE_TOOLS])
 
 ## The live resident's trade. §45's production chain runs on THIS one, so it is
@@ -136,7 +165,7 @@ const NPC_JOB := "cook"
 ## together by the `hud tools` assertion, which flattens the groups and compares.
 const TOOLS: Array[String] = (
 	["outline", "wall", "dig", "fill", "clear", "till",
-		"research_table", "chest", "bed", "chair", "campfire"] if HOUSE_ENABLED
+		"research_table", "chest", "bed", "chair", "campfire"] if BUILDING_ENABLED
 	else ["dig", "fill", "clear", "till",
 		"research_table", "chest", "bed", "chair", "campfire"])
 
@@ -311,11 +340,13 @@ func _build_self_check() -> void:
 		func() -> bool: return _has_arg("--cozy-probe-npc-pathing"))
 	self_check.add("entity_registry", 160, _check_entity_registry)
 	self_check.add("outline", 1500, _check_outline_build)
-	# Parked with the house: this test splits a room by adding a dividing wall,
-	# and with no rooms there is nothing to split — measured, it reported
-	# `floor-0 rooms 0 -> 0` and failed for the right reason.
+	# Gated on BUILDING, not on the house. This test adds a dividing wall at
+	# runtime with a door cut into it, which is the ONE thing measured to produce
+	# the navigation hole the resident cannot path through. It is the test's own
+	# wall that does it, not the house's — so it goes off with runtime building,
+	# and the world stays one the resident can walk.
 	self_check.add("live_rebuild", AUTOPILOT_DONE_FRAME, _run_live_rebuild_test,
-		func() -> bool: return HOUSE_ENABLED)
+		func() -> bool: return BUILDING_ENABLED)
 	self_check.add("npc_work", NPC_CHECK_FRAME, _check_npc_work)
 	# Last, so it observes every stage above it. It is itself a stage, which is
 	# what keeps a deliberately short run (`--quit-after 400`) honest: the report
@@ -1761,6 +1792,23 @@ func _report() -> void:
 	_check_scatter_incremental()
 
 	_report_house()
+	_report_runtime_building()
+
+
+## What is off because a wall cannot be drawn while the game is running.
+##
+## Reported for the same reason the house checks are: two runs that differ only by
+## a number are indistinguishable in a log, and the thing that must never happen is
+## a run that measures less without saying so.
+func _report_runtime_building() -> void:
+	if BUILDING_ENABLED:
+		return
+	var parked: Array[String] = [
+		"the build palette's %d tool(s) (%s)" % [BUILD_TOOLS.size(), ", ".join(BUILD_TOOLS)],
+		"the live-rebuild stage, which adds a dividing wall at runtime",
+	]
+	print("[cozyv2] runtime building: PARKED, %d thing(s) NOT DONE (BUILDING_ENABLED=false): %s" % [
+		parked.size(), ", ".join(parked)])
 
 
 ## Everything that measures the house, and the systems derived from its walls.
