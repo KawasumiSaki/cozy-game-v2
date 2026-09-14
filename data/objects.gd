@@ -128,6 +128,11 @@ const OBJECTS := {
 		"size": Vector2(1.0, 1.0),
 		"height": 0.6,
 		"color": Color(0.78, 0.70, 0.36),
+		# The ground it has to stand on. This is the link the farming chain was
+		# missing: `Grass -> Soil -> Farmland` has existed since V2-11 and refuses
+		# to skip a step, and a crop could be dropped on virgin grass anyway.
+		# Empty means "anywhere", which is what every other object says.
+		"requires_ground": ["farmland"],
 		"interactions": [
 			{"type": "harvest", "skill": "farming", "duration": 3.0, "reach": 0.8},
 		],
@@ -150,6 +155,35 @@ static func get_def(id: String) -> Dictionary:
 
 static func exists(id: String) -> bool:
 	return OBJECTS.has(id)
+
+
+## Why this object may not stand on this ground, or "" when it may.
+##
+## A REASON rather than a bool, the shape `CozyOutlineGenerator.reject_reason`
+## and `CozyDungeonBlueprint.reject_reason` settled on: whatever refuses a
+## placement has to be able to say why, and a test can then assert on the words
+## instead of on a false.
+##
+## It lives here, with the data, rather than in whatever code happens to place
+## the object. INVARIANTS: "A rule that lives only in a mouse handler is not a
+## rule" — a second caller would otherwise be free to bypass it.
+static func ground_problem(def_id: String, material_id: String) -> String:
+	var allowed: Array = get_def(def_id).get("requires_ground", [])
+	if allowed.is_empty() or allowed.has(material_id):
+		return ""
+	return "%s has to stand on %s, and this ground is %s" % [
+		display_name(def_id), ", ".join(allowed), material_id]
+
+
+## Does any object constrain its ground? Used by the self-check, so a table that
+## silently stopped constraining anything cannot pass for a table that does.
+static func constrained_ids() -> Array[String]:
+	var out: Array[String] = []
+	for id in OBJECTS:
+		if not (OBJECTS[id].get("requires_ground", []) as Array).is_empty():
+			out.append(String(id))
+	out.sort()
+	return out
 
 
 static func display_name(id: String) -> String:

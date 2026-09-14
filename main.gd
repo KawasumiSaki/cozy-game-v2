@@ -224,6 +224,10 @@ var _hud_message := ""
 var _hud_message_warn := false
 var _hud_message_until := 0.0
 var tool_idx := 0
+
+## Why the last placement was refused, or "" when it was not. The reason a
+## refusal is a VALUE rather than a shrug: whoever asked can say what went wrong.
+var last_placement_refusal := ""
 var _drag_active := false
 var _drag_start := Vector3.ZERO
 var _drag_end := Vector3.ZERO
@@ -256,6 +260,7 @@ func _ready() -> void:
 	# The homestead starts on ground that has already been cleared. Without
 	# this the terrain gate (doc #12) would refuse the very first wall.
 	_prepare_starter_plot()
+	_prepare_crop_ground()
 	_build_ground()
 
 	# The building system owns BuildingState and generates every wall view from
@@ -742,12 +747,37 @@ func _place_resource_nodes() -> void:
 	_place_object("tree", -4.0, 1.0, 0)
 	_place_object("tree", -6.0, 3.0, 0)
 	_place_object("tree", -4.0, 5.5, 0)
-	_place_object("rock", -8.0, -1.5, 0)
+	# Away from the crop row: a crop's interaction point sits 1.3 m in front of it,
+	# and at (-8, -1.5) this rock's footprint swallowed the point of the westernmost
+	# crop. The `standable` assertion is what noticed — a resource whose point is
+	# inside something else is a resource nobody can work.
+	_place_object("rock", -10.0, -4.0, 0)
 	_place_object("rock", -7.0, 6.5, 0)
 	# A row of crops, out where the ground is clear.
-	_place_object("crop", -3.0, -3.0, 0)
 	_place_object("crop", -4.5, -3.0, 0)
 	_place_object("crop", -6.0, -3.0, 0)
+	_place_object("crop", -7.5, -3.0, 0)
+
+
+## Break the ground the crops are going into: grass -> soil -> farmland.
+##
+## Two intents rather than one because the terrain system refuses to skip a step,
+## which is the property `farming chain` asserts. A plot drawn as farmland over
+## grass would till nothing at all, and the crops would then be refused by
+## `ground_problem` — correctly, and with a reason that said why.
+func _prepare_crop_ground() -> void:
+	if terrain == null:
+		return
+	var plot := PackedVector2Array([
+		Vector2(-8.5, -4.2), Vector2(-3.5, -4.2),
+		Vector2(-3.5, -1.8), Vector2(-8.5, -1.8)])
+	terrain.apply_intent(CozyTerrainIntent.clear_polygon(plot))
+	terrain.apply_intent(CozyTerrainIntent.till_polygon(plot))
+	# THE SAME TAIL AS `_prepare_starter_plot`, for the same reason: `setup()`
+	# already ran `rebuild_all()`, so an edit after it leaves the mesh stale and
+	# the dirty marks pending. Pending marks are not harmless — `describe()`
+	# reports them, and the save round-trip compares `describe()`.
+	_rebuild_terrain_surface()
 
 
 # ---------------------------------------------------------------- entities
@@ -796,6 +826,26 @@ func _resident_states() -> Array:
 func _place_object(def_id: String, x: float, z: float, floor_index: int) -> CozyWorldObject:
 	if not CozyObjectDefs.exists(def_id):
 		return null
+
+	# THE GROUND GETS A SAY, and it says why when it refuses — the same question
+	# `CozyBuildingSystem` asks for a wall, asked of a thing instead. A crop on
+	# virgin grass is the case this exists for: `Grass -> Soil -> Farmland` has
+	# been a chain since V2-11, and a crop could be dropped anywhere regardless.
+	#
+	# The refusal is SILENT (INVARIANTS: "the refusal is silent on purpose").
+	# `last_placement_refusal` is where a caller reads it, and an assertion is
+	# what notices; a line printed here would make `0 ERROR` a lie the way
+	# `JSON.parse_string` did.
+	#
+	# Only floor 0 stands on terrain. An upper floor is a slab, and what a thing
+	# needs from a slab is a question nothing has asked yet.
+	if floor_index == 0 and terrain != null:
+		var problem := CozyObjectDefs.ground_problem(def_id, terrain.material_id_at(x, z))
+		if problem != "":
+			last_placement_refusal = problem
+			return null
+	last_placement_refusal = ""
+
 	var obj := CozyWorldObject.new()
 	# The id first, so `setup()` and everything after it can be addressed by it.
 	obj.id = "obj_%03d" % _next_object_id
@@ -1913,6 +1963,47 @@ func _check_resource_chain() -> void:
 			want, job, found, standable,
 			"OK" if found > 0 and standable == found
 			else "FAIL, %d of %d point(s) have nowhere to stand" % [found - standable, found]])
+
+	# AND THE WORLD OBEYS THE GROUND RULE. `_place_object` refuses a crop on
+	# anything but farmland, so this looks like it cannot fail — except that a
+	# LOAD does not go through `_place_object`. `_apply_world` builds objects
+	# straight from the save, so a file written before the rule existed, or one
+	# edited by hand, can put a field on grass, and nothing would say so.
+	var crops := 0
+	var on_field := 0
+	for o in objects:
+		if not is_instance_valid(o) or o.def_id != "crop":
+			continue
+		crops += 1
+		if terrain != null and terrain.material_id_at(o.global_position.x,
+				o.global_position.z) == "farmland":
+			on_field += 1
+	print("[cozyv2] crops standing on farmland: %d of %d  [%s]" % [
+		on_field, crops,
+		"OK" if crops > 0 and on_field == crops
+		else "FAIL, a crop is growing on ground nobody tilled"])
+
+	# AND THE PLACEMENT PATH ACTUALLY CONSULTS THE RULE. The rule itself is a pure
+	# function asserted in `test_resource_chain.gd`; this is the other half —
+	# a placement made through the real path, on ground that must refuse it.
+	#
+	# It is also what READS `last_placement_refusal`. Without it that member would
+	# have been set and never looked at, which is the shape this project has paid
+	# for seven times. An unused reason is worse than no reason: it looks like the
+	# caller was informed.
+	var objs_before := objects.size()
+	var refused := _place_object("crop", 20.0, 20.0, 0)
+	var reason := last_placement_refusal
+	# The ground is named rather than assumed. It was first written as "grass" and
+	# reported soil — `_check_terrain` clears a plot of its own a few checks
+	# earlier, and this spot is inside it. An assertion that hardcodes what it
+	# expects to find stops being about the rule and starts being about the world.
+	var ground_there := terrain.material_id_at(20.0, 20.0) if terrain != null else "?"
+	print("[cozyv2] placement teeth: a crop on '%s' -> refused=%s, nothing added=%s, reason=\"%s\"  [%s]" % [
+		ground_there, refused == null, objects.size() == objs_before, reason,
+		"OK" if refused == null and objects.size() == objs_before
+			and reason.contains("farmland") and reason.contains(ground_there)
+		else "FAIL, the ground rule is not enforced by the placer"])
 
 	# AND AN OBJECT MUST BLOCK ITS OWN CELL. This is what proves the outdoor grid
 	# has been told placed objects are there at all.

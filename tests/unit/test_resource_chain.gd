@@ -31,6 +31,7 @@ func _init() -> void:
 	case("every skill named anywhere is a real skill", _skills_exist)
 	case("every job can be assigned and can rest", _jobs_are_usable)
 	case("every placeable id is a real object", _placeables_exist)
+	case("a crop is refused on grass and allowed on farmland", _ground_rule)
 
 
 # ---------------------------------------------------------------- the teeth
@@ -163,6 +164,38 @@ func _placeables_exist() -> void:
 		CozyObjectDefs.PLACEABLE.has("tree")
 		and CozyObjectDefs.PLACEABLE.has("rock")
 		and CozyObjectDefs.PLACEABLE.has("crop"))
+
+
+## What a thing needs from the ground it stands on. The farming chain
+## `Grass -> Soil -> Farmland` has existed since V2-11 and refuses to skip a step,
+## and a crop could still be dropped on virgin grass — this is the link, and it is
+## a row in `CozyObjectDefs` rather than a rule in whatever code places things.
+##
+## THE TWO DIRECTIONS ARE EACH OTHER'S TEETH. A `ground_problem` that always
+## refused would fail the allowed case; one that never refused would fail the
+## refused case. The third line is the control: an object that asks for nothing
+## must still be placeable anywhere, or "refuses" would just mean "broken".
+func _ground_rule() -> void:
+	var on_grass := CozyObjectDefs.ground_problem("crop", "grass")
+	var on_soil := CozyObjectDefs.ground_problem("crop", "soil")
+	var on_field := CozyObjectDefs.ground_problem("crop", "farmland")
+
+	is_true("a crop on grass is refused", on_grass != "")
+	is_true("and so is one on soil — the chain has a last step", on_soil != "")
+	is_true("the reason names what it wanted", on_grass.contains("farmland"))
+	is_true("and what it got", on_grass.contains("grass"))
+	is_true("and it says which thing was refused", on_grass.contains("Crop"))
+	eq("but on farmland it is allowed", on_field, "")
+
+	eq("an object that asks for no ground goes anywhere",
+		CozyObjectDefs.ground_problem("chest", "grass"), "")
+	eq("and the same for a tree", CozyObjectDefs.ground_problem("tree", "sand"), "")
+
+	# So the rule is not vacuous: something has to actually be constrained, or
+	# every line above would pass on a table that constrains nothing.
+	var constrained := CozyObjectDefs.constrained_ids()
+	is_true("something is constrained", constrained.size() > 0)
+	is_true("and the crop is one of them", constrained.has("crop"))
 
 
 # ---------------------------------------------------------------- helpers
