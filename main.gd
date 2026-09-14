@@ -346,6 +346,7 @@ func _ready() -> void:
 	# this the terrain gate (doc #12) would refuse the very first wall.
 	_prepare_starter_plot()
 	_prepare_crop_ground()
+	_paint_demo_path()
 	_build_ground()
 
 	# The building system owns BuildingState and generates every wall view from
@@ -860,6 +861,33 @@ func _place_resource_nodes() -> void:
 ## which is the property `farming chain` asserts. A plot drawn as farmland over
 ## grass would till nothing at all, and the crops would then be refused by
 ## `ground_problem` — correctly, and with a reason that said why.
+## A winding path, so the dual-grid corners have something to round.
+##
+## A RECTANGLE WOULD NOT SHOW THE TECHNIQUE, and that is why the field looked
+## like it had none. Every corner of a rectangle is a right angle on a cell
+## boundary, and the rounding only happens where a boundary TURNS — a straight
+## run has a neighbour in the same material on both sides of the centre, so its
+## corner test fails by design. A winding path turns constantly.
+##
+## Painted with CLEAR rather than a new material, because a path through grass is
+## what a villager would wear into the ground and it needs no vocabulary of its
+## own. Several overlapping brush strokes rather than one polygon: the shape
+## should be lumpy, and a polygon would put back the straight runs this exists to
+## avoid.
+func _paint_demo_path() -> void:
+	if terrain == null:
+		return
+	var route := [
+		Vector2(6.2, -3.2), Vector2(8.4, -4.6), Vector2(10.8, -4.2),
+		Vector2(12.6, -2.2), Vector2(12.2, 0.6), Vector2(13.4, 3.2),
+		Vector2(11.6, 5.8), Vector2(9.0, 7.2), Vector2(6.2, 8.6),
+		Vector2(3.0, 9.4), Vector2(-0.6, 8.2),
+	]
+	for p in route:
+		terrain.apply_intent(CozyTerrainIntent.clear_brush(p, 0.85))
+	_rebuild_terrain_surface()
+
+
 func _prepare_crop_ground() -> void:
 	if terrain == null:
 		return

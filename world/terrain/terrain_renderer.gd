@@ -33,6 +33,12 @@ const TEXTURE_METRES := 1.0
 ## How much the per-cell grain moves the albedo. Narrow on purpose.
 const GRAIN := 0.09
 
+## How far a dual-grid region's corner is cut back where its boundary turns, as a
+## fraction of a cell. Set from here rather than left to the shader, for the same
+## reason every other uniform is: a value that lives only inside a shader is a
+## value this side cannot assert about and cannot switch off in a hurry.
+const ROUNDING := 0.28
+
 ## The chunk's placement height. Vertices are displaced around it, so flat
 ## terrain renders exactly at this y and dug terrain below it.
 const SURFACE_Y := 0.0
@@ -201,6 +207,7 @@ func _make_ground_material() -> ShaderMaterial:
 	mat.set_shader_parameter("cell_metres", CELL_SIZE)
 	mat.set_shader_parameter("texture_metres", TEXTURE_METRES)
 	mat.set_shader_parameter("grain", GRAIN)
+	mat.set_shader_parameter("rounding", ROUNDING)
 	return mat
 
 

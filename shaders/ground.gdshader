@@ -56,6 +56,12 @@ uniform float texture_metres = 1.0;
 // purpose: this is what stops a large field reading as flat paint.
 uniform float grain = 0.09;
 
+// How far a region's corner is cut back at the display tile's centre, as a
+// fraction of a cell. This is the whole technique in one number: zero turns it
+// off, and a value above about 0.5 stops reading as a corner and starts reading
+// as a hole.
+uniform float rounding = 0.28;
+
 varying vec3 chunk_local;
 
 // The four quadrants of a display tile, in the order the mask bits mean them.
@@ -104,14 +110,27 @@ void fragment() {
 	int bit = QUAD_TL << (rel.y * 2 + rel.x);
 
 	// -------------------------------------------------------------------
-	// THE LAYERS, lowest material index first, so the LAST one to claim the
-	// fragment wins — the order a mesh would have drawn them in, without a mesh.
+	// WHICH MATERIAL PAINTS THIS FRAGMENT.
 	//
-	// A material claims a fragment when it is present in the quadrant the
-	// fragment occupies. That is the corner rule: near a corner a fragment can be
-	// standing in a cell whose material is NOT what a higher-priority neighbour
-	// puts there, and the neighbour takes it — which is what curves the boundary
-	// instead of stepping around it.
+	// The layer that wins is the highest-priority material present in the
+	// fragment's own quadrant — which sounds like it must always be the
+	// fragment's own cell, and ON A STRAIGHT BOUNDARY IT IS. That is not a bug:
+	// a boundary between two materials runs along a cell edge whether you draw
+	// it per cell or per tile, and the cell map is the truth.
+	//
+	// WHAT MAKES IT A DUAL GRID IS THE ROUNDING, and it took a challenge from
+	// Willow to see that this file was not doing it. An earlier version tested
+	// `mask & bit` in the loop and drew nothing but the cell map — a no-op that
+	// looked exactly like the feature it replaced.
+	//
+	// The rounding is a CUT, not an offset. Where a layer's region TURNS at the
+	// tile's centre — it occupies this quadrant but neither of the two across the
+	// centre's edges — its corner is inside the radius, and the fragment there
+	// takes the quadrant DIAGONALLY opposite instead. The material on the other
+	// side of the turn shows through, and the boundary curves instead of stepping.
+	//
+	// A straight run never turns, so it never rounds: both of its centre-edges
+	// have a neighbour in the same material, and the corner test fails.
 	int chosen = -1;
 	for (int m = 0; m < MAX_MATERIALS; m++) {
 		if (m >= material_count) {
@@ -130,10 +149,33 @@ void fragment() {
 	// A fragment no layer claimed would be a hole in the ground. It cannot happen
 	// — the fragment's own cell always has a material and that material is always
 	// present in its own quadrant — but a hole is worth a fallback rather than a
-	// gamble, and a magenta one is visible rather than subtle.
+	// gamble.
 	vec4 own = texelFetch(control, cell, 0);
 	if (chosen < 0) {
 		chosen = int(own.r * 255.0 + 0.5);
+	}
+
+	// The turn, measured from the DISPLAY TILE'S centre — the corner all four
+	// quadrants share, and therefore exactly where two materials meet.
+	vec2 tile_pos = cell_pos - (vec2(corner) - vec2(0.5));
+	if (distance(tile_pos, vec2(0.5)) < rounding) {
+		// The two quadrants across this one's centre-edges.
+		int across_h = (bit == QUAD_TL || bit == QUAD_BL) ? bit << 1 : bit >> 1;
+		int across_v = (bit == QUAD_TL || bit == QUAD_TR) ? bit << 2 : bit >> 2;
+		int wins = 0;
+		if (q0 == chosen) { wins |= QUAD_TL; }
+		if (q1 == chosen) { wins |= QUAD_TR; }
+		if (q2 == chosen) { wins |= QUAD_BL; }
+		if (q3 == chosen) { wins |= QUAD_BR; }
+		if ((wins & across_h) == 0 && (wins & across_v) == 0) {
+			// The region turns here, so its corner is cut back to the radius and
+			// the diagonal quadrant — the material it turns away from — shows.
+			int opposite = bit ^ (QUAD_TL | QUAD_TR | QUAD_BL | QUAD_BR);
+			if (opposite == QUAD_TL) { chosen = q0; }
+			else if (opposite == QUAD_TR) { chosen = q1; }
+			else if (opposite == QUAD_BL) { chosen = q2; }
+			else { chosen = q3; }
+		}
 	}
 
 	// CONTINUOUS ACROSS THE WHOLE CHUNK, not restarted per tile: the texture
