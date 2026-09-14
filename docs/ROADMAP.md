@@ -339,15 +339,23 @@ Stated plainly so it is not rediscovered later.
    them — so pressing F9 while a resident is working can hand `_finish_work()`
    a freed node. Nothing today does, which is why this is debt and not a bug.
    The fix is now direct: store the id, re-resolve through the registry.
-13. **The §45 live production chain has NO assertion** (2026-09-14). The resident
-    no longer gets stuck — that is measured, `stuck` went from ~700 frames of a
-    non-zero value to 0 across all 4500 — but the check that used to prove wheat
-    reaches the chest and bread comes out
-    (`production chain ran live: chest wheat 8 of 8, chest bread 0`) **is no
-    longer in the tree**; `_check_production` is mechanical. So "the stall is
-    gone" is measured and "the chain runs" is not, and the two are not the same
-    claim. **The next card is to make that check live again, with an assertion,
-    before debt 22 is written off.**
+13. ~~**The §45 live production chain has no assertion**~~ — **closed 2026-09-15,
+    and the debt was misdiagnosed.** The note it replaces said the chain stayed
+    untouched (`chest wheat 8 of 8, chest bread 0`). It was read at frame 900 —
+    **the resident's first withdrawal is at frame 1372**. The chain ran the whole
+    time, including under the configuration that note was written about.
+
+        production chain ran live: chest wheat 8 -> 6, bread 0 -> 1, 4 job(s)  [OK]
+
+    The assertion requires BOTH legs, and `bread > 0` alone is not evidence: the
+    resident spawns with a larder of three loaves and `_haul` deposits before it
+    withdraws, so a world whose chest starts EMPTY still ends with bread in it.
+    The first version of the check passed on exactly that world. See
+    `docs/INVARIANTS.md`, "Firing too EARLY reports 'broken'".
+
+    **The stall and the chain turned out to be independent**: reverting the
+    navigation clearance and the landing widening together reproduces the original
+    stall exactly and the chain still completes four jobs.
 
 ---
 

@@ -154,6 +154,20 @@ const MIN_WALL_LEN := 0.5
 const AUTOPILOT_DONE_FRAME := 420
 const NPC_CHECK_FRAME := 900
 
+## When §45's live chain gets read.
+##
+## Later than `NPC_CHECK_FRAME` by design: the chain's first transfer was measured
+## at frame 1372, so judging it at 900 read a chest the resident had not reached
+## yet and called a working chain broken.
+##
+## ⚠️ AND THE CEILING IS NOT `--quit-after`. `--quit-after 4500` reaches physics
+## frame **1883**, not 4500 — measured, and stable across runs on this machine.
+## The two counters are not the same counter, and a stage numbered past the real
+## ceiling never fires at all: the run reports `pending=production_chain` and the
+## self-check's own schedule guard turns red. 1700 sits between the first transfer
+## (1372) and that ceiling (1883) with room either side.
+const PRODUCTION_CHAIN_FRAME := 1700
+
 const DEBUG_PHYSICS_PROBE := false
 
 ## Tools, grouped by what the OPERATION is.
@@ -193,6 +207,11 @@ const TOOL_GROUPS: Array = (
 ## only ever runs inside an assertion is the "declared with no consumer" shape
 ## this project has already paid for three times.
 const NPC_JOB := "cook"
+
+## The starter sack in the chest, and the baseline the live chain is measured
+## against. One constant, used both to fill the chest and to judge it — two
+## numbers that have to agree are two numbers that will stop agreeing.
+const STARTER_WHEAT := 8.0
 
 ## The flat list the HOTKEYS index, and it MUST equal `TOOL_GROUPS` flattened.
 ##
@@ -253,6 +272,10 @@ var room_graph: CozyRoomGraph = null
 var world_navigator: CozyWorldNavigator = null
 var local_nav: CozyLocalNav = null
 var _nav_by_room: Dictionary = {}
+
+## What the chest held when the world was built, so §45's live chain is judged
+## against the world it actually got rather than against a constant.
+var _starter_chest: Dictionary = {}
 ## Per-floor room cache, so an edit only re-derives its own floor (doc #33).
 var _rooms_by_floor: Dictionary = {}
 
@@ -475,10 +498,24 @@ func _build_self_check() -> void:
 	self_check.add("live_rebuild", AUTOPILOT_DONE_FRAME, _run_live_rebuild_test,
 		func() -> bool: return BUILDING_ENABLED)
 	self_check.add("npc_work", NPC_CHECK_FRAME, _check_npc_work)
+	# LATE, and later than `npc_work` on purpose. The chain needs the resident to
+	# walk to the chest, come back, work, and walk there again; the FIRST transfer
+	# measured on 2026-09-14 was at frame 1372, so a check at 900 read a chest the
+	# resident had not touched yet and called a working chain broken. A stage that
+	# fires before its subject exists is the same failure as a probe that fires at
+	# the wrong moment, one level up.
+	self_check.add("production_chain", PRODUCTION_CHAIN_FRAME,
+		_check_production_chain_live)
 	# Last, so it observes every stage above it. It is itself a stage, which is
 	# what keeps a deliberately short run (`--quit-after 400`) honest: the report
 	# simply never fires rather than failing on stages the run could not reach.
-	self_check.add("schedule", 1600, _check_self_check)
+	# The schedule guard asserts that every registered stage RAN, so it cannot
+	# fire before the latest of them. It sat at a hard 1600 and the moment a stage
+	# was registered past that, the guard reported it pending and turned red on a
+	# run where everything had in fact run — the check was measuring its own
+	# position, not the schedule. Derived from the last stage now, so adding one
+	# later cannot leave this behind again.
+	self_check.add("schedule", PRODUCTION_CHAIN_FRAME + 60, _check_self_check)
 
 
 # ---------------------------------------------------------------- environment
@@ -832,7 +869,12 @@ func _place_initial_furniture() -> void:
 	# standing at an empty chest.
 	var chest := _place_object("chest", 6.6, 1.0, 0)
 	if chest != null and chest.container != null:
-		chest.container.inventory.add("wheat", 8.0)
+		chest.container.inventory.add("wheat", STARTER_WHEAT)
+		# What the chain gets measured AGAINST — captured here, rather than
+		# compared against the constant above. `STARTER_WHEAT` is what this line
+		# puts in; the check has to know what actually ARRIVED, or a world that
+		# starts empty reads as "8 - 0, so the resident took some".
+		_starter_chest = chest.container.inventory.items.duplicate()
 	# Two campfires, so the self-check can prove their effects do not animate in
 	# lockstep (doc E.21): same definition, different phase.
 	_place_object("campfire", -2.0, 5.0, 0)
@@ -3088,21 +3130,6 @@ func _check_npc_work() -> void:
 	var ok := npc.completions > 0
 	print("[cozyv2] npc completed %d job(s), state=%s  [%s]" % [
 		npc.completions, npc.last_status, "OK" if ok else "FAIL, never finished work"])
-	# §45's live chain is NOT asserted here, and that is the honest position.
-	#
-	# The machinery is in and asserted mechanically in `_check_production`, and
-	# the legs fire: the resident's `want` is `store` for long stretches because
-	# it lacks inputs and the larder has them. What does not happen is the TRIP.
-	# It leaves `(3.57, 0, 3.09)` for a 13-waypoint route to a chest that is
-	# three waypoints away from its spawn, and spends ten game hours there with
-	# `stuck` climbing to 1.5-3.0, replanning and never arriving. Both ends of the
-	# chain therefore stay untouched: chest wheat 8 of 8, chest bread 0.
-	#
-	# Recorded as a debt rather than asserted around. An assertion written to pass
-	# on that evidence would be measuring the wrong thing — which this check
-	# already did twice before the cause was found (once because two earlier
-	# checks were emptying the chest, once because the probe was incrementing the
-	# counter it read).
 	_check_npc_state()
 	_check_schedule_and_needs()
 	# Parked with the house. This one is about walking AROUND a building: the
@@ -3712,6 +3739,66 @@ func _check_container() -> void:
 	npc.npc_state.job_id = job_before
 	c.inventory.items = chest_before
 	pack.items = pack_before
+
+
+## §45's live chain, end to end — the one question `_check_production` cannot
+## answer: did the goods actually MOVE?
+##
+## That check swaps in a probe state and calls `_produce()` directly, so it would
+## pass in a world with no resident, no chest and no navigation. This one asks the
+## world.
+##
+## IT WAS DELIBERATELY NOT WRITTEN ON 2026-09-14, and the note it left behind in
+## `_check_npc_work` is the reason this project writes notes: an assertion written
+## to pass on that evidence would have been measuring the wrong thing. The chain
+## was stuck — a resident leaving for a 13-waypoint route to a chest three
+## waypoints away, spending ten game hours with `stuck` climbing to 3.0 and never
+## arriving — and `_check_production` was green throughout, because the arithmetic
+## was never what was broken.
+##
+## The cause was the navigation grid routing the resident as a POINT (see
+## `docs/INVARIANTS.md`). With that fixed the honest assertion is available, and it
+## is a different animal from the mechanical one: bread in the chest can only have
+## got there by a resident withdrawing wheat, baking it, and carrying it back.
+##
+## Reading the chest is safe because `_check_container` puts back exactly what it
+## found — "Leave the world exactly as it was found" — so anything different is
+## the chain's doing and not a check's. That was one of the two ways this
+## assertion was got wrong before, so it is written down rather than trusted.
+func _check_production_chain_live() -> void:
+	var chest := _first_object("chest")
+	if chest == null or chest.container == null:
+		print("[cozyv2] production chain ran live: no chest to read  [FAIL]")
+		return
+
+	var wheat := chest.container.inventory.count("wheat")
+	var bread := chest.container.inventory.count("bread")
+	var wheat_start := float(_starter_chest.get("wheat", 0.0))
+	var bread_start := float(_starter_chest.get("bread", 0.0))
+	var carried := 0.0
+	if npc != null and npc.npc_state != null:
+		carried = npc.npc_state.inventory.count("wheat") \
+			+ npc.npc_state.inventory.count("bread")
+
+	# BOTH legs, and the wheat leg is the one that cannot be faked.
+	#
+	# `bread > 0` alone is NOT evidence, and this was measured rather than
+	# assumed: the resident spawns with a starter larder of three loaves
+	# (`_build_characters`), `_haul` deposits what it carries before it withdraws
+	# anything, so a world whose chest starts EMPTY still ends with bread in it.
+	# The first version of this check asserted `bread > 0` and passed on exactly
+	# that world — a check that agreed with a chain which had never run.
+	#
+	# Wheat leaving the chest cannot be produced that way: an empty chest has no
+	# wheat to leave, and the comparison is against what the chest actually held
+	# rather than against the constant that was supposed to fill it.
+	var withdrew := wheat < wheat_start - 0.0001
+	var delivered := bread > bread_start + 0.0001
+	print("[cozyv2] production chain ran live: chest wheat %.0f -> %.0f, bread %.0f -> %.0f, carrying %.0f, %d job(s)  [%s]" % [
+		wheat_start, wheat, bread_start, bread, carried, npc.completions,
+		"OK" if withdrew and delivered else
+		"FAIL, the chain did not run: took materials=%s brought goods back=%s" % [
+			str(withdrew), str(delivered)]])
 
 
 ## §45's production chain, mechanically.

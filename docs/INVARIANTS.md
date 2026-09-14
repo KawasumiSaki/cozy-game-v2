@@ -782,3 +782,50 @@ One probe, one session, three attempts at timing, all three wrong:
 **A probe that fires at the wrong moment does not report "unknown". It reports
 "fine".** Three times in one session is not bad luck; it is what happens when the
 trigger is chosen by reasoning rather than measured.
+
+## Firing too EARLY reports "broken", and that is the same mistake facing the other way
+
+The same wrong-moment fault, one level up and with the opposite verdict.
+
+`_check_npc_work` carried a note explaining why §45's live chain was not asserted:
+the resident "spends ten game hours there with `stuck` climbing to 1.5-3.0 ...
+Both ends of the chain therefore stay untouched: **chest wheat 8 of 8, chest bread
+0**." That observation was read off a run before the resident had done anything.
+
+    first transfer the resident makes        frame 1372
+    where the chest was read                frame  900
+
+The chain runs. It ran the whole time, including under the configuration the note
+was written about. **A check that fires before its subject exists does not report
+"not yet"; it reports "broken", and the note was recorded as a debt for it.**
+
+The first version of the replacement check made the SAME mistake at frame 900 and
+reported `withdrew=false delivered=false` on a working chain. The second version
+at frame 1700 reports `chest wheat 8 -> 6, bread 0 -> 1, 4 job(s)`.
+
+**Two more things came out of writing it, and both were measured:**
+
+- **`bread > 0` in the chest is NOT evidence the chain ran.** The resident spawns
+  with a starter larder of three loaves (`_build_characters`), and `_haul` deposits
+  what it carries BEFORE it withdraws anything. So a world whose chest starts
+  EMPTY still ends with bread in it — and the first version of the check passed on
+  exactly that world, agreeing with a chain that had never run. What cannot be
+  produced that way is wheat LEAVING the chest, so the assertion requires both
+  legs, and compares against what the chest actually held rather than against the
+  constant that was supposed to fill it.
+- **The stall and the chain are independent.** Reverting the clearance and the
+  landing widening together reproduces the original stall exactly
+  (`stuck` 3.0 x82, 1.4 x34, 1.2 x30 ...) **and the chain still completes four
+  jobs**. The stall was real; it was never what stopped the production chain.
+
+## `--quit-after` is not a frame budget
+
+`--quit-after 4500` reaches physics frame **1883**, not 4500 — measured, and
+stable across runs. A self-check stage numbered past that ceiling never fires at
+all, and the run reports `pending=<stage>` and turns the schedule guard red.
+
+Worse, the two counters are not fixed relative to each other: `--quit-after`
+counts main-loop iterations and the physics frame advances with wall-clock, so a
+faster machine reaches FEWER physics frames before quitting. A stage's frame
+number is therefore a budget against an unknown ceiling, and the honest place for
+a late stage is one measured against the real one.
