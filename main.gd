@@ -339,6 +339,11 @@ func _build_self_check() -> void:
 	# trying and failing for a while, which takes in-game minutes to produce.
 	self_check.add("npc_pathing_probe", 1000, _probe_npc_pathing,
 		func() -> bool: return _has_arg("--cozy-probe-npc-pathing"))
+	# A STAGE, not a _report() check, and that is not a style choice: a physics
+	# ray in _ready() sees bodies the physics server has not positioned yet. This
+	# check first ran from _report() and reported a 0.5 m ray hitting a table at
+	# (2, 3, 2) — the node's position, not the body's.
+	self_check.add("outdoor_route", 180, _check_outdoor_route_is_walkable)
 	self_check.add("entity_registry", 160, _check_entity_registry)
 	self_check.add("outline", 1500, _check_outline_build)
 	# Gated on BUILDING, not on the house. This test adds a dividing wall at
@@ -949,6 +954,22 @@ func _build_outdoor_nav() -> void:
 ## project builds, conservative for a diagonal one. Over-blocking is the safe
 ## direction — an agent walking a slightly longer way is a nuisance, an agent
 ## walking through a wall is a defect.
+##
+## THE PARTS ARE ADDED SEPARATELY, ON PURPOSE, and this is worth reading before
+## changing: the call below deliberately uses the STATIC helper, which returns
+## only the stairwell, and walls, slabs and objects are then appended by hand.
+## A room's grid instead goes through `_obstacles_on_floor`, which folds the
+## objects in for it.
+##
+##   `_static_obstacles_on_floor(f)`  -> stairwell only
+##   `_obstacles_on_floor(f)`         -> the above, PLUS every object on floor f
+##
+## READ THE WHOLE FUNCTION BEFORE "FIXING" THAT. On 2026-09-14 the first line was
+## read, the objects were declared missing, and switching the helper made them
+## arrive twice — thirteen duplicate rects, an obstacle count that went 23 to 36,
+## and no behaviour change at all, because the loop at the bottom had been adding
+## them the whole time. Mutation testing is what exposed it: reverting the
+## "fix" turned nothing red.
 func _outdoor_obstacles() -> Array:
 	var out: Array = _static_obstacles_on_floor(0)
 
@@ -1887,10 +1908,36 @@ func _check_resource_chain() -> void:
 		# and "more than zero" was the second thing mutation testing caught
 		# here: putting one tree out of the world left the count at 2 and the
 		# check green.
+
 		print("[cozyv2] resource '%s' for the %s: %d point(s) in the world, %d standable  [%s]" % [
 			want, job, found, standable,
 			"OK" if found > 0 and standable == found
 			else "FAIL, %d of %d point(s) have nowhere to stand" % [found - standable, found]])
+
+	# AND AN OBJECT MUST BLOCK ITS OWN CELL. This is what proves the outdoor grid
+	# has been told placed objects are there at all.
+	#
+	# The route-based version of this could not tell: A* produced IDENTICAL
+	# waypoints whether or not a tree was an obstacle, so a mutation that put the
+	# grid back to walls-only turned nothing red. Naming the collider a route hit
+	# was what made the other bug findable; asking the grid directly is what makes
+	# this one.
+	#
+	# The room grids have always been told (`_obstacles_on_floor` adds objects);
+	# the outdoor grid went through `_static_obstacles_on_floor`, which does not.
+	var solid := 0
+	var on_floor := 0
+	for o in objects:
+		if not is_instance_valid(o) or o.floor_index != 0:
+			continue
+		on_floor += 1
+		var oc := outdoor.world_to_cell(Vector2(o.global_position.x, o.global_position.z))
+		if not outdoor.is_walkable(oc):
+			solid += 1
+	print("[cozyv2] objects block their own cells: %d of %d on floor 0  [%s]" % [
+		solid, on_floor,
+		"OK" if on_floor > 0 and solid == on_floor
+		else "FAIL, an object is see-through to navigation"])
 
 	# And the job that does the work must name a point the world actually has —
 	# the table check cannot tell a name from a place.
@@ -4383,6 +4430,13 @@ func _probe_occlusion_at(label: String) -> void:
 ## the class of the PARENT is what says whether this was a wall, a slab or a roof.
 func _describe_collider(c: Object) -> String:
 	var p: Node = c.get_parent()
+	# Placed objects are not "fadables" — occlusion has no business fading a
+	# tree — so they are named here rather than in `_describe_fadable`. Without
+	# this a hit object reported as `@Node3D@601`, which is a node's auto-name and
+	# says nothing; naming it is what turned "3 legs through something" into a
+	# one-word difference between two obstacle helpers.
+	if p is CozyWorldObject:
+		return "object %s (%s)" % [p.id, p.def_id]
 	var d := _describe_fadable(p)
 	return d if d != "?" else "unidentified collider at %s" % c.get_path()
 
@@ -4563,6 +4617,79 @@ func _check_outdoor_nav() -> void:
 		"OK" if path.size() > 0 and inside == 0 and walked > straight * 1.15 else "FAIL"])
 	print("[cozyv2] outdoor grid: %d cell(s) at %.2f m, %d obstacle(s)" % [
 		nav.blocked_cell_count(), OUTDOOR_CELL, nav.obstacle_count()])
+
+
+## The same question, asked of the NAVIGATOR rather than of the grid.
+##
+## `_check_outdoor_nav` above proves the outdoor grid routes around the house.
+## Until 2026-09-14 that proof was worth nothing: `_local()` returned a straight
+## line for EVERY outdoor target and never consulted the grid, so the check was
+## green while the behaviour it describes never happened. Every reader of that
+## grid was a check.
+##
+## So this asks what a resident asks — plan me a route from here to there — and
+## then looks for geometry along it, the way the pathing probe does. A leg that
+## hits something is a leg the body cannot follow.
+func _check_outdoor_route_is_walkable() -> void:
+	if world_navigator == null:
+		print("[cozyv2] outdoor navigator: NOT BUILT  [FAIL]")
+		return
+
+	# Each pair has the house between its ends, so a path that ignores the
+	# building is a path through it.
+	var pairs := [
+		["front -> back", Vector3(3.25, 0.0, -3.0), Vector3(-3.0, 0.0, 8.0)],
+		["west  -> east", Vector3(-3.0, 0.0, 3.0), Vector3(11.0, 0.0, 3.0)],
+		["south -> north", Vector3(4.0, 0.0, -3.5), Vector3(4.0, 0.0, 9.0)],
+	]
+	var space := get_world_3d().direct_space_state
+
+	# THE CANARY. A cast that provably crosses a solid wall, so that "no leg hit
+	# anything" can be told apart from "the casts saw nothing at all". Without it
+	# this check reported 0 crossings for a route that plainly walks through the
+	# house — the third assertion today that could not fail, and the reason the
+	# canary is here rather than in a comment.
+	var probe := PhysicsRayQueryParameters3D.create(
+		Vector3(1.5, 0.9, -1.5), Vector3(1.5, 0.9, 1.5))
+	probe.collide_with_areas = false
+	var canary := not space.intersect_ray(probe).is_empty()
+	print("[cozyv2] outdoor navigator canary (must hit the south wall): %s  [%s]" % [
+		canary, "OK" if canary else "FAIL, casts see no geometry — this check proves nothing"])
+
+	for pair in pairs:
+		var from: Vector3 = pair[1]
+		var to: Vector3 = pair[2]
+		var path := world_navigator.plan(from, to)
+		# THE FIRST LEG IS NOT IN THE PATH. `plan()` returns the waypoints the
+		# agent has yet to reach and does NOT include where it already is, so a
+		# path of one waypoint has ONE leg, not zero. Counting only between
+		# consecutive waypoints is how this check first reported "0 leg(s) through
+		# geometry" for a route that walks straight through the house — the
+		# canary above is what made the difference visible.
+		var prev := from
+		var crossings := 0
+		var first_hit := ""
+		for i in path.size():
+			var q := PhysicsRayQueryParameters3D.create(
+				prev + Vector3(0.0, 0.9, 0.0), path[i] + Vector3(0.0, 0.9, 0.0))
+			q.collide_with_areas = false
+			if npc != null:
+				q.exclude = [npc.get_rid()]
+			var hit := space.intersect_ray(q)
+			if not hit.is_empty():
+				crossings += 1
+				if first_hit == "":
+					first_hit = "%s at leg %d (%s -> %s)" % [
+						_describe_collider(hit["collider"]), i,
+						Vector2(prev.x, prev.z), Vector2(path[i].x, path[i].z)]
+			prev = path[i]
+		if pair[0] == "through the grove":
+			print("[cozyv2] grove waypoints: ", path)
+		print("[cozyv2] outdoor navigator %s: %d waypoint(s), %d leg(s) through geometry%s  [%s]" % [
+			pair[0], path.size(), crossings,
+			("" if first_hit == "" else ", first: " + first_hit),
+			"OK" if not path.is_empty() and crossings == 0
+			else "FAIL, the route walks through something"])
 
 
 func _check_room_at(pos: Vector3, expected: String) -> void:

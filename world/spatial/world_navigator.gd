@@ -72,11 +72,28 @@ func plan(from: Vector3, to: Vector3) -> PackedVector3Array:
 	return out
 
 
-## Local leg. Outdoors has no grid, so it falls back to walking straight.
+## Local leg: the waypoints from `from` to `to` inside ONE space.
+##
+## THE OUTDOORS IS LOOKED UP LIKE ANY ROOM. It used to be special-cased to a
+## straight line (`if room_id == OUTDOORS: out.append(to)`), and that one line
+## meant the outdoor navigation grid was built, asserted, handed to this class —
+## and never read. Every reader of it was a self-check, and `_check_outdoor_nav`,
+## which proves the grid routes around the house, was measuring the grid rather
+## than the navigator. So the check was green while a resident walking from the
+## front of the house to the back walked THROUGH it.
+##
+## Measured 2026-09-14, before the fix, by asking the navigator for three routes
+## with the house between their ends: all three were one waypoint and one leg
+## through geometry. After: none. See `docs/INVARIANTS.md`, "A navigation layer
+## that nothing consults is not a navigation layer".
+##
+## Note the fallback is still a straight line, and has to be: a target outside
+## the grid has no route, and standing still is worse. What changed is that the
+## grid gets asked FIRST.
 func _local(from: Vector3, to: Vector3, room_id: String) -> PackedVector3Array:
 	var out := PackedVector3Array()
-	if room_id == CozyRoomGraph.OUTDOORS or not nav_by_room.has(room_id):
-		out.append(to)
+	if not nav_by_room.has(room_id):
+		out.append(to)   # No grid for this space; let the agent try a straight line.
 		return out
 
 	var nav: CozyLocalNav = nav_by_room[room_id]
