@@ -1931,6 +1931,8 @@ func _report() -> void:
 	_check_save_load()
 	_check_assets()
 	_check_scatter()
+	_check_terrain_shader()
+	_check_terrain_control()
 	_check_terrain()
 	_check_farming_chain()
 	_check_terrain_surface()
@@ -2551,6 +2553,85 @@ func _check_farming_chain() -> void:
 		str(round_trip), str(stone_kept),
 		"OK" if rule_ok and round_trip and stone_kept
 			else "FAIL, farmland's build rule or the storage order is wrong"])
+
+
+## The ground draws through a shader now, and every way the pieces can fail to
+## meet is SILENT. A material array with too few layers samples layer 0 for the
+## material that is missing; a control texture of the wrong size has the index
+## fetched from a cell that is not the fragment's. Neither throws, neither
+## warns, and both look like an art decision.
+##
+## So the two numbers that have to agree are asserted against each other rather
+## than trusted to stay in step.
+func _check_terrain_shader() -> void:
+	if terrain_renderer == null:
+		print("[cozyv2] ground shader: NO RENDERER  [FAIL]")
+		return
+	var layers := terrain_renderer.material_layers()
+	print("[cozyv2] ground shader: %d layer(s) for %d material(s), drawn through it=%s  [%s]" % [
+		layers, CozyTerrainMaterials.ORDER.size(), terrain_renderer.draws_through_shader(),
+		"OK" if layers == CozyTerrainMaterials.ORDER.size()
+			and terrain_renderer.draws_through_shader()
+		else "FAIL, the ground and its material table disagree"])
+
+
+## The index the shader will fetch is the index of the cell.
+##
+## The control texture is read back and every cell compared, because it is the
+## one place the terrain system and the fragment shader meet. A control texture
+## writing the wrong byte draws every cell as the same material and nothing
+## anywhere says so — which mutation testing demonstrated by doing exactly that
+## and turning nothing red.
+## IT RUNS BEFORE ANY TERRAIN CHECK THAT EDITS THE GROUND, and that ordering is
+## the whole reason it is where it is. `_check_terrain` clears a 512-cell plot of
+## its own; a dirty chunk is rebuilt on the NEXT frame, so reading the control
+## texture back after that edit compares a texture against a state it was not
+## built from — 513 cells of "mismatch" that say nothing about the shader.
+##
+## Found by running it in the wrong place the first time. Terrain is authored,
+## then built, and anything that reads the built form has to run after the last
+## authoring step, not before the next one.
+func _check_terrain_control() -> void:
+	if terrain_renderer == null or terrain == null:
+		print("[cozyv2] ground control: NOT BUILT  [FAIL]")
+		return
+	var coords: Array = terrain_renderer.chunk_coords()
+	if coords.is_empty():
+		print("[cozyv2] ground control: no chunk to read  [FAIL]")
+		return
+
+	var cells := CozyTerrainChunk.CELLS
+	var wrong := 0
+	var read := 0
+	var kinds := {}
+
+	# EVERY CHUNK, not the first one. The first version checked `coords[0]`,
+	# which is a corner of the field that is entirely grass — so writing index 0
+	# into every cell of it was indistinguishable from writing the truth, and the
+	# mutation did not go red. A check on a sample with no variety is a check on
+	# nothing.
+	for coord in coords:
+		var img := terrain_renderer.control_image(coord)
+		var chunk: CozyTerrainChunk = terrain.chunks.get(coord, null)
+		if img == null or chunk == null:
+			print("[cozyv2] ground control: chunk %s unreadable  [FAIL]" % coord)
+			return
+		for lz in cells:
+			for lx in cells:
+				var want := CozyTerrainMaterials.index_of(chunk.material_id_at(lx, lz))
+				var got := int(round(img.get_pixel(lx, lz).r * 255.0))
+				read += 1
+				kinds[want] = true
+				if got != want:
+					wrong += 1
+
+	# AND THE SAMPLE HAS TO HAVE SOMETHING IN IT. Without this, a world of one
+	# material would report zero disagreements for the same reason the corner
+	# chunk did — and the number would look like coverage.
+	print("[cozyv2] ground control: %d cell(s) read back across %d chunk(s), %d material(s), %d disagreeing  [%s]" % [
+		read, coords.size(), kinds.size(), wrong,
+		"OK" if wrong == 0 and kinds.size() >= 2
+		else "FAIL, the shader would draw the wrong ground"])
 
 
 func _check_terrain() -> void:
