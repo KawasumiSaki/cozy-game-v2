@@ -331,6 +331,63 @@ Two mechanics that a tidy-up would undo:
   error code and stays quiet. Note that reverting this turns **no assertion red**
   — the only witness is `0 ERROR` in the log.
 
+## A check that passes for the wrong reason is worse than a skip
+
+When the demo house was parked (2026-09-14, `HOUSE_ENABLED` in `main.gd`), the
+self-check lost thirty-four assertions. Three of them did **not** go red. They
+kept printing `[OK]`, and that was the dangerous outcome:
+
+```
+npc plan ground->upstairs: 1 waypoints, crosses floor=true   [OK]
+route room_1_0   -> room_1_0   : (no route)                  [OK]
+opening shot at spawn: 0 opaque, 0 faded                     [OK]
+```
+
+The route planner had been asked to plan a route between two rooms that no
+longer exist, planned it in ONE waypoint, and still reported that it crossed a
+floor. The routing check expected "no route" and got one, because neither room
+was there. The opening shot found nothing opaque in front of the player, because
+there was nothing to be opaque.
+
+**Every one of those is true for a reason that has nothing to do with what the
+check is for.** A skip is legible: it says it did not run. A vacuous pass claims
+coverage it does not have. So when a subsystem is parked, the checks that measure
+it are parked with it — not left running to look green.
+
+The general test, before trusting any green: *would this assertion still pass if
+the thing it names were absent entirely?* If yes, it is measuring the absence,
+not the thing.
+
+## Parking must be reported, never silent
+
+Same change, and the reason it is a rule rather than a preference: with the house
+off the baseline went from 122 assertions to 89, and **89 looks exactly like 122
+except for the number**. A run that quietly measures less than it used to is the
+"green number that lies" this project has paid for repeatedly, so the parked
+checks are a **LIST that is printed when it is skipped**:
+
+```
+[cozyv2] house: PARKED, 12 check group(s) NOT RUN (HOUSE_ENABLED=false): rooms, ...
+```
+
+`_report_house()` holds `[name, callable]` pairs rather than a run of calls, so
+the same list is both the thing that runs and the source of the report. A count
+kept by hand beside the calls would drift the first time someone added a check,
+and it would drift silently — which is the whole failure mode.
+
+Two corollaries:
+
+- **The switch is verified in BOTH directions.** "Parked, not deleted" is a claim,
+  and claims are cheap: `false` gives 89 OK / 0 FAIL / 0 ERROR, `true` gives
+  123 OK / 0 FAIL / 0 ERROR. Both were run, in a scratch copy, before the change
+  was committed. A switch nobody has flipped back is not known to be a switch.
+- **The section that was parked is where the wrong questions get found.** Two
+  checks came out of this asking about the world rather than about their subject:
+  `save/load applied live` ended with `and building.state.stairs.size() > 0` —
+  asserting a stair EXISTS, next to four clauses that compare what went in with
+  what came out — and the context probe demanded at least one wall collider to
+  resolve. Both are now round trips or skips, which is strictly stronger.
+
 ## A per-frame refresh must be idempotent
 
 Anything that redraws every frame has to satisfy: `refresh()` called N times
@@ -468,8 +525,9 @@ log (`02-开发日志/游戏开发日志.md`).
 | 21 | Occlusion faded only the NEAREST blocker; the player stayed hidden indoors at all four camera angles (always behind a slab) | yaw sweep in the occlusion probe |
 | 22 | The locked camera sat on the far side of the house from the door — the opening shot was the back of the building | `opening shot at spawn` assertion |
 | 23 | `JSON.parse_string` printed on every malformed dungeon file, so refusing a bad file looked exactly like a broken build | mutation testing — see below |
+| 24 | `_check_building_state()` took `s.stairs[0]` outright: with no stair in the world it CRASHED rather than failing, and took its two neighbouring measurements with it | removing the demo house — the check died instead of reporting |
 
-**Twenty of the twenty-three were found by an assertion, not by looking at the
+**Twenty of the twenty-four were found by an assertion, not by looking at the
 screen.** Several were invisible in a still frame. That is the whole argument
 for the assertion discipline in `03-流程/更新方案.md`.
 

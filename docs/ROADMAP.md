@@ -94,6 +94,33 @@
 | V2-27 | Gameplay | ⬜ frozen by doc §82 |
 | V2-28 | World | ⬜ frozen |
 
+### The demo house is PARKED (2026-09-14)
+
+`const HOUSE_ENABLED := false` in `main.gd`. The house, both build tools, and the
+twelve check groups that measure the world's rooms, portals, routes, local
+navigation, openings, wall assembly, building state and roofs are off together —
+because they are not five systems that happen to need a wall. Rooms are DERIVED
+from the wall graph, portals are derived from openings, and the room graph and
+roofs are derived from the rooms; with no walls there is nothing to derive.
+
+**Parked, not deleted.** Verified both ways, in a scratch copy, before commit:
+
+```
+HOUSE_ENABLED = false  ->   89 OK / 0 FAIL / 0 ERROR  + a PARKED line naming
+                            the twelve groups that did not run
+HOUSE_ENABLED = true   ->  123 OK / 0 FAIL / 0 ERROR  (the house comes back whole)
+```
+
+The reason now is the settled loop being built: farming, mining and woodcutting on
+open ground. The furniture is **not** parked — the chest is where §45 stores and
+the bed is where the schedule sleeps, and both are placed independently of the
+house. The camera is deliberately untouched: yaw 180 was measured for a world that
+has that house, and with no house there is no evidence for any particular yaw, so
+it stays where it is rather than moving to a new guess.
+
+See `docs/INVARIANTS.md` — "A check that passes for the wrong reason is worse than
+a skip" and "Parking must be reported, never silent".
+
 ### Dungeon lane (opened 2026-09-12)
 
 Runs in parallel with the home lane and is deliberately **file-disjoint** from
