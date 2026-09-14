@@ -38,6 +38,28 @@ var fadables: Array = []   ## Anything exposing bodies() + set_fade()
 ## freed entry is skipped in silence.
 var fadable_source: Callable = Callable()
 
+## A STRUCTURAL reason to fade something, asked about every fadable before the
+## ray is cast. The callable takes the fadable and answers whether it should be
+## see-through because of WHERE it is.
+##
+## THE RAY CANNOT ANSWER THIS, and the probe measured why on 2026-09-14. Standing
+## on floor 1 of the house, `--cozy-probe-occlusion` reported ONE fadable on the
+## ray -- the roof -- while the floor's own south wall was untouched. The ray
+## passes through one of that wall's WINDOWS on the way to the player, so the
+## wall is not between them; but a wall with an opening in the line of sight is
+## still a wall, and the room behind it is still hidden.
+##
+## It is also the wrong question. The ray answers "what is between the camera and
+## the character"; Willow's rule is about the building -- everything ABOVE the
+## floor the resident is on, plus the wall on the camera's side of that floor.
+## A ceiling is not between the camera and the player when the camera is under
+## it, and no camera angle fixes that.
+##
+## A policy about the building belongs to whoever knows the building, so it is
+## supplied from outside rather than guessed at in here -- the same injection
+## `fadable_source` already uses.
+var structural_source: Callable = Callable()
+
 ## Fade geometry that blocks the OTHER characters too (NPCs).
 ##
 ## This defaults to FALSE, and that default is deliberate. With it on, a
@@ -134,9 +156,23 @@ func refresh() -> void:
 			if blocked.has(b):
 				hit_index = cause[b]
 				break
-		if hit_index >= 0:
-			_faded_by[w] = hit_index
-		w.set_fade(FADE_ALPHA if hit_index >= 0 else 1.0)
+		# ... and the structural rule is asked as well, because the two answer
+		# different questions and either can be the one that matters.
+		var structural := false
+		if hit_index < 0 and structural_source.is_valid():
+			structural = bool(structural_source.call(w))
+		# RECORDED FOR EITHER CAUSE, and that is not bookkeeping. The count is
+		# what the probe and the self-check read, so a fade that is not recorded
+		# is a fade the measurement says did not happen — which is exactly how
+		# this looked for an hour: the shader faded nine fadables and the probe
+		# reported two. A count that only knows about one of two causes is a count
+		# that lies about the other.
+		#
+		# Index 0 for a structural fade: it is for the followed character's view,
+		# which is what index 0 already means.
+		if hit_index >= 0 or structural:
+			_faded_by[w] = maxi(hit_index, 0)
+		w.set_fade(FADE_ALPHA if hit_index >= 0 or structural else 1.0)
 
 
 ## How many fadables are faded right now.

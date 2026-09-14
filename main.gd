@@ -1152,6 +1152,7 @@ func _build_camera() -> void:
 	# snapshot: a roof that follows its room left a freed node in this list and
 	# the live roof missing, so no roof ever faded.
 	occ.fadable_source = _current_fadables
+	occ.structural_source = _fade_structurally
 	occlusion = occ
 
 
@@ -1321,6 +1322,88 @@ func _end_drag() -> void:
 ##
 ## Stairs are deliberately absent: `CozyStair.set_fade()` takes an alpha and
 ## ignores it, so listing them would add a "fadable" that never fades.
+## The state behind a fadable, or null for one this rule has nothing to say
+## about. Mirrors the type checks `_describe_fadable` makes, because the fade
+## registry is deliberately generic and only these four kinds carry a floor.
+func _fadable_state(f: Object) -> Object:
+	if f is CozyWall:
+		return (f as CozyWall).state
+	if f is CozySlab:
+		return (f as CozySlab).state
+	if f is CozyStair:
+		return (f as CozyStair).state
+	if f is CozyRoof:
+		return (f as CozyRoof).state
+	return null
+
+
+## The floor the followed character is standing on, or -1 when they are outdoors.
+func _watched_floor() -> int:
+	if player == null or floor_system == null:
+		return -1
+	var r := floor_system.room_at(player.global_position)
+	return r.floor_index if r != null else -1
+
+
+## Should this piece of the building be see-through because of where it is?
+##
+## Willow, 2026-09-14: on the ground floor, everything above should be
+## transparent including the wall on this floor's camera side; on the first
+## floor, the roof and the camera-side wall.
+##
+## THE RULE ONLY APPLIES INDOORS, and that is a decision rather than an
+## oversight. Outside, "above my floor" is every wall of the house, and fading
+## them all would make the building disappear whenever the player walks past it —
+## which is a different request from seeing into the room you are standing in.
+func _fade_structurally(f: Object) -> bool:
+	var here := _watched_floor()
+	if here < 0:
+		return false
+	var st := _fadable_state(f)
+	if st == null:
+		return false
+
+	# Everything on a floor above the one the resident is standing on. This is
+	# the ceiling, the upper walls and the roof at once, and it is what makes a
+	# ground floor readable from a camera that is looking down at it.
+	if int(st.floor_id) > here:
+		return true
+
+	# And the wall on the camera's side of the resident, on their own floor:
+	# the one the camera is looking THROUGH to reach them.
+	#
+	# ONLY A WALL IS ASKED. A slab or a stair has no line to be on the wrong side
+	# of. The first version instead asked whether the state HAD `start` and `end`
+	# using GDScript's `in`, which does not answer that question for an Object —
+	# so every wall was declined and the rule did nothing at all while looking
+	# perfectly reasonable. Measured by running the probe: the fades were
+	# byte-for-byte the same as before the rule existed.
+	if int(st.floor_id) != here or not (f is CozyWall):
+		return false
+	return _camera_is_across(st)
+
+
+## Is the camera on the far side of this wall from the resident?
+##
+## A wall in plan is a segment; the camera and the resident are each on one side
+## of the line through it. Opposite sides means the wall is between them, and a
+## wall between the camera and the resident is a wall the player cannot see past
+## — whether or not the ray happens to find a piece of it.
+func _camera_is_across(st: Object) -> bool:
+	if camera == null or player == null:
+		return false
+	var a := Vector2(st.start.x, st.start.z)
+	var b := Vector2(st.end.x, st.end.z)
+	var mid := (a + b) * 0.5
+	var d := b - a
+	if d.length_squared() < 0.000001:
+		return false
+	var n := Vector2(-d.y, d.x)          # a normal to the wall, in plan
+	var cam := Vector2(camera.global_position.x, camera.global_position.z)
+	var who := Vector2(player.global_position.x, player.global_position.z)
+	return signf((cam - mid).dot(n)) != signf((who - mid).dot(n))
+
+
 func _current_fadables() -> Array:
 	var out: Array = []
 	out.append_array(building.wall_views)
@@ -2182,6 +2265,7 @@ func _report_house() -> void:
 		["roof follows its room", _check_roof_follows_room],
 		["outline guard", _check_outline_guard],
 		["npc route plan (upstairs)", _check_npc_route_plan],
+		["occlusion structure", _check_occlusion_structure],
 	]
 
 	if HOUSE_ENABLED:
@@ -4164,6 +4248,60 @@ func _check_vfx() -> void:
 ## far side of the house, the line of sight to a player standing outside really
 ## does pass through the roof, and fading it is correct. What must never happen
 ## is fading for a character the camera is not following.
+## The structural fade rule, measured where it applies.
+##
+## WHY THIS ASKS FOR THE TOTAL AND NOT FOR THE RAY. `_probe_occlusion_at` reports
+## "of the colliders on the camera-to-player ray, how many are faded" — and a
+## structural rule is invisible to that BY CONSTRUCTION, because the whole point
+## is to fade the pieces that are NOT on the ray. It was chased for several
+## rounds on that number: the renderer was fading nine fadables while the probe
+## said two, and the rule looked broken the whole time. A measurement has to be
+## of the thing the rule changes.
+##
+## It moves the player twice and puts them back, because the rule is about where
+## the resident is standing and there is no other way to ask.
+## `_probe_occlusion_sweep` already does the same thing for the same reason.
+func _check_occlusion_structure() -> void:
+	if occlusion == null or player == null or camera == null:
+		print("[cozyv2] occlusion structure: NOT BUILT  [FAIL]")
+		return
+
+	var kept := player.global_position
+
+	# Outdoors the rule is deliberately OFF: "above my floor" would be the whole
+	# house, and fading it every time the player walks past is a different
+	# request from seeing into the room they are standing in.
+	player.global_position = SPAWN_POINT
+	camera.snap_to_target()
+	occlusion.refresh()
+	var outside := occlusion.faded_count()
+
+	# COUNTED AFTER THE FIRST REFRESH, because `occlusion.fadables` is filled BY
+	# a refresh and is empty before one. The first version counted first and
+	# reported zero pieces above floor 0 while the very next line faded nine.
+	var above := 0
+	for w in occlusion.fadables:
+		var st := _fadable_state(w)
+		if st != null and int(st.floor_id) > 0:
+			above += 1
+
+	# Inside, everything above the resident is see-through, plus the wall on the
+	# camera's side of them.
+	player.global_position = Vector3(4.0, 0.2, 3.0)
+	camera.snap_to_target()
+	occlusion.refresh()
+	var inside := occlusion.faded_count()
+
+	player.global_position = kept
+	camera.snap_to_target()
+	occlusion.refresh()
+
+	print("[cozyv2] occlusion structure: %d fadable(s) above floor 0; outdoors=%d faded, indoors on floor 0=%d faded  [%s]" % [
+		above, outside, inside,
+		"OK" if above > 0 and outside == 0 and inside >= above
+		else "FAIL, what is above the resident is not being cleared"])
+
+
 func _check_occlusion() -> void:
 	if occlusion == null:
 		print("[cozyv2] occlusion: NOT BUILT  [FAIL]")
@@ -4731,12 +4869,11 @@ func _probe_occlusion_at(label: String) -> void:
 			opaque_n += 1
 			parts.append("%s -> OPAQUE, in `fadables` but did not fade" % what)
 
-	print("[cozyv2] probe %s | player=(%.1f,%.1f,%.1f) cam=(%.1f,%.1f,%.1f) ray=%d faded=%d opaque=%d  [%s]" % [
-		label,
+	print("[cozyv2] probe %s | TOTAL faded=%d of %d | player=(%.1f,%.1f,%.1f) ray=%d faded=%d opaque=%d  [%s]" % [
+		label, occlusion.faded_count(), occlusion.fadables.size(),
 		player.global_position.x, player.global_position.y, player.global_position.z,
-		from.x, from.y, from.z,
 		hits.size(), faded_n, opaque_n,
-		"CLEAR" if opaque_n == 0 else "PLAYER HIDDEN"])
+		"CLEAR" if opaque_n == 0 else "HIDDEN"])
 	if not parts.is_empty():
 		print("[cozyv2]   on the ray: %s" % ", ".join(parts))
 
