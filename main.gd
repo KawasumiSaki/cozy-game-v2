@@ -28,10 +28,39 @@ const HOUSE_W := 8.0
 const HOUSE_D := 6.0
 const WALL_T := 0.25
 
-const WELL_X0 := 4.5     ## Stairwell: the upper slab leaves a hole from here...
-const WELL_X1 := 7.0     ## ...to here. The ramp tops out at WELL_X1 and the
-                         ## remaining strip is a landing, so an agent arrives on
-                         ## level floor instead of stepping off into a wall.
+## What navigation keeps clear of everything solid: the agent's own radius.
+##
+## Read from the character rather than written down here, because the number that
+## matters is the COLLIDER's. A nav grid that disagrees with the collider is a
+## resident that walks at a gap and stops, which is what `test_local_nav.gd`
+## measured and what this constant exists to prevent.
+const NAV_CLEARANCE := CozyCharacter.CAPSULE_RADIUS
+
+## Half a wall, added for the ROOM POLYGON only. Room polygons run through wall
+## CENTRELINES (an 8 x 6 room measures 48.0 m2), so without it the grid's edge is
+## the middle of a wall and the collider disagrees about the rest of it.
+const NAV_WALL_REACH := WALL_T * 0.5
+
+## Stairwell: the upper slab leaves a hole from WELL_X0 to WELL_X1 in x, and from
+## WELL_Z0 to the south wall in z. The ramp tops out at WELL_X1 and the rest is a
+## landing, so an agent arrives on level floor instead of stepping off into a wall.
+##
+## BOTH VALUES MOVED WEST BY 1.0 m ON 2026-09-14, and the RUN IS UNCHANGED
+## (WELL_X1 - WELL_X0 is still 2.5 m, so the stair is still 50.2 degrees). What
+## changed is the landing: it was `HOUSE_W - WELL_X1` = 1.0 m, and navigation had
+## just learned to keep the agent's width clear. Half a wall (0.125) plus the
+## agent's radius (0.3) plus the cell the grown stairwell obstacle claims left
+## `walkable=false` — the stair topped out on floor nothing could stand on, and
+## the ONLY thing that noticed was a new assertion written for it.
+##
+##     npc plan ground->upstairs: 33 waypoints, crosses floor=true  [OK]   <- green
+##     landing beside the stairwell: 1.00 m of floor, walkable=false [FAIL]
+##
+## The old green was a straight-line fallback: `find_path` came back empty and
+## `_local()` handed the agent a bee-line, which is a navigator that has stopped
+## navigating while its assertion still says it crosses floors.
+const WELL_X0 := 3.5
+const WELL_X1 := 6.0
 const WELL_Z0 := 3.0
 
 ## Is the house part of the world?
@@ -435,6 +464,7 @@ func _build_self_check() -> void:
 	# check first ran from _report() and reported a 0.5 m ray hitting a table at
 	# (2, 3, 2) — the node's position, not the body's.
 	self_check.add("outdoor_route", 180, _check_outdoor_route_is_walkable)
+	self_check.add("landing", 190, _check_landing_is_walkable)
 	self_check.add("entity_registry", 160, _check_entity_registry)
 	self_check.add("outline", 1500, _check_outline_build)
 	# Gated on BUILDING, not on the house. This test adds a dividing wall at
@@ -1086,7 +1116,8 @@ func _rebuild_spatial(dirty: CozyDirtyRegion = null) -> void:
 		alive[r.id] = true
 		if full or floors.has(r.floor_index):
 			var nav := CozyLocalNav.new()
-			nav.build(r, _obstacles_on_floor(r.floor_index))
+			nav.build(r, NAV_CLEARANCE, _obstacles_on_floor(r.floor_index),
+				CozyLocalNav.CELL, NAV_WALL_REACH)
 			_nav_by_room[r.id] = nav
 	for id in _nav_by_room.keys().duplicate():
 		if not alive.has(id):
@@ -1116,7 +1147,9 @@ func _build_outdoor_nav() -> void:
 		Vector2(terrain.origin.x, terrain.origin.y + terrain.depth_m)])
 	var r := CozyRoom.new(CozyRoomGraph.OUTDOORS, 0, poly)
 	var nav := CozyLocalNav.new()
-	nav.build(r, _outdoor_obstacles(), OUTDOOR_CELL)
+	# No `wall_reach` outdoors: the house is already an obstacle rect out here, so
+	# there is no centreline polygon standing in for a wall.
+	nav.build(r, NAV_CLEARANCE, _outdoor_obstacles(), OUTDOOR_CELL)
 	_nav_by_room[CozyRoomGraph.OUTDOORS] = nav
 
 
@@ -2045,6 +2078,8 @@ func _process(delta: float) -> void:
 	if _is_headless:
 		player.set_move_dir(_autopilot_dir())
 		_run_headless_stages()
+		if _has_arg("--cozy-probe-npc-pathing"):
+			_watch_for_a_stuck_resident(delta)
 	else:
 		if build_mode:
 			_update_drag()
@@ -4494,6 +4529,66 @@ func _check_self_check() -> void:
 ##   D  the point was chosen by straight-line distance and is not reachable
 ##
 ## Run:  godot --headless --path <repo> --quit-after 1500 -- --cozy-probe-npc-pathing
+##
+## WHEN IT RUNS. It used to fire at a fixed frame, and a fixed frame is a coin
+## toss: the resident is only ever pressed against the thing that is stopping it
+## some of the time. The 2026-09-14 run reported `blocking cast: nothing between
+## the agent and waypoint N` while the same build, at the same time, had a
+## resident stuck for hundreds of frames at `wp=2/29 stuck=1.5` — the probe had
+## sampled a moment when nothing was wrong, and a clean probe read as a clean
+## system.
+##
+## So it now fires on the FIRST moment the resident has stood still long enough
+## WHILE WALKING that standing still is the only explanation. That is the moment
+## the question is about, and it is not one a frame number can be picked to hit.
+##
+## `_stuck_time` lives in `CozyNpcAgent` and is deliberately not read here: this
+## is a measurement of the AGENT's body, and taking it from the agent's own
+## bookkeeping would make the probe agree with the thing it is checking.
+const STUCK_WATCH_SECONDS := 3.5   ## Longer than the agent's own 3 s replan, so
+                                   ## the report lands after a replan attempt.
+const STUCK_WATCH_METRES := 0.05   ## Below this it is not walking, it is jitter.
+
+var _stuck_watch_last := Vector3.ZERO
+var _stuck_watch_has_last := false
+var _stuck_watch_time := 0.0
+var _stuck_watch_fired := false
+
+
+func _watch_for_a_stuck_resident(delta: float) -> void:
+	if _stuck_watch_fired or npc == null or not is_instance_valid(npc):
+		return
+
+	# ONLY while it is walking. A resident standing at a workbench has not moved
+	# either, and the first version of this watcher fired at frame 319 on exactly
+	# that: `npc WORKING ... wp=20/20 stuck=0.0`, a resident doing its job. The
+	# symptom is not "not moving", it is "not moving WHILE TRYING TO".
+	#
+	# This is the third time in this one probe that the measurement was correct
+	# and its timing was not — the fixed frame sampled a calm moment, and now the
+	# motion test sampled a stationary one. A probe that fires at the wrong
+	# moment does not report "unknown", it reports "fine".
+	if npc.fsm_state != CozyNpcAgent.State.GOING:
+		_stuck_watch_time = 0.0
+		_stuck_watch_has_last = false
+		return
+
+	var here := npc.global_position
+	if _stuck_watch_has_last and here.distance_to(_stuck_watch_last) < STUCK_WATCH_METRES:
+		_stuck_watch_time += delta
+	else:
+		_stuck_watch_time = 0.0
+	_stuck_watch_last = here
+	_stuck_watch_has_last = true
+
+	if _stuck_watch_time < STUCK_WATCH_SECONDS:
+		return
+	_stuck_watch_fired = true
+	print("[cozyv2] probe npc pathing: TRIGGERED at frame %d — the resident moved less than %.2f m in %.1f s" % [
+		Engine.get_physics_frames(), STUCK_WATCH_METRES, _stuck_watch_time])
+	_probe_npc_pathing()
+
+
 func _probe_npc_pathing() -> void:
 	if npc == null or npc.navigator == null:
 		print("[cozyv2] probe npc pathing: NOT BUILT")
@@ -5183,6 +5278,31 @@ func _check_outdoor_nav() -> void:
 		"OK" if path.size() > 0 and inside == 0 and walked > straight * 1.15 else "FAIL"])
 	print("[cozyv2] outdoor grid: %d cell(s) at %.2f m, %d obstacle(s)" % [
 		nav.blocked_cell_count(), OUTDOOR_CELL, nav.obstacle_count()])
+
+
+## The landing the stair tops out on, asserted because it is exactly the space a
+## navigation grid with clearance silently deletes.
+##
+## The strip is `HOUSE_W - WELL_X1` = 1.0 m by construction, and three things come
+## out of it: half a wall's thickness, the agent's own width, and the cell the
+## grown stairwell obstacle claims. On 2026-09-14 those came to nothing at all —
+## and NOTHING SAID SO. `npc plan ground->upstairs` still reported
+## `crosses floor=true`, because the upstairs leg fell back to a straight line the
+## moment `find_path` came back empty: a green assertion and a navigator that had
+## stopped navigating.
+##
+## So this asks the grid the one question with no fallback under it — can an agent
+## stand here at all?
+func _check_landing_is_walkable() -> void:
+	var nav: CozyLocalNav = _nav_by_room.get("room_1_0", null)
+	if nav == null:
+		print("[cozyv2] landing beside the stairwell: no grid for room_1_0  [FAIL]")
+		return
+	var landing := Vector2((WELL_X1 + HOUSE_W) * 0.5, WELL_Z0 + (HOUSE_D - WELL_Z0) * 0.5)
+	var ok := nav.is_walkable(nav.world_to_cell(landing))
+	print("[cozyv2] landing beside the stairwell: %.2f m of floor, walkable=%s  [%s]" % [
+		HOUSE_W - WELL_X1, str(ok),
+		"OK" if ok else "FAIL, the stair tops out on floor no agent can stand on"])
 
 
 ## The same question, asked of the NAVIGATOR rather than of the grid.

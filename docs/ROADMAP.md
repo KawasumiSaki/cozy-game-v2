@@ -129,6 +129,51 @@ chest is where §45 stores, the bed is where the schedule sleeps. The camera is
 deliberately untouched: yaw 180 was measured for this house, and with it present
 there is no reason to move it.
 
+**There was a SECOND, independent cause, found on 2026-09-14 and fixed.** That
+switch removes walls that appear after the navigation is built; it does not
+touch a grid that routes the agent as a POINT. See the section below.
+
+### Navigation clearance — the grid was routing a POINT (2026-09-14)
+
+`CozyLocalNav` rasterised obstacle rects exactly: no inflation by the agent's
+radius, no erosion of the room polygon. So it answered *can a point get from
+here to there* while the thing that has to get there is a capsule
+`CozyCharacter.CAPSULE_RADIUS` (0.3 m) in radius. Two defects were live:
+
+- a gap wider than a cell and narrower than the agent was a route to the planner
+  and a wall to the body;
+- a room polygon runs through wall CENTRELINES (an 8 x 6 room measures 48.0 m2),
+  so the grid's edge was the MIDDLE of every wall and half a wall-thickness of
+  wall was walkable space the collider filled.
+
+The fix is the **Minkowski sum** — the textbook answer to exactly this
+(Lozano-Perez & Wesley, CACM 22(10), 1979): grow the obstacles by the agent's
+radius and the agent becomes a point. `build()` takes `clearance` with **no
+default**, so a call site cannot silently keep the bug, and `wall_reach` for the
+half-wall the polygon stands in for.
+
+```
+stuck  before ->  3.0 x82, 1.4 x34, 1.2 x30, 1.0 x30, 0.8 x30, 0.6 x30
+stuck  after  ->  0.0 x 4500                    every one of 4500 frames
+resident      ->  GOING 1589 -> 1432, WORKING 2307 -> 2538
+```
+
+**It also DELETED a tight space, and nothing said so.** Inflating by 0.425
+removed the house's 1.0 m stairwell landing entirely — the stair topped out on
+floor no agent could stand on. The only thing that noticed was an assertion
+written for it; the existing `npc plan ground->upstairs: crosses floor=true`
+stayed green, because `find_path` came back empty and `_local()` fell back to a
+straight line. `WELL_X0`/`WELL_X1` moved 1 m west (run unchanged — the stair is
+still 50.2 degrees), the landing is 2.0 m, and that check went 33 -> 77
+waypoints. See `docs/INVARIANTS.md`.
+
+**Considered and rejected: `NavigationServer3D`.** `NavigationObstacle3D` only
+does avoidance at runtime and never changes pathfinding, so it cannot replace a
+rebake; `NavigationAgent3D` cannot follow an externally supplied path; every
+Godot 4 navigation addon found is stale or archived; and a full rebake of this
+house measured **48.5 ms** against the grid's 1.35 ms. The documented objection
+to navmeshes still holds. The problem was never the grid.
+
 ### Resource line — chop, mine, harvest (opened 2026-09-14)
 
 The loop being built now is farming, woodcutting and mining on open ground. The
@@ -180,9 +225,23 @@ loop closes.
 
 | ID | Block | Status |
 |---|---|---|
-| DG-01 | Outline → wall union | 🚧 **wall union done** 2026-09-12 — `dungeon/dungeon_layout.gd`. Pure logic; the generator is next |
+| DG-01 | Outline → wall union | ✅ **2026-09-14** — `dungeon/dungeon_layout.gd`. Wall union, blueprint contract, and `to_intents()` |
 | DG-02 | Blueprint contract + validation | ✅ **2026-09-14** — `dungeon/dungeon_blueprint.gd`. 13 cases / 67 checks |
-| DG-03 | Generator into the building pipeline | ⬜ blocked on the home loop |
+| DG-03 | Generator into the building pipeline | 🚧 generator done — `to_intents()` emits `CozyBuildingIntent[]` with its openings. Runtime hookup blocked on the home loop |
+
+**`to_intents()` completes the chain and stops there** (2026-09-14). A blueprint
+becomes intents the existing building pipeline already knows how to consume, and
+13 cases / 40 checks cover it — including one that drives the intents through the
+real `CozyBuildingState` and asserts the rooms still come out two rather than the
+one the naive path merges them into.
+
+**It also fixed a convention bug that would have shifted every door 0.75 m.**
+`walls()` reported a doorway's NEAR EDGE (`mid - width * 0.5`); `CozyOpening.offset`
+means its CENTRE, which is what `CozyOutlineGenerator` uses (`edge_len * 0.5`).
+Nothing consumed the old field, so the convention was settled at the source
+rather than repaired at the one call site with a `+ width * 0.5` no one would
+question. The tooth: on a 6 m shared wall the offset must be 3.0, and the
+near-edge reading gives 2.25.
 
 **What the blueprint format refuses is most of what it does** (2026-09-14). The
 design doc's §3.3 example also carries `links`, `spawns` and `content`, and
@@ -280,6 +339,15 @@ Stated plainly so it is not rediscovered later.
    them — so pressing F9 while a resident is working can hand `_finish_work()`
    a freed node. Nothing today does, which is why this is debt and not a bug.
    The fix is now direct: store the id, re-resolve through the registry.
+13. **The §45 live production chain has NO assertion** (2026-09-14). The resident
+    no longer gets stuck — that is measured, `stuck` went from ~700 frames of a
+    non-zero value to 0 across all 4500 — but the check that used to prove wheat
+    reaches the chest and bread comes out
+    (`production chain ran live: chest wheat 8 of 8, chest bread 0`) **is no
+    longer in the tree**; `_check_production` is mechanical. So "the stall is
+    gone" is measured and "the chain runs" is not, and the two are not the same
+    claim. **The next card is to make that check live again, with an assertion,
+    before debt 22 is written off.**
 
 ---
 

@@ -692,3 +692,93 @@ Reading only its first line made them look missing, and switching the helper to
 the one that folds objects in delivered them twice — thirteen duplicate rects and
 no behaviour change. **The tell was that reverting the "fix" turned nothing red.**
 Read the whole function; a fix that changes a count but not a path is not a fix.
+
+## A grid that rasterises obstacles exactly is routing a POINT
+
+`CozyLocalNav` grew its cells around obstacle rects and nothing else. No
+inflation by the agent's radius, no erosion of the room polygon. So it answered
+*can a point get from here to there* while the thing that has to get there is a
+capsule `CozyCharacter.CAPSULE_RADIUS` (0.3 m) in radius. Two defects fell out of
+that, and both were live:
+
+- **A gap wider than a cell and narrower than the agent was a route to the
+  planner and a wall to the body.** The agent walks at it, is stopped, waits,
+  abandons the job, replans, and is handed the same route again.
+- **A room polygon runs through wall CENTRELINES.** An 8 x 6 room measures
+  48.0 m2 — centreline to centreline — so the grid's edge was the MIDDLE of every
+  wall, and half a wall-thickness of wall was walkable space the collider filled.
+
+The fix is the Minkowski sum, which is the textbook answer to exactly this
+(Lozano-Perez & Wesley, *An algorithm for planning collision-free paths among
+polyhedral obstacles*, CACM 22(10):560-570, 1979): grow the obstacles by the
+agent's radius and the agent becomes a point.
+
+**Measured, on the project's own house:**
+
+    stuck  before ->  3.0 x82, 1.4 x34, 1.2 x30, 1.0 x30, 0.8 x30, 0.6 x30
+    stuck  after  ->  0.0 x 4500          every one of 4500 frames
+    resident      ->  GOING 1589 -> 1432, WORKING 2307 -> 2538
+                      the same amount of activity, less of it spent walking
+
+**Three things follow, and the last is the one that cost time.**
+
+1. **`clearance` has no default.** A default of 0 would leave every existing
+   call site rasterising with no room for the body — the bug — silently, at the
+   one moment nobody looks: the call that was already written.
+
+2. **The grid is COARSE, and the clearance is not the agent's width.** A cell is
+   0.25 m and rasterising blocks every cell a grown obstacle touches at all, so
+   the real threshold is the agent's width plus about a cell on each side, and a
+   1.0 m doorway closes. Asserting only "narrower than the agent is refused"
+   would give a case that fails for a reason nobody wrote down the day the cell
+   size changes.
+
+3. **Giving the grid clearance DELETES tight spaces, and nothing says so.**
+   Inflating by 0.425 removed the house's 1.0 m stairwell landing entirely — the
+   stair topped out on floor no agent could stand on, and **the only thing that
+   noticed was an assertion written for it.** The existing check said:
+
+       npc plan ground->upstairs: 33 waypoints, crosses floor=true   [OK]
+       landing beside the stairwell: 1.00 m of floor, walkable=false [FAIL]
+
+   `find_path` came back empty, `_local()` fell back to a straight line, and
+   `crosses floor=true` stayed green while the navigator had stopped navigating.
+   **A green assertion and a navigator that has given up look identical.** The
+   landing is 2.0 m now — the stairwell moved 1 m west, run unchanged, so the
+   stair is still 50.2 degrees and `ground->upstairs` went 33 -> 77 waypoints.
+
+### The snap radius is a budget, not a search
+
+`_nearest_walkable` spiralled out to 12 cells — three metres. Harmless while
+obstacles were exact, because an agent was rarely far from a free cell. Once they
+grow by the agent's clearance it stops being harmless: a resident standing in a
+spot that has just been closed off is a couple of centimetres inside a grown
+obstacle, and a spiral that reaches three metres turns that into a route to a
+DIFFERENT place. It is 4 cells now.
+
+**It had no assertion on it until mutation testing said so** — putting the spiral
+back to 12 changed nothing in the suite. Writing the case took three attempts,
+and the first two were wrong for the same reason: **the spiral reached a cell on
+the far side of the wall first**, and a route that cannot reach its goal returns
+empty whether or not the snap reached too far. The case had to wall off the wrong
+side before it measured anything.
+
+## The same measurement can be right and still fire at the wrong moment
+
+One probe, one session, three attempts at timing, all three wrong:
+
+- **A fixed frame samples a calm moment.** `--cozy-probe-npc-pathing` reported
+  `blocking cast: nothing between the agent and waypoint N` while the same build
+  at the same time had a resident stuck for hundreds of frames at `wp=2/29
+  stuck=1.5`. The probe was correct and the moment was not.
+- **"Not moving" is not the symptom.** The first watcher fired on a resident
+  standing still for 3.5 s — at a workbench, `WORKING`, `stuck=0.0`, doing its
+  job. The symptom is not moving *while trying to move*.
+- **A jittering agent resets a stillness timer.** Gated on `GOING`, the watcher
+  never fired at all: the resident moves a few centimetres often enough to reset
+  the clock, and the agent's own `_stuck_time` accumulates per-frame movement
+  instead.
+
+**A probe that fires at the wrong moment does not report "unknown". It reports
+"fine".** Three times in one session is not bad luck; it is what happens when the
+trigger is chosen by reasoning rather than measured.
