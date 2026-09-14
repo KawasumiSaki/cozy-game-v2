@@ -2121,8 +2121,7 @@ func _report() -> void:
 	_check_assets()
 	_check_scatter()
 	_check_lights()
-	_check_terrain_shader()
-	_check_terrain_control()
+	_check_ground_tiles()
 	_check_terrain()
 	_check_farming_chain()
 	_check_scatter_incremental()
@@ -2753,139 +2752,68 @@ func _check_farming_chain() -> void:
 ##
 ## So the two numbers that have to agree are asserted against each other rather
 ## than trusted to stay in step.
-func _check_terrain_shader() -> void:
-	if terrain_renderer == null:
-		print("[cozyv2] ground shader: NO RENDERER  [FAIL]")
-		return
-	var layers := terrain_renderer.material_layers()
-	print("[cozyv2] ground shader: %d layer(s) for %d material(s), drawn through it=%s  [%s]" % [
-		layers, CozyTerrainMaterials.ORDER.size(), terrain_renderer.draws_through_shader(),
-		"OK" if layers == CozyTerrainMaterials.ORDER.size()
-			and terrain_renderer.draws_through_shader()
-		else "FAIL, the ground and its material table disagree"])
-
-
-## The index the shader will fetch is the index of the cell.
+## The ground: dual-grid tiles, decided per fragment by the shader.
 ##
-## The control texture is read back and every cell compared, because it is the
-## one place the terrain system and the fragment shader meet. A control texture
-## writing the wrong byte draws every cell as the same material and nothing
-## anywhere says so — which mutation testing demonstrated by doing exactly that
-## and turning nothing red.
-## IT RUNS BEFORE ANY TERRAIN CHECK THAT EDITS THE GROUND, and that ordering is
-## the whole reason it is where it is. `_check_terrain` clears a 512-cell plot of
-## its own; a dirty chunk is rebuilt on the NEXT frame, so reading the control
-## texture back after that edit compares a texture against a state it was not
-## built from — 513 cells of "mismatch" that say nothing about the shader.
+## THREE THINGS CAN GO WRONG HERE AND NONE OF THEM THROWS.
 ##
-## Found by running it in the wrong place the first time. Terrain is authored,
-## then built, and anything that reads the built form has to run after the last
-## authoring step, not before the next one.
-## The material INDEX at a world cell, or 0 when it is off the field.
+##   * The shader's material count falls behind `CozyTerrainMaterials`, and every
+##     cell of the newer material draws as layer 0 — grass where there should be
+##     stone. The count is a uniform, set from the table, so it CAN be compared.
+##   * A control texel disagrees with the cell it describes. That texture is the
+##     only link between what the terrain knows and what the shader samples, and
+##     a wrong byte draws every cell as one material — which looks like an art
+##     decision rather than a bug.
+##   * The world is all one material, so the corner rule has nothing to do and
+##     the check passes on a field with no boundaries in it at all. That is the
+##     trap an earlier version of this check fell into, by reading the first
+##     chunk — a corner of the field that is entirely grass.
 ##
-## Index 0 is grass, which is what the field is by default, so reading past the
-## edge reports the same thing as reading the edge -- and the corner rule walks
-## one cell outside a chunk for every chunk boundary.
-func _terrain_index_at(cell_x: int, cell_z: int) -> int:
-	if terrain == null:
-		return 0
-	var world := terrain.origin + Vector2(float(cell_x), float(cell_z)) * CozyTerrainChunk.CELL_SIZE
-	var p := Vector2(world.x + CozyTerrainChunk.CELL_SIZE * 0.5,
-		world.y + CozyTerrainChunk.CELL_SIZE * 0.5)
-	return CozyTerrainMaterials.index_of(terrain.material_id_at(p.x, p.y))
-
-
-func _check_terrain_control() -> void:
+## IT ALSO ASSERTS THAT THE SHADER IS ACTUALLY DRIVEN. Every uniform is set from
+## GDScript rather than left to the shader's own default, because a uniform
+## nothing has set answers `null` to `get_shader_parameter` — so an earlier check
+## reported the feature OFF while the GPU was drawing it ON. A value that lives
+## only inside a shader is a value this side cannot assert about.
+func _check_ground_tiles() -> void:
 	if terrain_renderer == null or terrain == null:
-		print("[cozyv2] ground control: NOT BUILT  [FAIL]")
+		print("[cozyv2] ground tiles: NOT BUILT  [FAIL]")
 		return
+
+	var want := CozyTerrainMaterials.ORDER.size()
+	var have := terrain_renderer.material_layers()
+
 	var coords: Array = terrain_renderer.chunk_coords()
 	if coords.is_empty():
-		print("[cozyv2] ground control: no chunk to read  [FAIL]")
+		print("[cozyv2] ground tiles: no chunk to read  [FAIL]")
 		return
 
 	var cells := CozyTerrainChunk.CELLS
-	var wrong := 0
 	var read := 0
+	var wrong := 0
 	var kinds := {}
-
-	# EVERY CHUNK, not the first one. The first version checked `coords[0]`,
-	# which is a corner of the field that is entirely grass — so writing index 0
-	# into every cell of it was indistinguishable from writing the truth, and the
-	# mutation did not go red. A check on a sample with no variety is a check on
-	# nothing.
 	for coord in coords:
 		var img := terrain_renderer.control_image(coord)
 		var chunk: CozyTerrainChunk = terrain.chunks.get(coord, null)
 		if img == null or chunk == null:
-			print("[cozyv2] ground control: chunk %s unreadable  [FAIL]" % coord)
+			print("[cozyv2] ground tiles: chunk %s unreadable  [FAIL]" % coord)
 			return
 		for lz in cells:
 			for lx in cells:
-				var want := CozyTerrainMaterials.index_of(chunk.material_id_at(lx, lz))
+				var expect := CozyTerrainMaterials.index_of(chunk.material_id_at(lx, lz))
 				var got := int(round(img.get_pixel(lx, lz).r * 255.0))
 				read += 1
-				kinds[want] = true
-				if got != want:
+				kinds[expect] = true
+				if got != expect:
 					wrong += 1
 
-	# AND THE SAMPLE HAS TO HAVE SOMETHING IN IT. Without this, a world of one
-	# material would report zero disagreements for the same reason the corner
-	# chunk did — and the number would look like coverage.
-	# ------------------------------------------------------------------
-	# AND THE DUAL-TILE RULE HAS SOMETHING TO DO.
-	#
-	# The shader decides a fragment's material at the CELL CORNERS: the four
-	# cells meeting there are read and the highest-priority one wins, so a stone
-	# cell grows into the corners of the grass beside it and boundaries turn
-	# through corners instead of stepping around them.
-	#
-	# That rule only has any effect where two materials MEET. On a world of one
-	# material it is a no-op that renders identically, and nothing would say so --
-	# which is the same trap the control-texture check fell into when it read the
-	# first chunk, a corner of the field that is entirely grass. So the count of
-	# cells the rule would visibly change is asserted to be non-zero.
-	var changed := 0
-	for coord in coords:
-		var chunk: CozyTerrainChunk = terrain.chunks.get(coord, null)
-		if chunk == null:
-			continue
-		var base: Vector2i = coord * cells
-		for lz in cells:
-			for lx in cells:
-				var own := CozyTerrainMaterials.index_of(chunk.material_id_at(lx, lz))
-				for corner in [Vector2i(0, 0), Vector2i(1, 0), Vector2i(0, 1), Vector2i(1, 1)]:
-					var best := -1
-					for dz in [-1, 0]:
-						for dx in [-1, 0]:
-							var wx: int = base.x + lx + corner.x + int(dx)
-							var wz: int = base.y + lz + corner.y + int(dz)
-							best = maxi(best, _terrain_index_at(wx, wz))
-					if best != own:
-						changed += 1
-						break
-	print("[cozyv2] dual tile: on=%s, %d cell(s) the corner rule would change  [%s]" % [
-		terrain_renderer.dual_tile_enabled(), changed,
-		"OK" if terrain_renderer.dual_tile_enabled() and changed > 0
-		else "FAIL, the corner rule has nothing to do or is switched off"])
+	var mat := terrain_renderer.material_of(coords[0])
+	var driven: bool = mat is ShaderMaterial 		and (mat as ShaderMaterial).get_shader_parameter("chunk_metres") != null
 
-	print("[cozyv2] ground control: %d cell(s) read back across %d chunk(s), %d material(s), %d disagreeing  [%s]" % [
-		read, coords.size(), kinds.size(), wrong,
-		"OK" if wrong == 0 and kinds.size() >= 2
-		else "FAIL, the shader would draw the wrong ground"])
+	print("[cozyv2] ground tiles: %d of %d material(s) in the array, %d cell(s) read back across %d chunk(s) in %d kind(s), %d disagreeing; shader-driven=%s  [%s]" % [
+		have, want, read, coords.size(), kinds.size(), wrong, driven,
+		"OK" if have == want and driven and wrong == 0 and read > 0 and kinds.size() >= 2
+		else "FAIL, the ground the shader samples is not the ground the terrain knows"])
 
 
-## The day/night cycle, and the lamps it turns on.
-##
-## IT MOVES THE CLOCK AND PUTS IT BACK. The curve is a function of the hour and
-## there is no other way to ask about midnight at nine in the morning — the same
-## trick the growth check uses when it asks about `now + 24`.
-##
-## BOTH DIRECTIONS ARE ASSERTED, which is the whole point of doing it this way:
-## `night < noon` catches a world stuck in daylight, and `night > 0` catches one
-## that goes black. A single "it gets darker" would pass on a world that goes
-## pitch black, and Willow asked for the opposite of that. "黑夜也不要太黑，
-## 有一点点月光就行了."
 func _check_lights() -> void:
 	if clock == null or world_env == null or day_sun == null:
 		print("[cozyv2] lights: NOT BUILT  [FAIL]")

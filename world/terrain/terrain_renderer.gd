@@ -24,29 +24,14 @@ extends Node3D
 
 const CELLS := CozyTerrainChunk.CELLS
 
-## Texels per side of one material texture. 16 is the project's own pixel unit
-## (`CozyPixelArt` draws everything at 16), and at one texture per metre it lands
-## near the 16 px/m the art profile assumes.
-const MATERIAL_TEXELS := 16
-
-## Is the ground read at the CELL CORNERS (dual tiling) or per cell?
-##
-## SET EXPLICITLY, never left to the shader's own default, and the assertion that
-## reads it back is why: `get_shader_parameter` answers null for a uniform that
-## nothing has set, so the check reported the feature OFF while the GPU was
-## drawing it ON. A value that exists only inside the shader is a value this side
-## cannot assert about, and cannot switch off in a hurry.
-const DUAL_TILE := true
-
-## Where the ground shader lives.
-const TERRAIN_SHADER := "res://shaders/terrain.gdshader"
-
-## The six material textures, loaded once and shared by every chunk's material.
-##
-## Built lazily rather than in `setup()`, because a headless run that never
-## renders a chunk should not pay for sixteen images it will not sample.
-var _material_array: Texture2DArray = null
 const CELL_SIZE := CozyTerrainChunk.CELL_SIZE
+
+## How many metres one material texture covers before repeating. At 16 texels and
+## one metre that is a 16 px/m ground, which is the project's own pixel unit.
+const TEXTURE_METRES := 1.0
+
+## How much the per-cell grain moves the albedo. Narrow on purpose.
+const GRAIN := 0.09
 
 ## The chunk's placement height. Vertices are displaced around it, so flat
 ## terrain renders exactly at this y and dug terrain below it.
@@ -95,7 +80,7 @@ func _rebuild_chunk(coord: Vector2i) -> void:
 		_meshes[coord] = mi
 		# The control texture is replaced on every rebuild, so the material is
 		# made once and only its `control` uniform is re-set.
-		mi.material_override = _make_shader_material()
+		mi.material_override = _make_ground_material()
 	mi.global_position = centre
 	var am := _make_surface_mesh(chunk, extent)
 	mi.mesh = am
@@ -112,37 +97,36 @@ func _rebuild_chunk(coord: Vector2i) -> void:
 		add_child(body)
 		_bodies[coord] = body
 	body.global_position = centre
-	(body.get_child(0) as CollisionShape3D).shape = am.create_trimesh_shape()
+	# A FLAT BOX, not a trimesh. The ground is a plane now, and a trimesh built
+	# from 4096 triangles to describe a plane is 4096 triangles the physics
+	# server has to consider for every step. One box says the same thing.
+	var cs := body.get_child(0) as CollisionShape3D
+	var box := BoxShape3D.new()
+	box.size = Vector3(extent, 1.0, extent)
+	cs.shape = box
+	cs.position = Vector3(0.0, -0.5, 0.0)
 
 
-## One mesh per chunk, still: a 65 x 65 vertex grid is 4096 triangles in ONE
-## draw call, which is what doc #61's rule is actually about (it forbids 10,000
-## independent draw calls, not triangle count). Sixteen chunks cost sixteen draw
-## calls, and the per-cell texture and its UVs are untouched by the displacement.
-func _make_surface_mesh(chunk: CozyTerrainChunk, extent: float) -> ArrayMesh:
+## ONE QUAD per chunk. The whole ground is a plane, and every tile in it is
+## decided per fragment by the shader.
+##
+## The version this replaced built a quad per display tile — 4096 of them per
+## chunk — because that is what a tilemap does. It works, and it costs four
+## thousand quads to draw a rectangle: the tile rule is arithmetic, and arithmetic
+## does not need geometry.
+##
+## PlaneMesh lies in XZ centred on its origin, so the mesh spans the chunk exactly
+## and `chunk_local.xz` in the shader IS a position within it.
+func _make_surface_mesh(_chunk: CozyTerrainChunk, extent: float) -> ArrayMesh:
 	var pm := PlaneMesh.new()
 	pm.size = Vector2(extent, extent)
-	pm.subdivide_width = CELLS - 1
-	pm.subdivide_depth = CELLS - 1
 	var arrays := pm.get_mesh_arrays()
-
-	# FLAT, AND THAT IS THE POINT.
-	#
-	# The ground stopped being a heightfield on 2026-09-14 (Willow: heights can
-	# go). A half-offset tile grid has no third dimension to reconcile, and
-	# "不同海拔的地形编辑" was on the project's do-not-do list from the very first
-	# week — this makes the code agree with what the plan always said.
-	#
-	# The vertices are left exactly where `PlaneMesh` puts them. The loop that
-	# displaced them by `corner_height` is gone, and with it the only way the
-	# picture and the collider could ever disagree: both are now the same flat
-	# plane, so `chunk_collision_min_y` has nothing left to catch.
 	var am := ArrayMesh.new()
 	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return am
 
 
-## Lowest and highest points of a chunk's rendered surface. Used by the
+## Lowest and highest points of a chunk## Lowest and highest points of a chunk## Lowest and highest points of a chunk's rendered surface. Used by the
 ## self-check to prove DIG moved the ground rather than only the field.
 func chunk_surface_range(coord: Vector2i) -> Vector2:
 	var mi: MeshInstance3D = _meshes.get(coord)
@@ -175,12 +159,52 @@ func chunk_collision_min_y(coord: Vector2i) -> float:
 	return (lo + body.global_position.y) if lo != INF else 0.0
 
 
-## One texel per cell: R is the material INDEX, G is the cell's grain.
+## Where the ground shader lives.
+const GROUND_SHADER := "res://shaders/ground.gdshader"
+
+## One 16x16 pixel texture per material, in an array, built once and shared.
 ##
-## It used to be the cell's colour, which is why the ground read as flat paint:
-## one texel per cell is one flat colour per cell, and a material boundary was a
-## one-texel staircase by construction. The colour now comes from a repeating
-## texture and this carries only what the shader cannot work out for itself.
+## AN ARRAY AND NOT AN ATLAS: a sub-region of an atlas cannot use hardware
+## repeat, so everyone ends up doing `mod(UV, 1.0)` by hand and the sampler then
+## bleeds the neighbouring cell's texels in at the region edge. Layers are
+## independent, and `repeat_enable` is honoured on the array sampler where it is
+## silently ignored on an array of `sampler2D`.
+##
+## Built lazily, because a headless run that never renders a chunk should not pay
+## to generate six images it will not sample.
+var _materials: Texture2DArray = null
+
+
+func _materials_or_build() -> Texture2DArray:
+	if _materials == null:
+		var images: Array[Image] = []
+		for id in CozyTerrainMaterials.ORDER:
+			images.append(CozyTerrainTiles.material_image(id))
+		_materials = Texture2DArray.new()
+		_materials.create_from_images(images)
+	return _materials
+
+
+## The ground's material: the shader, told where its textures and its numbers are.
+##
+## Every uniform is SET here rather than left to the shader's own default, and
+## the assertion that reads one back is why: `get_shader_parameter` answers null
+## for a uniform nothing has set, so a check would report a feature off while the
+## GPU drew it on. A value that lives only inside a shader is a value this side
+## cannot assert about, and cannot switch off in a hurry.
+func _make_ground_material() -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = load(GROUND_SHADER)
+	mat.set_shader_parameter("materials", _materials_or_build())
+	mat.set_shader_parameter("material_count", CozyTerrainMaterials.ORDER.size())
+	mat.set_shader_parameter("chunk_metres", float(CELLS) * CELL_SIZE)
+	mat.set_shader_parameter("cell_metres", CELL_SIZE)
+	mat.set_shader_parameter("texture_metres", TEXTURE_METRES)
+	mat.set_shader_parameter("grain", GRAIN)
+	return mat
+
+
+## One texel per cell: R is the material INDEX, G is the cell's grain.
 ##
 ## AN INDEX IS NOT A COLOUR. It is never filtered and never interpolated — the
 ## shader fetches it by integer coordinate — because averaging two material ids
@@ -200,67 +224,11 @@ func _make_control_texture(chunk: CozyTerrainChunk) -> ImageTexture:
 	return ImageTexture.create_from_image(img)
 
 
-## The six material textures as one array, built once and shared.
-func _material_array_or_build() -> Texture2DArray:
-	if _material_array != null:
-		return _material_array
-	var images: Array[Image] = []
-	for id in CozyTerrainMaterials.ORDER:
-		images.append(_material_image(id))
-	_material_array = Texture2DArray.new()
-	_material_array.create_from_images(images)
-	return _material_array
-
-
-## One material's repeating texture: its colour, grained by a hash of its id.
-##
-## Procedural, like everything else in the placeholder art pipeline, so a new
-## terrain material is a row in `CozyTerrainMaterials` and needs no file.
-func _material_image(id: String) -> Image:
-	var img := Image.create(MATERIAL_TEXELS, MATERIAL_TEXELS, false, Image.FORMAT_RGBA8)
-	var base := CozyTerrainMaterials.color_of(id)
-	var h := hash(id)
-	for y in MATERIAL_TEXELS:
-		for x in MATERIAL_TEXELS:
-			var n := float(absi(hash(Vector3i(x, y, h))) % 1000) / 1000.0
-			var shade := 1.0 + (n - 0.5) * 0.18
-			img.set_pixel(x, y, Color(
-				clampf(base.r * shade, 0.0, 1.0),
-				clampf(base.g * shade, 0.0, 1.0),
-				clampf(base.b * shade, 0.0, 1.0),
-				1.0))
-	return img
-
-
-func _make_shader_material() -> ShaderMaterial:
-	var mat := ShaderMaterial.new()
-	mat.shader = load(TERRAIN_SHADER)
-	mat.set_shader_parameter("materials", _material_array_or_build())
-	# The mesh spans the chunk exactly, and a cell is a quarter of a metre.
-	mat.set_shader_parameter("chunk_metres", float(CELLS) * CELL_SIZE)
-	mat.set_shader_parameter("dual_tile", 1.0 if DUAL_TILE else 0.0)
-	return mat
-
-
-## How many material textures the ground can sample.
-##
-## For the self-check, and it is asserted because the failure is SILENT: a layer
-## count that falls behind `CozyTerrainMaterials` means every cell of the newer
-## material draws as layer 0 — grass where there should be stone, and nothing
-## anywhere says so.
-func material_layers() -> int:
-	if _material_array == null:
-		return 0
-	return _material_array.get_layers()
-
-
 ## One chunk's control texture, read back as an Image.
 ##
 ## READING IT BACK IS THE POINT. The control texture is the ONLY link between
-## what the terrain system knows and what the fragment shader samples, and a
-## wrong byte in it draws every cell as the same material — which looks like an
-## art decision, not a bug. Mutation testing is what found that: writing a
-## constant index into every cell turned nothing red.
+## what the terrain system knows and what the shader samples, and a wrong byte in
+## it draws every cell as the same material — which looks like an art decision.
 func control_image(coord: Vector2i) -> Image:
 	if not _meshes.has(coord):
 		return null
@@ -271,17 +239,9 @@ func control_image(coord: Vector2i) -> Image:
 	return tex.get_image() if tex != null else null
 
 
-## Is the ground reading its material at the corners rather than per cell?
-##
-## Read back from the shader rather than assumed, because it is a uniform with a
-## default: a material that was never told would render the plain per-cell version
-## and look exactly like a deliberate choice.
-func dual_tile_enabled() -> bool:
-	for coord in _meshes:
-		var mat := (_meshes[coord] as MeshInstance3D).material_override as ShaderMaterial
-		if mat != null:
-			return float(mat.get_shader_parameter("dual_tile")) > 0.5
-	return false
+## How many material textures the ground can sample.
+func material_layers() -> int:
+	return 0 if _materials == null else _materials.get_layers()
 
 
 ## The chunks this renderer currently holds, sorted.
@@ -291,14 +251,11 @@ func chunk_coords() -> Array:
 	return out
 
 
-## Is the ground drawn through the shader at all? A chunk that fell back to a
-## plain material would render as untextured grey, which looks like an art
-## problem rather than a wiring one.
-func draws_through_shader() -> bool:
-	for coord in _meshes:
-		if (_meshes[coord] as MeshInstance3D).material_override is ShaderMaterial:
-			return true
-	return false
+## For the self-check: the material a chunk is drawn with, or null.
+func material_of(coord: Vector2i) -> Material:
+	if not _meshes.has(coord):
+		return null
+	return (_meshes[coord] as MeshInstance3D).material_override
 
 
 func describe() -> String:
