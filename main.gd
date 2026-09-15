@@ -3607,6 +3607,37 @@ func _check_scatter() -> void:
 	print("[cozyv2] scatter rebuild cost: %.1f ms total = %.1f sampling + %.1f mesh build" % [
 		ms, scatter.sample_ms, scatter.build_ms])
 
+	# AND THE PLANTS ARE DRAWN BY SOMETHING THAT COMPILED.
+	#
+	# Everything above counts instances and proves where they are; none of it
+	# touches the one thing that renders. A shader that fails to compile leaves
+	# every count, every fingerprint and every placement assertion exactly as it
+	# was, and the field comes out INVISIBLE — the "green and proving nothing"
+	# shape, with a picture attached.
+	#
+	# A uniform list is not a compile report, but it is the closest thing to one:
+	# Godot hands back an empty list for a shader it could not build, so an empty
+	# list here means the material is not drawing. The actual errors are in the
+	# log as `SHADER ERROR`, which `grep -c "ERROR"` counts.
+	var unlit: Array[String] = []
+	var shader_kinds := 0
+	for asset_id in scatter.asset_ids():
+		var mat := scatter.material_of(String(asset_id))
+		var ok := false
+		if mat is ShaderMaterial:
+			var sh: Shader = (mat as ShaderMaterial).shader
+			ok = sh != null and not sh.get_shader_uniform_list().is_empty()
+		elif not CozyVegetationScatter.USE_VEGETATION_SHADER:
+			ok = mat != null
+		if ok:
+			shader_kinds += 1
+		else:
+			unlit.append(String(asset_id))
+	print("[cozyv2] vegetation material: %d of %d kind(s) drawing, %s  [%s]" % [
+		shader_kinds, scatter.asset_ids().size(),
+		"all compiled" if unlit.is_empty() else "NOT DRAWING: %s" % ", ".join(unlit),
+		"OK" if unlit.is_empty() else "FAIL, a plant material is missing or did not compile"])
+
 
 ## Asset library (V2.1 doc E.3 / E.4).
 ##

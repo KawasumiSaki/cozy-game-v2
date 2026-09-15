@@ -431,13 +431,21 @@ static func make_billboard_material(tex: Texture2D) -> StandardMaterial3D:
 ## pipeline should ever touch — and it would then need a `docs/CREDITS.md` line
 ## saying where it came from, which is a strange thing to write about a gradient.
 static func make_wind_noise(seed_val := 20260915) -> NoiseTexture2D:
+	return _noise_texture(0.01, seed_val)
+
+
+## The colour-patch fields: which part of the world is a slightly different
+## green. Sampled at world metres times a very small scale, so these are
+## LANDSCAPE features rather than mottling — see the shader.
+static func make_patch_noise(seed_val := 701) -> NoiseTexture2D:
+	return _noise_texture(0.01, seed_val)
+
+
+static func _noise_texture(frequency: float, seed_val: int) -> NoiseTexture2D:
 	var noise := FastNoiseLite.new()
 	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	noise.seed = seed_val
-	# Low frequency, because the texel is a PLACE on the field: the shader samples
-	# this at world metres times `wind_scale`, so a high frequency would make the
-	# gust smaller than a single plant.
-	noise.frequency = 0.01
+	noise.frequency = frequency
 	var tex := NoiseTexture2D.new()
 	tex.noise = noise
 	tex.width = 256
@@ -463,13 +471,45 @@ const VEGETATION_SHADER := "res://shaders/vegetation.gdshader"
 ## `half_height` is half the sprite's world height, in metres: the shader rotates
 ## about it, so it has to be the same number the scatter lifts the quad by.
 static func vegetation_parameters(half_height: float, wind_strength := 1.0,
-		tex: Texture2D = null, wind: Texture2D = null) -> Dictionary:
+		tex: Texture2D = null, wind: Texture2D = null, silhouette := true,
+		texel := Vector2(1.0, 1.0), tint := Color(1, 1, 1)) -> Dictionary:
 	return {
 		"albedo_texture": tex,
 		"wind_noise": wind,
 		"quad_half_height": half_height,
 		"wind_strength": wind_strength,
+		"silhouette": silhouette,
+		"sprite_texel": texel,
+		"tint": tint,
+		"outline_colour": OUTLINE,
+		"albedo2": GREEN_DARK,
+		"albedo2_noise": patch_noise2(),
+		"albedo3": GREEN_LIGHT,
+		"albedo3_noise": patch_noise3(),
 	}
+
+
+## The greens a silhouette plant can be. Three, and they are the SAME THREE the
+## procedural placeholders used before there were real sprites — so a field of
+## masks is the same palette as a field of generated tufts, and swapping the
+## sprites does not move the colours.
+const GREEN_BASE := Color(0.38, 0.60, 0.30)
+const GREEN_DARK := Color(0.32, 0.53, 0.26)
+const GREEN_LIGHT := Color(0.45, 0.68, 0.33)
+const OUTLINE := Color(0.16, 0.26, 0.14)
+
+static var _patch2: NoiseTexture2D = null
+static var _patch3: NoiseTexture2D = null
+
+static func patch_noise2() -> NoiseTexture2D:
+	if _patch2 == null:
+		_patch2 = make_patch_noise(701)
+	return _patch2
+
+static func patch_noise3() -> NoiseTexture2D:
+	if _patch3 == null:
+		_patch3 = make_patch_noise(911)
+	return _patch3
 
 
 ## One wind field for the whole world, built on first use.
@@ -490,8 +530,10 @@ static func wind_noise() -> NoiseTexture2D:
 ## `shaders/vegetation.gdshader` for what it does and what it deliberately does
 ## not do yet).
 static func make_vegetation_material(tex: Texture2D, half_height: float,
-		wind_strength := 1.0) -> ShaderMaterial:
-	var values := vegetation_parameters(half_height, wind_strength, tex, wind_noise())
+		wind_strength := 1.0, silhouette := true, texel := Vector2(1.0, 1.0),
+		tint := GREEN_BASE) -> ShaderMaterial:
+	var values := vegetation_parameters(half_height, wind_strength, tex,
+		wind_noise(), silhouette, texel, tint)
 	var mat := ShaderMaterial.new()
 	mat.shader = load(VEGETATION_SHADER)
 	for name in values:

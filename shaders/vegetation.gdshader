@@ -51,9 +51,60 @@ render_mode unshaded, cull_disabled, depth_prepass_alpha;
 
 // ---------------------------------------------------------------- the sprite
 
+// A SILHOUETTE, NOT A PICTURE. The reference project's sprites are pure white
+// with an alpha cut — every pixel that is drawn is (255,255,255) — and the
+// COLOUR COMES FROM HERE. That is the trick that makes a field of one sprite
+// read as a landscape: the shape is drawn once, and the shader decides what
+// colour this patch of ground is.
+//
+// It also means a coloured sprite would be a bug rather than a variation: the
+// shader multiplies the texture by these colours, so anything not white would
+// tint the result twice.
 uniform sampler2D albedo_texture : source_color, filter_nearest;
-uniform vec4 tint : source_color = vec4(1.0);
 uniform float alpha_scissor : hint_range(0.0, 1.0) = 0.5;
+
+// IS THIS SPRITE A SILHOUETTE, or a picture that carries its own colours?
+//
+// Grass and the accent tufts are silhouettes: white, one colour for the whole
+// plant, and the shader decides which colour. A TREE is not — it has a brown
+// trunk and a green canopy, and no single tint can produce both. So a painted
+// sprite keeps its own colours, skips the patches, and keeps the outline that
+// `CozyPixelArt` already baked into it.
+//
+// One shader for the whole layer, and this is the one bit that differs between
+// the two kinds of plant. The alternative was two shaders with the wind code
+// copied into both, which is the thing that drifts.
+uniform bool silhouette = true;
+
+// The base colour, and the darker outline this project draws around every
+// sprite so it stays readable against the ground (`CozyPixelArt._outline`).
+// The outline is done here rather than baked into the mask because the mask is
+// not ours to redraw — see docs/CREDITS.md.
+uniform vec4 tint : source_color = vec4(0.38, 0.60, 0.30, 1.0);
+uniform vec4 outline_colour : source_color = vec4(0.16, 0.26, 0.14, 1.0);
+
+// ---------------------------------------------------------------- the patches
+
+// Two more greens, each selected where its own noise crosses a threshold.
+//
+// SAMPLED IN WORLD XZ, which is the whole point: the patches are properties of
+// PLACES, so they do not swim when the camera moves and they line up across the
+// boundary between two chunk meshes. The frequencies are deliberately tiny —
+// the reference's scales are around 1/200 m — because these are meant to read as
+// a hillside being slightly different from the next one, not as mottling. Small
+// patches on a 0.55 m sprite would just be noise on a blade of grass.
+uniform vec4 albedo2 : source_color = vec4(0.32, 0.53, 0.26, 1.0);
+uniform sampler2D albedo2_noise : repeat_enable, filter_linear;
+uniform float albedo2_scale = 0.005;
+uniform float albedo2_threshold : hint_range(0.0, 1.0) = 0.604;
+
+uniform vec4 albedo3 : source_color = vec4(0.45, 0.68, 0.33, 1.0);
+uniform sampler2D albedo3_noise : repeat_enable, filter_linear;
+uniform float albedo3_scale = 0.003;
+uniform float albedo3_threshold : hint_range(0.0, 1.0) = 0.661;
+
+// One texel, for the outline pass below.
+uniform vec2 sprite_texel = vec2(0.0416667, 0.0416667);
 
 // Half the sprite's height in metres. The scatter lifts each quad by exactly
 // this much times the instance scale, so the two have to agree — this is where
@@ -91,6 +142,11 @@ uniform float lean_variety : hint_range(0.0, 45.0) = 14.0;
 // wind, and a second shader for the one asset that stands still would be a
 // second thing to keep in step.
 uniform float wind_strength : hint_range(0.0, 2.0) = 1.0;
+
+
+// Where this plant stands, in world space, carried to the fragment. `VERTEX` is
+// view space there, so the colour patches cannot be sampled from it.
+varying vec3 world_pos;
 
 
 float hash1(float n) {
@@ -184,14 +240,63 @@ void vertex() {
 	// applied twice. The plant is a rigid quad swung about its base: the width
 	// axis stays horizontal and only the stem direction leans.
 	vec3 world = base + right * lx + stem_up * ly;
+	world_pos = world;
 	MODELVIEW_MATRIX = VIEW_MATRIX;
 	VERTEX = world;
 }
 
 
+// NO EARLY `return` IN THIS FUNCTION. Godot's shader language rejects it --
+// "Using 'return' in the 'fragment' processor function is incorrect" -- and that
+// is a COMPILE error, not a warning: the whole material falls back and every
+// plant in the field stops moving. So the result is accumulated in locals and
+// written once at the bottom.
 void fragment() {
 	vec4 c = texture(albedo_texture, UV);
-	ALBEDO = c.rgb * tint.rgb;
-	ALPHA = c.a;
+	vec3 result_colour = c.rgb;
+	float result_alpha = c.a;
+
+	if (silhouette) {
+		// `VERTEX` in a FRAGMENT shader is view space, whatever `vertex()` left
+		// it as, so the world position is carried across in a varying rather than
+		// recomputed here. Getting this wrong is invisible at the origin and
+		// badly wrong at the camera.
+		vec3 place = world_pos;
+
+		vec4 colour = tint;
+		if (texture(albedo2_noise, place.xz * albedo2_scale).r > albedo2_threshold) {
+			colour = albedo2;
+		}
+		if (texture(albedo3_noise, place.xz * albedo3_scale).r > albedo3_threshold) {
+			colour = albedo3;
+		}
+		result_colour = c.rgb * colour.rgb;
+
+		// THE OUTLINE. This project draws a dark line around every sprite so it
+		// stays readable against the ground, and the reference's masks have none.
+		// Rather than redraw their art -- the one thing a CC BY licence does not
+		// let us quietly do -- the line is grown here: a transparent texel with an
+		// opaque neighbour becomes outline.
+		//
+		// One texel on a 24 px sprite is the same weight the baked outlines in
+		// `CozyPixelArt` carry, so it sits with them. The sampler CLAMPS, so the
+		// outermost texel of a sprite looks at itself -- which is why a silhouette
+		// that touched the edge of its image would lose its outline there, and why
+		// the sprites in `assets/art/pixel/environment` keep a pixel of padding.
+		if (c.a < alpha_scissor) {
+			float neighbour = max(
+				max(texture(albedo_texture, UV + vec2(sprite_texel.x, 0.0)).a,
+					texture(albedo_texture, UV - vec2(sprite_texel.x, 0.0)).a),
+				max(texture(albedo_texture, UV + vec2(0.0, sprite_texel.y)).a,
+					texture(albedo_texture, UV - vec2(0.0, sprite_texel.y)).a));
+			if (neighbour >= alpha_scissor) {
+				result_colour = outline_colour.rgb;
+				result_alpha = 1.0;
+			}
+		}
+	}
+
+	ALBEDO = result_colour;
+	ALPHA = result_alpha;
 	ALPHA_SCISSOR_THRESHOLD = alpha_scissor;
 }

@@ -44,10 +44,21 @@ Required attribution text, as the licence asks for it:
 
 > **Grass assets by Dylearn** — https://github.com/DylearnDev/Dylearn-3D-Pixel-Art-Grass-Demo
 
-**What we took and what we did not.** The shader SOURCE is MIT, so adapting it
-is the grant the licence makes. Their **art** is CC BY 4.0, which also permits
-this, credited above. Their project logo (Waterfowl) is **not licensed for reuse
-and is not used anywhere in this repository**.
+**What we took and what we did not.**
+
+| | |
+|---|---|
+| Code | Adapted for `shaders/vegetation.gdshader` — the wind model, the quantised animation rate and the base pivot. MIT, so adapting it is the grant the licence makes |
+| Art | **Two sprites are in this repository**, at `assets/art/pixel/environment/`: `grassleaf.png` and `accentleaf.png`. CC BY 4.0, credited above |
+
+Their project logo (Waterfowl) is **not licensed for reuse and is not used
+anywhere in this repository**.
+
+`grassleaf.png.import` and `accentleaf.png.import` are **edited from what Godot
+generated**, and the edit is deliberate: `detect_3d/compress_to=0`. The default
+is `1`, which silently switches a texture to VRAM compression the first time it
+is used in 3D — lossy, and it destroys a 24 x 24 sprite. If these files are ever
+regenerated, that line has to be put back by hand.
 
 ---
 

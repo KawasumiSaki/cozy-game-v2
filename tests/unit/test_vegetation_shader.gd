@@ -27,6 +27,7 @@ func _init() -> void:
 	case("the half-height reaches the shader", _half_height)
 	case("the wind field is generated, not shipped", _wind_is_procedural)
 	case("every uniform is either per-asset or named as tuning", _no_orphan_uniforms)
+	case("the real sprites are there and are the shape we assume", _real_sprites)
 
 
 func _loads() -> void:
@@ -77,7 +78,9 @@ func _half_height() -> void:
 ## committed as a PNG would be an art asset nobody drew, and it would then owe a
 ## line in `docs/CREDITS.md` saying where it came from.
 ## What `CozyPixelArt` drives, per asset, from GDScript.
-const PER_ASSET := ["albedo_texture", "wind_noise", "quad_half_height", "wind_strength"]
+const PER_ASSET := ["albedo_texture", "wind_noise", "quad_half_height", "wind_strength",
+	"silhouette", "sprite_texel", "tint", "outline_colour",
+	"albedo2", "albedo2_noise", "albedo3", "albedo3_noise"]
 
 ## World-level tuning that currently lives in the shader file with a default:
 ## the strength of the wind, how fast it travels, how far a plant bends, how
@@ -88,9 +91,10 @@ const PER_ASSET := ["albedo_texture", "wind_noise", "quad_half_height", "wind_st
 ## These are what the wind system (ENV V0.3) will eventually own, the same way
 ## `CozyTimeSystem` owns the clock the day/night code reads — at which point they
 ## move into `PER_ASSET`'s side of this list.
-const WORLD_TUNING := ["tint", "alpha_scissor", "wind_direction", "wind_scale",
+const WORLD_TUNING := ["alpha_scissor", "wind_direction", "wind_scale",
 	"wind_speed", "wind_threshold", "wind_angle", "noise_diverge_angle",
-	"framerate", "quantised", "height_variety", "lean_variety"]
+	"framerate", "quantised", "height_variety", "lean_variety",
+	"albedo2_scale", "albedo2_threshold", "albedo3_scale", "albedo3_threshold"]
 
 
 ## A uniform nothing writes is a knob that does nothing — this project's
@@ -102,6 +106,37 @@ func _no_orphan_uniforms() -> void:
 		var name := String(u["name"])
 		is_true("'%s' is per-asset or named as world tuning" % name,
 			PER_ASSET.has(name) or WORLD_TUNING.has(name))
+
+
+## Real sprites are a PROMISE THAT CAN BE BROKEN BY DELETING A FILE, which is why
+## `_texture_for` falls back rather than crashing — but a fallback that is never
+## exercised is how a field ends up drawn from placeholders for a month without
+## anyone noticing. The path is asserted to resolve, and the mask to be the size
+## the outline pass assumes.
+func _real_sprites() -> void:
+	var checked := 0
+	for asset_id in CozyVegetationScatter.REAL_TEXTURES:
+		var path := String(CozyVegetationScatter.REAL_TEXTURES[asset_id])
+		is_true("'%s' resolves to a file" % path, ResourceLoader.exists(path))
+		var tex: Texture2D = load(path)
+		is_true("'%s' is a texture" % asset_id, tex != null)
+		if tex == null:
+			continue
+		checked += 1
+		# A SILHOUETTE MUST BE WHITE, or the shader tints an already-tinted sprite
+		# and the plant comes out darker than the palette says.
+		if bool(CozyVegetationScatter.SILHOUETTE.get(asset_id, false)):
+			var img := tex.get_image()
+			var wrong := 0
+			for y in img.get_height():
+				for x in img.get_width():
+					var p := img.get_pixel(x, y)
+					if p.a > 0.5 and (p.r < 0.99 or p.g < 0.99 or p.b < 0.99):
+						wrong += 1
+			eq("'%s' is a white silhouette" % asset_id, wrong, 0)
+			is_true("'%s' declares its pixel size" % asset_id,
+				CozyVegetationScatter.SPRITE_SIZE.has(asset_id))
+	is_true("at least one real sprite is in use", checked > 0)
 
 
 func _wind_is_procedural() -> void:
