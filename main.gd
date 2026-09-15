@@ -258,6 +258,9 @@ var player: CozyCharacter = null
 ## itself, so a player whose money came out of the village's store would be
 ## watching a number go up rather than earning one. See `CozyPlayerState`.
 var player_state: CozyPlayerState = null
+
+## The player's pack, on screen. See `CozyPackPanel` for why it is only the pack.
+var pack_panel: CozyPackPanel = null
 var npc: CozyNpcAgent = null
 
 ## Points that come from the GROUND rather than from an object (sowing).
@@ -1534,6 +1537,14 @@ func _build_hud() -> void:
 	# edge, so it never covers the tool strip along the bottom. Offset bottom is
 	# left equal to top: a PanelContainer grows to its content's minimum height,
 	# and grow_vertical decides which way.
+	pack_panel = CozyPackPanel.new()
+	hud.add_child(pack_panel)
+	pack_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	pack_panel.offset_left = -CozyPackPanel.WIDTH - CozyUiTheme.GAP
+	pack_panel.offset_right = -CozyUiTheme.GAP
+	pack_panel.offset_top = CozyUiTheme.STRIP_H + CozyUiTheme.GAP
+	pack_panel.visible = false
+
 	npc_panel = CozyNpcPanel.new()
 	hud.add_child(npc_panel)
 	npc_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
@@ -1552,10 +1563,18 @@ func _build_hud() -> void:
 ## Only the ones with something behind them do anything, and the ones without say
 ## so on the bar itself — so this is a dispatch, not a place for rules.
 func _on_hud_category(id: String) -> void:
+	# The two categories with a panel. Each closes the other, because both are
+	# anchored to the same corner and two panels in one corner is one panel with
+	# its text on top of itself.
 	if id == "people" and hud.category_open():
+		_close_pack_panel()
 		_open_npc_panel(npc)
-	elif id != "people":
+	elif id == "inventory" and hud.category_open():
 		_close_npc_panel()
+		pack_panel.visible = true
+	else:
+		_close_npc_panel()
+		_close_pack_panel()
 
 
 func _on_hud_tool_selected(i: int) -> void:
@@ -2110,6 +2129,21 @@ func _close_npc_panel() -> void:
 	_npc_panel_target = null
 
 
+func _close_pack_panel() -> void:
+	if pack_panel != null:
+		pack_panel.visible = false
+
+
+## Called every frame the panel is open, for the same reason the resident
+## panel is: a count that changed because something was bought is a count the
+## player is looking at. There are a handful of rows, so this is a few label
+## writes rather than a rebuild.
+func _refresh_pack_panel() -> void:
+	if pack_panel == null or not pack_panel.visible:
+		return
+	pack_panel.refresh(player_state)
+
+
 ## Called every frame the panel is open. Needs MOVE — hunger climbs and energy
 ## falls while you read, and a panel frozen at the value it opened with would
 ## teach the player the numbers are decorative.
@@ -2487,6 +2521,7 @@ func _process(delta: float) -> void:
 			npc.debug_line() if npc != null else "-"])
 
 	_refresh_npc_panel()
+	_refresh_pack_panel()
 	_update_hud()
 
 
@@ -2583,6 +2618,7 @@ func _report() -> void:
 	_check_resource_chain()
 	_check_player_ledger()
 	_check_trade()
+	_check_pack_panel()
 
 	_report_house()
 	_report_runtime_building()
@@ -2784,6 +2820,91 @@ func _check_trade() -> void:
 
 	player_state.pack.items = pack_before
 	player.global_position = here
+
+
+## The pack panel shows the PLAYER'S pack, and it shows what is in it.
+##
+## Three things a panel can get wrong that no assertion about state can see:
+##
+##   1. IT DRAWS THE WRONG LEDGER. The village has an account too, the HUD
+##      already draws that one, and the two numbers look the same on screen. So
+##      the check gives the player a distinctive amount and asserts the panel
+##      says THAT — a panel reading `building.inventory` would show something
+##      else and pass every other check in the game.
+##   2. IT ACCUMULATES ROWS. A material that has been spent to zero must lose its
+##      row; a panel that only ever adds turns into a list of everything the
+##      player has ever touched.
+##   3. IT FEEDS ON ITS OWN OUTPUT. The resident panel was born with that bug and
+##      the refresh here writes into labels it already holds, so the failure mode
+##      is available. 600 refreshes is ten seconds of frames.
+func _check_pack_panel() -> void:
+	if pack_panel == null or player_state == null:
+		print("[cozyv2] pack panel: NOT BUILT  [FAIL]")
+		return
+
+	var pack_before: Dictionary = player_state.pack.items.duplicate()
+	var village_copper := building.inventory.count(CozyPrices.CURRENCY)
+
+	# A pack nothing else in the world has, so "the panel read the right ledger"
+	# is a claim with a wrong answer available to it.
+	player_state.pack.items.clear()
+	player_state.pack.add(CozyPrices.CURRENCY, 41.0)
+	player_state.pack.add("wheat", 7.0)
+	player_state.pack.add("wood", 3.0)
+	pack_panel.visible = true
+	_refresh_pack_panel()
+
+	# THROUGH `_refresh_pack_panel`, NOT `pack_panel.refresh` — the frame path is
+	# what the game uses, and a check that called the panel directly would pass
+	# against a wiring bug that hands the panel the wrong ledger entirely. The
+	# first version of this did exactly that, and its teeth stayed green.
+	var ids := pack_panel.row_ids()
+	var wheat_ok := pack_panel.shown_count("wheat") == 7
+	var wood_ok := pack_panel.shown_count("wood") == 3
+	# Money is in the header and NOT in the list: a row for it would be found by
+	# scanning, and the header is where it is read.
+	var money_in_list := ids.has(CozyPrices.CURRENCY)
+	var purse_ok := pack_panel.purse_text().begins_with("41")
+	var hiding_empty := not pack_panel.empty_shown()
+	var showing := wheat_ok and wood_ok and purse_ok and not money_in_list \
+		and hiding_empty and not is_equal_approx(village_copper, 41.0)
+	print("[cozyv2] pack panel: rows=%s, wheat=%d wood=%d, purse='%s', village copper %d  [%s]" % [
+		str(ids), pack_panel.shown_count("wheat"), pack_panel.shown_count("wood"),
+		pack_panel.purse_text(), int(village_copper),
+		"OK" if showing else "FAIL, the panel is not showing the player's own pack"])
+
+	# (2) Spending a material to nothing takes its row away.
+	player_state.pack.spend({"wood": 3.0})
+	_refresh_pack_panel()
+	var gone := pack_panel.shown_count("wood") == -1
+	var kept := pack_panel.shown_count("wheat") == 7
+	print("[cozyv2] pack panel drops a spent row: wood gone=%s, wheat kept=%s  [%s]" % [
+		str(gone), str(kept),
+		"OK" if gone and kept else "FAIL, a spent material kept its row"])
+
+	# (3) Idempotent. 600 refreshes is ten seconds of frames.
+	var once := "%s|%s" % [str(pack_panel.row_ids()), pack_panel.purse_text()]
+	var once_count := pack_panel.shown_count("wheat")
+	for i in 600:
+		_refresh_pack_panel()
+	var many := "%s|%s" % [str(pack_panel.row_ids()), pack_panel.purse_text()]
+	var stable := once == many and pack_panel.shown_count("wheat") == once_count
+	print("[cozyv2] pack panel refresh idempotent over 600 frames: %s  [%s]" % [
+		"unchanged" if stable else "'%s' -> '%s'" % [once, many],
+		"OK" if stable else "FAIL, refresh is feeding on its own output"])
+
+	# (4) And an empty pack says so rather than showing an empty list.
+	player_state.pack.items.clear()
+	_refresh_pack_panel()
+	var blank := pack_panel.row_count() == 0 and pack_panel.empty_shown()
+	print("[cozyv2] pack panel on an empty pack: %d row(s), says so=%s  [%s]" % [
+		pack_panel.row_count(), str(pack_panel.empty_shown()),
+		"OK" if blank else "FAIL, an empty pack drew rows or said nothing"])
+
+	# Put it all back: the pack, and the panel the way it was found.
+	player_state.pack.items = pack_before
+	_refresh_pack_panel()
+	pack_panel.visible = false
 
 
 func _check_resource_chain() -> void:
