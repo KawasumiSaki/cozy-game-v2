@@ -37,6 +37,28 @@ const INTERACT_HARVEST := "harvest"
 ## merging them.
 const INTERACT_PLANT := "plant"
 
+## A SHOP'S VERBS, which are not worked on the world at all — see `is_stall`.
+## They are interaction rows so that a stall answers `interaction_types` like
+## anything else, and a menu can find them the same way it finds `chop`.
+const INTERACT_BUY := "buy"
+const INTERACT_SELL := "sell"
+
+## The verbs the PLAYER performs, as opposed to the ones a resident's job does.
+##
+## A SECOND KIND OF CONSUMER, AND THE VOCABULARY HAS TO SAY SO. `test_resource_chain`
+## refuses a point type that an object offers and nothing wants — a rule this
+## project paid for with the `chest`/`store` bug — and the player is something
+## that wants. Without this list the check would have exactly two options: treat
+## a shop's verbs as unclaimed, or be taught in the test file about a menu it
+## cannot see.
+##
+## SO THIS IS THE LIST THE MENU ITERATES, not a copy kept beside it. A verb added
+## here is offered by the player's menu the same day; one removed here stops being
+## offered AND stops being expected, because both sides read this.
+const PLAYER_VERBS: Array[String] = [
+	INTERACT_CHOP, INTERACT_MINE, INTERACT_HARVEST, INTERACT_BUY, INTERACT_SELL,
+]
+
 const OBJECTS := {
 	"research_table": {
 		"name": "Research Table",
@@ -59,6 +81,23 @@ const OBJECTS := {
 		"capacity": 20.0,
 		"interactions": [
 			{"type": "store", "skill": "", "duration": 2.0, "reach": 0.7},
+		],
+	},
+	# A shop is a place, not a menu. It has no yields and no recipe: nothing is
+	# produced from the world here, which is why `CozyRecipeDefs` has nothing to
+	# say about its verbs and `is_stall` exists instead.
+	"market_stall": {
+		"name": "Market Stall",
+		"kind": "station",
+		"size": Vector2(1.8, 1.0),
+		"height": 1.4,
+		"color": Color(0.72, 0.58, 0.34),
+		"trades": true,
+		# Reach is longer than a tree's: you talk across a counter rather than
+		# standing in the goods.
+		"interactions": [
+			{"type": "buy", "skill": "", "duration": 1.0, "reach": 2.0},
+			{"type": "sell", "skill": "", "duration": 1.0, "reach": 2.0},
 		],
 	},
 	"bed": {
@@ -284,6 +323,16 @@ static func interaction_types(def_id: String) -> Array[String]:
 ## to stand. The number is still the object's own — its interaction row already
 ## says how near the work has to be done, and a second number here would be a
 ## second answer.
+## Does this object trade rather than produce?
+##
+## A FLAG RATHER THAN A PILE OF TYPES. The verbs live in `CozyPrices` and the
+## shelf lives there too, so an object that merely HAS a `buy` interaction would
+## still need the price table to exist — this says the object is a shop and lets
+## the two tables meet in one place instead of in the menu.
+static func is_stall(def_id: String) -> bool:
+	return bool(get_def(def_id).get("trades", false))
+
+
 static func reach_of(def_id: String) -> float:
 	var best := 0.0
 	for row in get_def(def_id).get("interactions", []):

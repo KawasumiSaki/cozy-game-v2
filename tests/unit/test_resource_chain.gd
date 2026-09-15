@@ -70,8 +70,8 @@ func _wants_are_offered() -> void:
 ## deleting every interaction in the game would make this suite green.
 func _offer_set_is_real() -> void:
 	var offered := _offered_types()
-	eq("seven kinds of interaction point exist", offered.size(), 7)
-	for t in ["work", "sit", "sleep", "store", "chop", "mine", "harvest"]:
+	eq("nine kinds of interaction point exist", offered.size(), 9)
+	for t in ["work", "sit", "sleep", "store", "chop", "mine", "harvest", "buy", "sell"]:
 		is_true("'%s' is among them" % t, offered.has(t))
 	is_true("gathering is a real trade to look for", offered.has("chop")
 		or offered.has("mine") or offered.has("harvest"))
@@ -332,6 +332,16 @@ func _demanded_types() -> Array[String]:
 			_push(out, t)
 	for a in CozySchedule.ACTIVITY_POINTS:
 		_push(out, String(CozySchedule.ACTIVITY_POINTS[a]))
+	# AND THE PLAYER IS A CONSUMER TOO. A shop's `buy`/`sell` are worked by a
+	# person, not by a trade, and a check that only knew about jobs would call
+	# them unclaimed — which is what it did the moment the stall was added, and it
+	# was right to.
+	#
+	# Read from `CozyObjectDefs.PLAYER_VERBS`, the SAME list `main.gd`'s context
+	# menu iterates to decide what to offer. A copy kept here would let the two
+	# drift, and the drift would look exactly like this check passing.
+	for t in CozyObjectDefs.PLAYER_VERBS:
+		_push(out, t)
 	return out
 
 

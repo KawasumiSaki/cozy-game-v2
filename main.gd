@@ -1014,6 +1014,13 @@ func _place_resource_nodes() -> void:
 	_place_object("lamp_post", 5.2, -1.6, 0)
 	_place_object("floor_lamp", 1.2, 4.4, 0)
 
+	# A stall, east of the door and clear of the crop row. A shop is a FIXTURE
+	# rather than something the build tool offers: `market_stall` is deliberately
+	# not in `PLACEABLE`, because a player who can put a shop anywhere is a
+	# question about economy design and this is a question about whether buying a
+	# seed works at all.
+	_place_object("market_stall", 7.6, 2.2, 0)
+
 
 ## Break the ground the crops are going into: grass -> soil -> farmland.
 ##
@@ -1864,22 +1871,29 @@ func _open_context_menu(at: Vector2) -> void:
 		"object":
 			var o: CozyWorldObject = probe["node"]
 			target["title"] = CozyObjectDefs.display_name(o.def_id)
-			# WORK IT, if it is a thing to be worked and the player is close
-			# enough. Right-click is already the world's selection gesture and
-			# this does not take it away — the verb lives IN the menu rather than
-			# replacing it, so "what is that?" still works on a tree.
+			# WHAT THE PLAYER CAN DO HERE, read from the object's definition and
+			# filtered by `CozyObjectDefs.PLAYER_VERBS` — the same list the
+			# resource-chain check reads, so a verb offered here and wanted by
+			# nobody cannot happen quietly.
 			#
-			# THE ENTRIES COME FROM THE DEFINITION, NOT FROM THE LIVE POINTS
-			# (`CozyObjectDefs.interaction_types`), so a spent node still says
-			# what could be done to it and the menu says WHY it will not.
+			# Right-click is already the world's selection gesture and this does
+			# not take it away: the verb lives IN the menu, so "what is that?"
+			# still works on a tree.
+			#
+			# THE ENTRIES COME FROM THE DEFINITION, NOT FROM THE LIVE POINTS, so a
+			# spent node still says what could be done to it and the menu says WHY
+			# it will not.
+			var near := _within_reach(o)
 			for verb in CozyObjectDefs.interaction_types(o.def_id):
-				if CozyRecipeDefs.for_point(verb).is_empty():
+				if not CozyObjectDefs.PLAYER_VERBS.has(verb):
 					continue
-				var near := _within_reach(o)
-				entries.append({"id": "gather:%s" % verb,
-					"label": _verb_label(verb),
-					"hint": _gather_hint(o, verb, near),
-					"disabled": not (near and o.is_available(_game_hours()))})
+				if CozyObjectDefs.is_stall(o.def_id):
+					_trade_entries(entries, o, verb, near)
+				elif not CozyRecipeDefs.for_point(verb).is_empty():
+					entries.append({"id": "gather:%s" % verb,
+						"label": _verb_label(verb),
+						"hint": _gather_hint(o, verb, near),
+						"disabled": not (near and o.is_available(_game_hours()))})
 			entries.append({"id": "info", "label": "Info"})
 			entries.append({"id": "remove", "label": "Remove"})
 		"npc":
@@ -1921,9 +1935,11 @@ func _on_menu_action(id: String, target: Variant) -> void:
 		_:
 			if id.begins_with("gather:"):
 				_gather_from(target["node"], id.trim_prefix("gather:"))
+			elif id.begins_with("trade:"):
+				_trade_with(target["node"], id.trim_prefix("trade:"))
 
 
-# ---------------------------------------------------------------- the player's work
+# ------------------------------------------------- the player's work and trade
 
 ## The player works a resource node by hand.
 ##
@@ -1963,6 +1979,72 @@ func _gather_from(o: CozyWorldObject, verb: String) -> void:
 	if o.refresh_availability(now):
 		_rebuild_spatial()
 	_say("%s: %s" % [CozyObjectDefs.display_name(o.def_id), ", ".join(got)])
+
+
+## One row per thing on the shelf: a `Buy` line and a `Sell` line for each.
+##
+## PAIRS RATHER THAN TWO SUBMENUS. The menu is a flat list of buttons and giving
+## it a hierarchy to hold four rows would be a new widget for four rows. What the
+## player reads is "Seed: buy 4, sell 1", which is the price table's own line.
+##
+## `disabled` carries the reason — too far, or not enough copper, or none to sell
+## — and the hint says which, because a greyed button with no explanation reads
+## as broken.
+func _trade_entries(entries: Array, o: CozyWorldObject, verb: String, near: bool) -> void:
+	for id in CozyPrices.SHELF:
+		if not CozyPrices.has_price(String(id)):
+			continue
+		var buying := verb == CozyObjectDefs.INTERACT_BUY
+		var price := CozyPrices.buy(String(id)) if buying else CozyPrices.sell(String(id))
+		if price <= 0.0:
+			continue
+		var afford := CozyPrices.can_afford(player_state.pack, String(id), 1) if buying 			else player_state.pack.count(String(id)) >= 1.0
+		entries.append({
+			"id": "trade:%s:%s" % ["buy" if buying else "sell", String(id)],
+			"label": "%s %s — %d %s" % [
+				"Buy" if buying else "Sell", CozyMaterials.display_name(String(id)),
+				int(price), CozyMaterials.display_name(CozyPrices.CURRENCY)],
+			"hint": _trade_hint(o, String(id), buying, near, afford),
+			"disabled": not (near and afford),
+		})
+
+
+func _trade_hint(o: CozyWorldObject, id: String, buying: bool, near: bool, afford: bool) -> String:
+	if not near:
+		return "stand closer to the %s" % CozyObjectDefs.display_name(o.def_id).to_lower()
+	if not afford:
+		return "not enough %s" % CozyMaterials.display_name(CozyPrices.CURRENCY).to_lower() 			if buying else "none to sell"
+	var have := player_state.pack.count(CozyPrices.CURRENCY)
+	return "you have %d %s" % [int(have), CozyMaterials.display_name(CozyPrices.CURRENCY)]
+
+
+## Buy or sell one of something, at a stall.
+##
+## THE PURSE IS THE PLAYER'S, and the same argument as `_gather_from`: the
+## village's account pays for walls, and a stall that took from it would let the
+## player spend goods they never earned. `CozyPrices` takes the purse as an
+## ARGUMENT rather than reaching for one, which is what makes that checkable
+## instead of a convention.
+func _trade_with(o: CozyWorldObject, spec: String) -> void:
+	if o == null or not is_instance_valid(o) or player_state == null:
+		return
+	var parts := spec.split(":")
+	if parts.size() != 2:
+		return
+	if not _within_reach(o):
+		_say("too far away", true)
+		return
+	var buying := String(parts[0]) == "buy"
+	var id := String(parts[1])
+	var ok := CozyPrices.buy_from(player_state.pack, id, 1) if buying 		else CozyPrices.sell_to(player_state.pack, id, 1)
+	if not ok:
+		_say("that trade did not go through", true)
+		return
+	_say("%s %s x1 — %d %s" % [
+		"bought" if buying else "sold", CozyMaterials.display_name(id),
+		int(CozyPrices.buy(id) if buying else CozyPrices.sell(id)),
+		CozyMaterials.display_name(CozyPrices.CURRENCY)])
+	_update_hud()
 
 
 ## Is the player close enough to work this object by hand?
@@ -2500,6 +2582,7 @@ func _report() -> void:
 	_check_scatter_incremental()
 	_check_resource_chain()
 	_check_player_ledger()
+	_check_trade()
 
 	_report_house()
 	_report_runtime_building()
@@ -2635,6 +2718,72 @@ func _check_player_ledger() -> void:
 	player_state.pack.items = pack_before
 	player.global_position = here
 	_rebuild_spatial()
+
+
+## Buying and selling move the player's purse and the shelf — and nothing else.
+##
+## The price table is pure and its one hard rule (buy > sell) is a unit test, so
+## what is left for the world to prove is the two things pure code cannot: that
+## the stall is somewhere the player can actually stand, and that a trade touches
+## the PLAYER'S account rather than the village's. `CozyPrices` takes the purse as
+## an argument, which is what makes that a fact rather than a convention.
+##
+## The fiction is arranged rather than stumbled into: the player is handed copper
+## and wheat, trades, and is put back exactly as they were. A trade test that
+## needed the player to go and earn something first would depend on where the
+## trees are.
+func _check_trade() -> void:
+	if player_state == null or player == null:
+		print("[cozyv2] trade: no player state to check  [FAIL]")
+		return
+	var stall := _first_object("market_stall")
+	if stall == null:
+		print("[cozyv2] trade: no stall in the world to trade at  [FAIL]")
+		return
+
+	var pack_before: Dictionary = player_state.pack.items.duplicate()
+	var village_before := building.inventory.total()
+	var here := player.global_position
+
+	player_state.pack.items.clear()
+	player_state.pack.add(CozyPrices.CURRENCY, 100.0)
+	player_state.pack.add("wheat", 2.0)
+	var purse := player_state.pack.count(CozyPrices.CURRENCY)
+
+	# Out of range first, so the reach rule has teeth here too.
+	player.global_position = stall.global_position + Vector3(0.0, 0.0, 25.0)
+	_trade_with(stall, "buy:seed")
+	var refused_far := is_equal_approx(
+		player_state.pack.count(CozyPrices.CURRENCY), purse)
+
+	player.global_position = stall.global_position
+	_trade_with(stall, "buy:seed")
+	var bought := is_equal_approx(player_state.pack.count("seed"), 1.0) 		and is_equal_approx(player_state.pack.count(CozyPrices.CURRENCY),
+			purse - CozyPrices.buy("seed"))
+
+	_trade_with(stall, "sell:wheat")
+	var sold := is_equal_approx(player_state.pack.count("wheat"), 1.0) 		and is_equal_approx(player_state.pack.count(CozyPrices.CURRENCY),
+			purse - CozyPrices.buy("seed") + CozyPrices.sell("wheat"))
+
+	# Money cannot be bought or sold, which is the rule that keeps a stall from
+	# turning copper into more copper for anyone standing in front of it.
+	var minted := not CozyPrices.buy_from(player_state.pack, CozyPrices.CURRENCY, 1) 		and not CozyPrices.sell_to(player_state.pack, CozyPrices.CURRENCY, 1)
+
+	# And an unaffordable purchase is refused whole rather than partly paid.
+	player_state.pack.items.clear()
+	player_state.pack.add(CozyPrices.CURRENCY, 1.0)
+	var poor := not CozyPrices.buy_from(player_state.pack, "bread", 1) 		and is_equal_approx(player_state.pack.count(CozyPrices.CURRENCY), 1.0)
+
+	var village_still := is_equal_approx(building.inventory.total(), village_before)
+
+	print("[cozyv2] trade: at the stall, refused out of range=%s, bought=%s, sold=%s, currency not tradable=%s, cannot overspend=%s, village %s  [%s]" % [
+		str(refused_far), str(bought), str(sold), str(minted), str(poor),
+		"untouched" if village_still else "MOVED",
+		"OK" if refused_far and bought and sold and minted and poor and village_still
+			else "FAIL, a trade moved something it should not have"])
+
+	player_state.pack.items = pack_before
+	player.global_position = here
 
 
 func _check_resource_chain() -> void:

@@ -93,6 +93,19 @@ const MATERIALS := {
 		"kind": "ingredient",
 		"color": Color(0.62, 0.66, 0.34),
 	},
+	# MONEY, and it is a material like the rest of them. Doc #35 says one store
+	# for everything a person carries, and money is not the exception: copper
+	# stacks, saves and is spent through the code wood already uses.
+	#
+	# Willow 2026-09-15 asked for three tiers — copper, silver, gold — and for
+	# only copper to exist for now. So this is the only one, and silver arrives
+	# as a row here plus a row in `CozyPrices` on the day something costs more
+	# than a purse of copper can hold.
+	"copper": {
+		"name": "Copper",
+		"kind": "material",
+		"color": Color(0.79, 0.52, 0.28),
+	},
 }
 
 const DEFAULT_MATERIAL := "wood"
