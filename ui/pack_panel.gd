@@ -28,6 +28,7 @@ extends PanelContainer
 ##   rule
 ##   materials  one row per thing carried: name, then the count right-aligned
 ##              so a column of numbers can be compared at a glance
+##   items      THE BAG, as a grid of the places it has — see below
 ##
 ## The rows CHANGE SET, unlike the resident panel's fixed skills — a material
 ## appears the first time it is picked up. So the rows are kept in a dictionary
@@ -35,17 +36,36 @@ extends PanelContainer
 ## WRITES INTO labels it already has rather than rebuilding the list. Rebuilding
 ## would be a refresh that reads its own output, which is the bug the resident
 ## panel was born with.
+##
+## ---------------------------------------------------------------------------
+## TWO KINDS OF THING, TWO SECTIONS, AND THEY ARE NOT THE SAME SHAPE
+##
+## A material is an id and a COUNT (`CozyInventory`), so it is a row: "Wood 12".
+## An item is a PLACE (`CozyItemContainer`), so it is a grid of cells and the holes
+## between them are information — the eight slot is empty and the ninth is not, and
+## a list of what is carried cannot say that. The item grid arrived with the first
+## thing that could fill it (2026-09-15); before that it would have been a grid of
+## empty squares that could never fill, which teaches a player the panel is broken.
 
-const WIDTH := 220
+## Every cell fires this with the instance id, and `main.gd` decides what a
+## right-click on an item means. The panel does not know about bags or bodies —
+## it draws what it is handed, which is what makes it checkable.
+signal item_action_requested(instance_id: String)
+
+const WIDTH := 240
 
 ## ASCII, because this project ships no font file and the UI draws in Godot's
 ## default face — a glyph that face lacks renders as a tofu box.
 const EMPTY_TEXT := "nothing yet - chop a tree"
 
+const GRID_COLUMNS := 3
+
 var _title: Label = null
 var _purse: Label = null
 var _rows_box: VBoxContainer = null
 var _empty: Label = null
+var _grid: GridContainer = null
+var _bag_cells: Array = []
 
 var _rows: Dictionary = {}      ## material id -> {name: Label, count: Label}
 var _order: Array[String] = []  ## the ids currently drawn, in display order
@@ -86,6 +106,22 @@ func _build() -> void:
 	_empty.text = EMPTY_TEXT
 	_empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(_empty)
+
+	col.add_child(_rule())
+
+	var item_heading := _label(CozyUiTheme.TEXT_DIM, CozyUiTheme.FONT_SIZE_SMALL)
+	item_heading.text = "ITEMS"
+	col.add_child(item_heading)
+
+	_grid = GridContainer.new()
+	_grid.columns = GRID_COLUMNS
+	_grid.add_theme_constant_override("h_separation", 2)
+	_grid.add_theme_constant_override("v_separation", 2)
+	col.add_child(_grid)
+
+	var item_hint := _label(CozyUiTheme.TEXT_DIM, CozyUiTheme.FONT_SIZE_SMALL)
+	item_hint.text = "right-click an item"
+	col.add_child(item_hint)
 
 
 # ---------------------------------------------------------------- refresh
@@ -137,7 +173,37 @@ func refresh(state: CozyPlayerState) -> void:
 			_remove_row(String(id))
 
 	_order = ids
-	_empty.visible = ids.is_empty()
+	# BOTH SECTIONS, or the panel says "nothing yet" over a bag with a sword in it.
+	_empty.visible = ids.is_empty() and state.bag.is_empty()
+
+	# THE GRID IS AS BIG AS THE BAG. A backpack that grants more places has to grant
+	# more cells, so this rebuilds when the capacity moves and only then — and the
+	# comparison is against the STATE rather than against the cells that are already
+	# there, so it settles instead of oscillating.
+	if _bag_cells.size() != state.bag.capacity:
+		_rebuild_grid(state.bag.capacity)
+	for i in _bag_cells.size():
+		(_bag_cells[i] as CozyItemSlot).show_item(state.bag.item_at(i))
+
+
+## Rebuild the item grid, and ONLY the grid: the material rows above are written
+## into labels that already exist, and a rebuild of the whole panel would be a
+## refresh that reads its own output one level up.
+func _rebuild_grid(places: int) -> void:
+	for cell in _bag_cells:
+		if is_instance_valid(cell):
+			_grid.remove_child(cell)
+			cell.queue_free()
+	_bag_cells.clear()
+	for i in places:
+		var cell := CozyItemSlot.new()
+		cell.right_clicked.connect(_on_cell_clicked)
+		_grid.add_child(cell)
+		_bag_cells.append(cell)
+
+
+func _on_cell_clicked(instance_id: String) -> void:
+	item_action_requested.emit(instance_id)
 
 
 ## Carried means MORE THAN ZERO, and money is not in the list.
@@ -203,6 +269,38 @@ func empty_shown() -> bool:
 
 func row_count() -> int:
 	return _rows.size()
+
+
+# ---------------------------------------------------------------- the bag
+
+## How many item cells are DRAWN. The bag's own capacity, not a number kept here —
+## a panel that drew twelve cells for a sixteen-place pack would hide four places.
+func bag_cell_count() -> int:
+	return _bag_cells.size()
+
+
+## The name drawn in one bag cell, or "" for a hole.
+func bag_shown(index: int) -> String:
+	if index < 0 or index >= _bag_cells.size():
+		return ""
+	return (_bag_cells[index] as CozyItemSlot).shown_name()
+
+
+## The name drawn against an instance, wherever it sits in the bag, or "".
+func bag_shown_anywhere(instance_id: String) -> String:
+	for cell in _bag_cells:
+		var c: CozyItemSlot = cell
+		if c.has_item() and c.item().instance_id == instance_id:
+			return c.shown_name()
+	return ""
+
+
+func bag_empty_cells() -> int:
+	var n := 0
+	for cell in _bag_cells:
+		if not (cell as CozyItemSlot).has_item():
+			n += 1
+	return n
 
 
 # ---------------------------------------------------------------- widgets

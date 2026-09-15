@@ -87,5 +87,21 @@ static func button_style_hover() -> StyleBoxFlat:
 	return sb
 
 
+## One place in a bag or on a body.
+##
+## EMPTY AND FILLED ARE DIFFERENT FILLS, not two weights of border. A hole in a
+## bag is the thing a grid exists to show, and it has to be visible from across
+## the panel rather than needing to be looked for — four cells in a row and one of
+## them a lighter outline is a hole nobody finds.
+static func slot_style(filled := false) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.24, 0.21, 0.26, 0.95) if filled \
+		else Color(0.11, 0.10, 0.13, 0.95)
+	sb.border_color = ACCENT_DIM if filled else PANEL_BORDER_DIM
+	sb.set_border_width_all(BORDER)
+	sb.set_corner_radius_all(0)
+	return sb
+
+
 static func label_color(dim := false) -> Color:
 	return TEXT_DIM if dim else TEXT

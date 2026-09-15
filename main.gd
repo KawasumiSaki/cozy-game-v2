@@ -262,6 +262,16 @@ var player_state: CozyPlayerState = null
 ## The player's pack, on screen. See `CozyPackPanel` for why it is only the pack.
 var pack_panel: CozyPackPanel = null
 
+## What the player is wearing, on screen. Shares a corner with the pack panel,
+## because the two are one interaction: taking a sword off in one and watching it
+## appear in the other is the whole of what "the panels should work together"
+## means (Willow, 2026-09-15).
+var gear_panel: CozyGearPanel = null
+
+## The top-right column the two panels live in. Held because it is the thing the
+## anchors are set on — the panels inside it are laid out by the container.
+var right_column: VBoxContainer = null
+
 ## Everything alive that can be killed. A plain list rather than a group: there
 ## are a handful, the swing asks all of them once per active frame, and a group
 ## lookup would be a second way to ask the same question.
@@ -607,6 +617,17 @@ func _build_self_check() -> void:
 	# restores everything it touches. Late enough that the autopilot has parked the
 	# player, early enough to be nowhere near the resident's own work at 900.
 	self_check.add("dropped_items", 500, _check_dropped_items)
+	# THE LAYOUT, and it takes TWO stages for a reason that is not a style choice:
+	# `Control.size` does not exist until a layout pass has run, and a container
+	# SKIPS its hidden children — so this cannot be measured in the frame that opens
+	# the panels, and cannot be measured at all unless they are open.
+	#
+	# Nothing else in this project can see a panel drawn off the edge of the window:
+	# every widget in it is present, correct and unreachable, and the player who
+	# reports it says "the panel is broken". A person checks this with a screenshot;
+	# a headless run has to check it like this.
+	self_check.add("item_panels_open", 600, _open_item_panels)
+	self_check.add("item_panels_layout", 640, _check_item_panels_fit)
 	self_check.add("outline", 1500, _check_outline_build)
 	# Gated on BUILDING, not on the house. This test adds a dividing wall at
 	# runtime with a door cut into it, which is the ONE thing measured to produce
@@ -1595,13 +1616,34 @@ func _build_hud() -> void:
 	# edge, so it never covers the tool strip along the bottom. Offset bottom is
 	# left equal to top: a PanelContainer grows to its content's minimum height,
 	# and grow_vertical decides which way.
+	#
+	# GEAR AND PACK ARE ONE COLUMN, because they are one interaction: taking a
+	# sword off in one and watching it land in the other is the whole of what
+	# Willow asked for when she said the two panels should work together. Two
+	# panels anchored to the same corner would have been one panel with its text on
+	# top of itself. The column is as wide as the WIDER panel and both fill it, so
+	# the two edges line up down the corner.
+	right_column = VBoxContainer.new()
+	hud.add_child(right_column)
+	right_column.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	right_column.offset_left = -CozyGearPanel.WIDTH - CozyUiTheme.GAP
+	right_column.offset_right = -CozyUiTheme.GAP
+	right_column.offset_top = CozyUiTheme.STRIP_H + CozyUiTheme.GAP
+	right_column.add_theme_constant_override("separation", CozyUiTheme.GAP)
+	# IGNORE, so a click that lands in the column's empty space goes to the world
+	# rather than being swallowed by an invisible box. The panels inside it still
+	# take their own clicks — this is about the gap between and around them.
+	right_column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	gear_panel = CozyGearPanel.new()
+	right_column.add_child(gear_panel)
+	gear_panel.visible = false
+	gear_panel.item_action_requested.connect(_on_item_action)
+
 	pack_panel = CozyPackPanel.new()
-	hud.add_child(pack_panel)
-	pack_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	pack_panel.offset_left = -CozyPackPanel.WIDTH - CozyUiTheme.GAP
-	pack_panel.offset_right = -CozyUiTheme.GAP
-	pack_panel.offset_top = CozyUiTheme.STRIP_H + CozyUiTheme.GAP
+	right_column.add_child(pack_panel)
 	pack_panel.visible = false
+	pack_panel.item_action_requested.connect(_on_item_action)
 
 	npc_panel = CozyNpcPanel.new()
 	hud.add_child(npc_panel)
@@ -1629,10 +1671,18 @@ func _on_hud_category(id: String) -> void:
 		_open_npc_panel(npc)
 	elif id == "inventory" and hud.category_open():
 		_close_npc_panel()
-		pack_panel.visible = true
+		_open_item_panels()
 	else:
 		_close_npc_panel()
 		_close_pack_panel()
+
+
+## The Inventory category, which is BOTH panels. They are one screen split in two:
+## what you are wearing and what you are carrying, with the swap between them being
+## the only thing either is for.
+func _open_item_panels() -> void:
+	gear_panel.visible = true
+	pack_panel.visible = true
 
 
 func _on_hud_tool_selected(i: int) -> void:
@@ -2014,6 +2064,12 @@ func _on_menu_action(id: String, target: Variant) -> void:
 				_gather_from(target["node"], id.trim_prefix("gather:"))
 			elif id.begins_with("trade:"):
 				_trade_with(target["node"], id.trim_prefix("trade:"))
+			elif id.begins_with("stow:"):
+				_stow_item(id.trim_prefix("stow:"))
+			elif id.begins_with("equip:"):
+				_equip_item(id.trim_prefix("equip:"))
+			elif id.begins_with("unwear:"):
+				_unwear_item(id.trim_prefix("unwear:"))
 
 
 # ---------------------------------------------------------------- fighting
@@ -2374,6 +2430,117 @@ func _trade_with(o: CozyWorldObject, spec: String) -> void:
 	_update_hud()
 
 
+# ---------------------------------------------------------------- wearing and stowing
+
+## How far in front of the player a thrown-away item lands.
+##
+## LONGER THAN `CozyDroppedItem.PICKUP_RADIUS`, and that is the only reason the
+## number exists. A drop at the player's own position is inside the pickup radius
+## by definition, so "drop it" would be taken back on the very next frame and the
+## button would look broken. Thrown AHEAD rather than sideways because that is
+## where the player is looking, and `ground_forward()` is the camera's own idea of
+## forward — the same one the W key moves along, so the two cannot disagree about
+## which way is in front of you.
+const TOSS_DISTANCE := 1.4
+
+
+## What a right-click on an item offers, which depends on WHERE the item is.
+##
+## ONE MENU FOR TWO PLACES, because a player does not think of a sword as living in
+## one of two systems: it is either on them or in the pack, and the interesting verb
+## is always the way to the other one. `Take off` and `Drop` for something worn,
+## `Equip` for something carried.
+func _on_item_action(instance_id: String) -> void:
+	if player_state == null or menu == null:
+		return
+	var worn := player_state.equipment.is_wearing(instance_id)
+	var item := _item_named(instance_id, worn)
+	if item == null:
+		return
+
+	var entries: Array = []
+	if worn:
+		# TWO VERBS, TWO DESTINATIONS, AND THE REFUSALS DIFFER: a full pack stops
+		# one of them and not the other. A greyed button with no reason reads as
+		# broken, so the hint carries the reason rather than the button vanishing.
+		var full := player_state.bag.is_full()
+		entries.append({"id": "stow:%s" % instance_id, "label": "Take off",
+			"hint": "no room in your pack" if full else "into your pack",
+			"disabled": full})
+		entries.append({"id": "unwear:%s" % instance_id, "label": "Drop",
+			"hint": "onto the ground in front of you"})
+	else:
+		entries.append({"id": "equip:%s" % instance_id, "label": "Equip",
+			"hint": "worn in a free %s place" % CozyItemDefs.slot_name(
+				item.slot()).to_lower()})
+
+	menu.open_for(entries, get_viewport().get_mouse_position(),
+		{"title": item.display_name(), "kind": "item", "id": instance_id})
+
+
+## The item behind an id, from wherever it is. Null when it is in neither place,
+## which is how a menu click that has gone stale is refused rather than crashing.
+func _item_named(instance_id: String, worn: bool) -> CozyItemInstance:
+	if worn:
+		var at := player_state.equipment.place_of(instance_id)
+		if at.is_empty():
+			return null
+		return player_state.equipment.worn(String(at["kind"]), int(at["index"]))
+	return player_state.bag.item_at(player_state.bag.slot_of(instance_id))
+
+
+## Take a worn item off and stow it in the pack.
+##
+## THE REFUSAL IS THE POINT. A full pack must leave the sword ON the body and say
+## so; the other order — take it off, then find there is nowhere to put it — ends
+## with the item in neither place, which is a loss the player can neither see nor
+## describe. `CozyPlayerState.stow` does the check and the move in the one order
+## that cannot lose anything.
+func _stow_item(instance_id: String) -> void:
+	var item := _item_named(instance_id, true)
+	if item == null:
+		return
+	var name := item.display_name()
+	if not player_state.stow(instance_id):
+		_say("%s stays on you - your pack is full" % name, true)
+		return
+	_say("took off %s" % name)
+	_update_hud()
+
+
+## Put a bagged item on. Whatever it displaced goes back in the pack, which always
+## fits — see `CozyPlayerState.wear` for why that is a property rather than luck.
+func _equip_item(instance_id: String) -> void:
+	var item := _item_named(instance_id, false)
+	if item == null:
+		return
+	var name := item.display_name()
+	if not player_state.wear(instance_id):
+		_say("%s cannot be worn" % name, true)
+		return
+	_say("wearing %s" % name)
+	_update_hud()
+
+
+## Throw a worn item onto the ground, in front of the player.
+##
+## IT IS NOT DESTROYED, and it does not need an undo: everything thrown away is a
+## thing the player can walk over and pick back up, by exactly the road a felled
+## tree's wood arrives on.
+func _unwear_item(instance_id: String) -> void:
+	var item := _item_named(instance_id, true)
+	if item == null:
+		return
+	var name := item.display_name()
+	player_state.equipment.unequip_instance(instance_id)
+	var spot := player.global_position
+	if camera != null:
+		spot += camera.ground_forward() * TOSS_DISTANCE
+	_lay_item(item, spot)
+	_say("dropped %s" % name)
+	_update_hud()
+
+
 ## Is the player close enough to work this object by hand?
 ##
 ## Measured from the PLAYER, not from the mouse: the cursor can point at a tree
@@ -2440,6 +2607,8 @@ func _close_npc_panel() -> void:
 func _close_pack_panel() -> void:
 	if pack_panel != null:
 		pack_panel.visible = false
+	if gear_panel != null:
+		gear_panel.visible = false
 
 
 ## Called every frame the panel is open, for the same reason the resident
@@ -2450,6 +2619,15 @@ func _refresh_pack_panel() -> void:
 	if pack_panel == null or not pack_panel.visible:
 		return
 	pack_panel.refresh(player_state)
+
+
+## The same, for what is worn. It reads `CozyPlayerState.attack()` and `max_hp()`,
+## which read `CozyStats` — so equipping a sword moves a number on the screen by
+## exactly the path the fight uses, rather than by a second sum written here.
+func _refresh_gear_panel() -> void:
+	if gear_panel == null or not gear_panel.visible:
+		return
+	gear_panel.refresh(player_state)
 
 
 ## Called every frame the panel is open. Needs MOVE — hunger climbs and energy
@@ -2837,6 +3015,7 @@ func _process(delta: float) -> void:
 
 	_refresh_npc_panel()
 	_refresh_pack_panel()
+	_refresh_gear_panel()
 	_tick_combat()
 	# LAST, so the loot from a kill this frame is on the ground before anything
 	# asks whether the player is standing on it. The order does not change the
@@ -2941,6 +3120,7 @@ func _report() -> void:
 	_check_player_ledger()
 	_check_trade()
 	_check_pack_panel()
+	_check_item_panels()
 	_check_fight()
 
 	_report_house()
@@ -3382,6 +3562,257 @@ func _check_pack_panel() -> void:
 	# Put it all back: the pack, and the panel the way it was found.
 	player_state.pack.items = pack_before
 	_refresh_pack_panel()
+	pack_panel.visible = false
+
+
+## A hand-made body and pack, so a check about a PANEL is not also a check about
+## whatever the world happens to be carrying.
+## The two panels FIT THE WINDOW THEY ARE DRAWN IN, which is the one thing about
+## them that normally needs a screenshot.
+##
+## `Control.size` does not exist until a layout pass has run, and a container SKIPS
+## its hidden children — so this cannot be measured in the frame that opens the
+## panels, and cannot be measured at all unless they are open. Hence the pair of
+## stages: one opens, the next measures.
+##
+## THE FAILURE IT IS FOR is a panel whose content is wider than the column it lives
+## in. Every cell in it is present and correct, every row reads right, and the
+## right-hand column of the grid is off the edge of the window. Nothing that reads
+## STATE can see that, and a headless run has no screen to look at.
+func _check_item_panels_fit() -> void:
+	if gear_panel == null or pack_panel == null or right_column == null:
+		print("[cozyv2] item panel layout: NOT BUILT  [FAIL]")
+		return
+	var vp := get_viewport().get_visible_rect().size
+	# TWO CLAIMS, and the first version of this had three — two of which could never
+	# fail, which is what a check written from the drawing rather than from the
+	# failure looks like.
+	#
+	# "The panel is at least as wide as it needs" is a TAUTOLOGY: a container never
+	# lays a child out below its own minimum. And so is "it fits the column", because
+	# the column GROWS to hold its children — measured, with an 88 px cell the column
+	# simply went from 300 to 354 and both clauses stayed true while the panel ran off
+	# the screen.
+	#
+	# What can actually fail is the content needing more room than the width this
+	# file DECLARES for it, and the column carrying that overflow off the edge of the
+	# window — which is how a player gets a panel whose right-hand column of cells is
+	# not there.
+	var as_declared := right_column.size.x <= CozyGearPanel.WIDTH + 0.5
+	var inside := right_column.global_position.x >= -0.5 \
+		and right_column.global_position.x + right_column.size.x <= vp.x + 0.5 \
+		and gear_panel.global_position.x + gear_panel.size.x <= vp.x + 0.5 \
+		and pack_panel.global_position.x + pack_panel.size.x <= vp.x + 0.5
+	print("[cozyv2] item panels fit the window: viewport %dx%d, column %.0f..%.0f (declared %d), gear %.0f wide, pack %.0f wide, as declared=%s, inside the window=%s  [%s]" % [
+		int(vp.x), int(vp.y), right_column.global_position.x,
+		right_column.global_position.x + right_column.size.x, CozyGearPanel.WIDTH,
+		gear_panel.size.x, pack_panel.size.x, str(as_declared), str(inside),
+		"OK" if as_declared and inside
+			else "FAIL, the panels need more room than they were given"])
+	# Left as found, like every other check that opens something.
+	_close_pack_panel()
+
+
+## A hand-made body and pack, so a check about a PANEL is not also a check about
+## whatever the world happens to be carrying.
+func _rig_gear(worn: Array, bagged: Array) -> void:
+	player_state.bag = CozyItemContainer.new(CozyPlayerState.BAG_SLOTS)
+	player_state.equipment = CozyEquipment.new()
+	for it in worn:
+		player_state.equipment.equip(it)
+	for it in bagged:
+		player_state.bag.add_item(it)
+
+
+## The two item panels, and the four ways a swap between them goes wrong quietly.
+##
+##   1. THE PANELS DRAW THEMSELVES RATHER THAN THE LEDGERS. A grid that showed the
+##      items a body happens to have — and not the PLACES it does not — hides the
+##      hole a player needs to see, and no assertion about state can tell. Measured
+##      by COUNTING THE EMPTY CELLS, which is a number nothing else produces.
+##   2. THIRTEEN CELLS IS ALSO WHAT THE WRONG PANEL DRAWS. A panel that put every
+##      item in the first cell would draw the same count, so this puts a sword and
+##      a ring on and asks WHICH cell each one reached.
+##   3. TAKING SOMETHING OFF INTO A FULL PACK IS THE ONE SWAP THAT CAN LOSE A THING.
+##      It has to refuse, leave it on the body, and say why.
+##   4. DROPPING IT AT THE PLAYER'S FEET would be inside the pickup radius by
+##      definition, so "drop it" would be taken straight back on the next frame and
+##      the button would look broken.
+##
+## It MUTATES the world — what is worn, what is carried, and the ground — and puts
+## all of it back, including the message line.
+func _check_item_panels() -> void:
+	if gear_panel == null or pack_panel == null or player_state == null or player == null:
+		print("[cozyv2] item panels: NOT BUILT  [FAIL]")
+		return
+
+	var pack_before: Dictionary = player_state.pack.items.duplicate()
+	var bag_before := player_state.bag.to_dict()
+	var worn_before := player_state.equipment.to_dict()
+	var drops_before: int = drops.size()
+	var next_drop_id_before := _next_drop_id
+	var here := player.global_position
+	var message_before := _hud_message
+
+	# A BODY NOTHING ELSE IN THE WORLD HAS, so "the panel read the right ledger" is
+	# a claim with a wrong answer available to it — the same reason the pack panel's
+	# check invents a pack of its own.
+	var sword := CozyItemInstance.make("chk_sword", "steel_sword", "rare", 1)
+	sword.affixes.append({"id": "strength", "value": 6.0})
+	var ring := CozyItemInstance.make("chk_ring", "copper_ring")
+	var loose := CozyItemInstance.make("chk_loose", "iron_sword")
+	_rig_gear([sword, ring], [loose])
+
+	# (0) THE CATEGORY OPENS BOTH, which is the wiring rather than the drawing. Two
+	#     panels that are built, correct and unreachable are the "declared with no
+	#     consumer" shape one layer up, and nothing about the panels themselves
+	#     would notice.
+	_close_pack_panel()
+	_open_item_panels()
+	var reachable := gear_panel.visible and pack_panel.visible
+	print("[cozyv2] item panels are reachable: the Inventory category opens both=%s (gear=%s, pack=%s)  [%s]" % [
+		str(reachable), str(gear_panel.visible), str(pack_panel.visible),
+		"OK" if reachable else "FAIL, the panels are built and cannot be opened"])
+
+	_refresh_gear_panel()
+	_refresh_pack_panel()
+
+	# (1) Thirteen cells, and the kinds with more than one place have more than one.
+	var cells := gear_panel.cell_count()
+	var charms := gear_panel.cells_of("charm")
+	var rings := gear_panel.cells_of("ring")
+	var expected_cells := 0
+	for kind in CozyItemDefs.SLOTS:
+		expected_cells += CozyItemDefs.capacity_of(String(kind))
+	var empty_shown := gear_panel.empty_cells() == cells - 2
+	# WHICH CELL, not merely how many. The ring goes in the FIRST ring place, the
+	# sword in the weapon place, and everything else stays a hole.
+	var placed := gear_panel.shown_in("weapon", 0) == "Steel Sword" \
+		and gear_panel.shown_in("ring", 0) == "Copper Ring" \
+		and gear_panel.shown_in("ring", 1) == "" \
+		and gear_panel.shown_in("helmet", 0) == ""
+	print("[cozyv2] gear panel: %d cell(s) (the table says %d), charm %d and ring %d, empty %d of %d, weapon[0]='%s', ring[0]='%s', ring[1]='%s'  [%s]" % [
+		cells, expected_cells, charms, rings, gear_panel.empty_cells(), cells,
+		gear_panel.shown_in("weapon", 0), gear_panel.shown_in("ring", 0),
+		gear_panel.shown_in("ring", 1),
+		"OK" if cells == expected_cells and cells == 13 and charms == 3 and rings == 2 \
+			and empty_shown and placed
+			else "FAIL, the panel is not drawing the places a body has"])
+
+	# (1b) A CELL SAYS WHAT THE ITEM LOOKS LIKE, not what it is.
+	#
+	#      `CozyItemInstance.appearance_name()` was written for exactly this and had
+	#      no caller until the grid existed — its own header says "a bag showing
+	#      Iron Sword over a steel-sword sprite is a bug report about a lie". The
+	#      tooltip carries the truth, and the check reads both.
+	sword.glamour_id = "iron_sword"
+	_refresh_gear_panel()
+	var shown_glamoured := gear_panel.shown_in("weapon", 0)
+	var glamour_ok := shown_glamoured == "Iron Sword" \
+		and sword.display_name() == "Steel Sword"
+	sword.glamour_id = ""
+	_refresh_gear_panel()
+	# ...and back again: a cell that kept the old name would be a cell that read its
+	# own last output rather than the item.
+	var glamour_undone := gear_panel.shown_in("weapon", 0) == "Steel Sword"
+	print("[cozyv2] a glamoured item: the cell said '%s' while the item is still '%s', and it goes back to '%s' when the glamour comes off  [%s]" % [
+		shown_glamoured, sword.display_name(), gear_panel.shown_in("weapon", 0),
+		"OK" if glamour_ok and glamour_undone
+			else "FAIL, the cell shows what the item IS rather than what it looks like"])
+
+	# (2) The bag grid draws the BAG's places, holes and all.
+	var bag_cells := pack_panel.bag_cell_count()
+	var bag_ok := bag_cells == player_state.bag.capacity \
+		and pack_panel.bag_shown(0) == "Iron Sword" \
+		and pack_panel.bag_shown(1) == "" \
+		and pack_panel.bag_empty_cells() == bag_cells - 1
+	print("[cozyv2] pack panel items: %d cell(s) for a bag of %d, cell 0='%s', cell 1='%s' (a hole), empty %d  [%s]" % [
+		bag_cells, player_state.bag.capacity, pack_panel.bag_shown(0),
+		pack_panel.bag_shown(1), pack_panel.bag_empty_cells(),
+		"OK" if bag_ok else "FAIL, the bag grid is not drawing the bag"])
+
+	# (3) Equipping from the bag, and the displaced item coming back.
+	#
+	#     THE WEAPON PLACE HOLDS ONE, so wearing the iron sword pushes the steel one
+	#     out. What is asserted is the count that DID NOT change: an item lost in a
+	#     swap is a thing the player watched go into the bag and never sees again.
+	var carried_before := player_state.bag.count()
+	_equip_item("chk_loose")
+	var swapped := player_state.equipment.is_wearing("chk_loose") \
+		and player_state.bag.has_item("chk_sword") \
+		and player_state.bag.count() == carried_before
+	_refresh_gear_panel()
+	_refresh_pack_panel()
+	var moved_on_screen := gear_panel.shown_anywhere("chk_loose") == "Iron Sword" \
+		and pack_panel.bag_shown_anywhere("chk_sword") == "Steel Sword"
+	print("[cozyv2] equip from the bag: wearing it=%s, the displaced steel sword is in the pack=%s, carried %d -> %d (nothing lost)=%s, both moved on screen=%s  [%s]" % [
+		str(player_state.equipment.is_wearing("chk_loose")),
+		str(player_state.bag.has_item("chk_sword")), carried_before,
+		player_state.bag.count(), str(player_state.bag.count() == carried_before),
+		str(moved_on_screen),
+		"OK" if swapped and moved_on_screen
+			else "FAIL, a swap between the two panels lost something"])
+
+	# (4) Taking a worn thing off, into the pack.
+	_stow_item("chk_ring")
+	var stowed := player_state.bag.has_item("chk_ring") \
+		and not player_state.equipment.is_wearing("chk_ring")
+	_refresh_gear_panel()
+	var hole_shown := gear_panel.shown_in("ring", 0) == ""
+	print("[cozyv2] take off: the ring is in the pack=%s and no longer worn=%s, and its cell is a hole again=%s  [%s]" % [
+		str(player_state.bag.has_item("chk_ring")),
+		str(not player_state.equipment.is_wearing("chk_ring")), str(hole_shown),
+		"OK" if stowed and hole_shown
+			else "FAIL, taking something off did not move it to the pack"])
+
+	# (5) A FULL PACK REFUSES, and the item stays on the body. This is the swap that
+	#     can lose a thing, and the refusal is the whole of what stops it.
+	while not player_state.bag.is_full():
+		player_state.bag.add_item(CozyItemInstance.make(
+			"chk_fill_%d" % player_state.bag.count(), "iron_sword"))
+	# THE LINE IS CLEARED FIRST, so "it said why" is a claim about THIS refusal
+	# rather than about whatever the line was already carrying.
+	_hud_message = ""
+	_stow_item("chk_loose")
+	var kept_on := player_state.equipment.is_wearing("chk_loose") \
+		and not player_state.bag.has_item("chk_loose")
+	var said_why := _hud_message.contains(CozyItemInstance.make(
+		"x", "iron_sword").display_name())
+	print("[cozyv2] take off into a full pack: refused with the sword still worn=%s, not in the pack=%s, and it said why=%s ('%s')  [%s]" % [
+		str(player_state.equipment.is_wearing("chk_loose")),
+		str(not player_state.bag.has_item("chk_loose")), str(said_why), _hud_message,
+		"OK" if kept_on and said_why
+			else "FAIL, a refused take-off lost the item or said nothing"])
+
+	# (6) Dropping it, which is not the same destination and not the same refusal.
+	_unwear_item("chk_loose")
+	var fell := drops.size() == drops_before + 1
+	var out_of_range := fell and not drops[drops_before].in_range(player.global_position)
+	var clears_radius := TOSS_DISTANCE > CozyDroppedItem.PICKUP_RADIUS
+	print("[cozyv2] drop a worn item: off the body=%s, on the ground in front=%s, out of the pickup radius=%s, and the toss is longer than the radius=%s (%0.1f > %0.1f)  [%s]" % [
+		str(not player_state.equipment.is_wearing("chk_loose")), str(fell),
+		str(out_of_range), str(clears_radius), TOSS_DISTANCE,
+		CozyDroppedItem.PICKUP_RADIUS,
+		"OK" if not player_state.equipment.is_wearing("chk_loose") and fell \
+			and out_of_range and clears_radius
+			else "FAIL, a dropped item landed inside the radius and would be taken straight back"])
+
+	# Put it all back: what is worn, what is carried, the ground, the player, and
+	# the message line — a check that leaves the HUD saying something it made up
+	# corrupts whatever reads it next.
+	for i in range(drops.size() - 1, drops_before - 1, -1):
+		if is_instance_valid(drops[i]):
+			drops[i].queue_free()
+	drops.resize(drops_before)
+	_next_drop_id = next_drop_id_before
+	player_state.bag = CozyItemContainer.from_dict(bag_before)
+	player_state.equipment = CozyEquipment.from_dict(worn_before)
+	player_state.pack.items = pack_before
+	player.global_position = here
+	_hud_message = message_before
+	_hud_message_warn = false
+	_hud_message_until = 0.0
+	gear_panel.visible = false
 	pack_panel.visible = false
 
 

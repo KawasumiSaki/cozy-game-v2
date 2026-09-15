@@ -417,6 +417,7 @@ the loop.
 | The player's ledger, bag and swing | `character/player_state.gd` · `main.gd` |
 | Prices and the stall | `data/prices.gd` · `data/objects.gd` (`market_stall`) |
 | **Things on the ground** | `world/objects/dropped_item.gd` · `main.gd` (`_lay_drops` / `_tick_pickups`) |
+| **The two item panels** | `ui/gear_panel.gd` · `ui/item_slot.gd` · `ui/pack_panel.gd` |
 | The pack, on screen | `ui/pack_panel.gd` |
 
 **The fight, measured rather than described:**
@@ -457,6 +458,47 @@ outcome a player experiences as a loss rather than as a convenience.
 **A DROP IS NOT FURNITURE**: it does not join `objects`, so it blocks no movement
 and advertises no interaction point — a dropped sword must not become a wall a
 hauler walks around.
+
+### The two item panels (2026-09-15)
+
+`ui/gear_panel.gd` draws the thirteen PLACES a body has — `CozyItemDefs.SLOTS` order
+and `capacity_of()` counts, so three charm cells and two ring cells — and
+`ui/pack_panel.gd` gained a grid of the bag's own places. Both draw their cell with
+`ui/item_slot.gd`, and both draw EMPTY CELLS: a hole is information, which is why a
+grid rather than a list, and why `CozyEquipment.capacity`/`filled` exist separately
+from a count of what happens to be worn.
+
+**THE TWO PANELS ARE ONE COLUMN** in the top-right corner, because taking a sword
+off in one and watching it land in the other is the whole of what "the panels should
+work together" means. `MOUSE_FILTER_IGNORE` on the column, so a click in the space
+around the panels still reaches the world.
+
+**THREE VERBS, AND TWO OF THEM CAN LOSE AN ITEM.** `stow` (take off into the pack),
+`wear` (put on from the pack) and `unwear` (throw on the ground). Both swaps are
+methods on `CozyPlayerState`, which is the only thing that owns both containers:
+
+- **`stow` asks the destination FIRST and moves second.** The other order — take it
+  off, then find there is no room — ends with an item that is neither worn nor
+  carried, and the state after that is CONSISTENT: nothing looks wrong, there is
+  simply one fewer thing, which no assertion and no screen can see.
+- **`wear` cannot lose anything**, and that is a property rather than luck: taking
+  the item out of the pack frees exactly the place its displaced item needs.
+  `equip()` returns what it pushed out so a caller can decide; the only decision
+  left is "put it back".
+
+**A DROPPED ITEM IS THROWN AHEAD**, `TOSS_DISTANCE` (1.4) against
+`CozyDroppedItem.PICKUP_RADIUS` (0.6). A drop at the player's own position is inside
+the pickup radius by definition, so "drop it" would be taken back on the next frame
+and the button would look broken. Both the geometry and the relation between the two
+constants are asserted.
+
+**A CELL SHOWS `appearance_name()`** — what a glamoured item looks like — and the
+tooltip carries `describe()`, which is what it IS. That method was written for this
+and had no caller until the grid existed.
+
+**NOTHING DRAWS WORN EQUIPMENT ON THE CHARACTER** (Willow: the visuals come after the
+animation work). Cells are names, not icons: this project ships no item icons, and
+replacing `CozyItemSlot`'s label is the whole of what an icon pass would change.
 
 **Two ledgers, and they are asserted apart**: the player's pack and the village's
 account have the same shape, the same method names and the same units, so a

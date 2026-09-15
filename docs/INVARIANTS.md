@@ -988,3 +988,46 @@ against something the subject cannot forge.** The drop's expected position is
 `DROP_MARK_AT`, the constant this check chose, so the assertion is now that the
 loaded drop is *there* rather than that it agrees with its twin.
 
+
+## A check written from the drawing rather than from the failure is a tautology
+
+The item panels' layout check runs in two stages (`item_panels_open` at frame 600,
+`item_panels_layout` at 640) because `Control.size` does not exist until a layout
+pass has run, and a container SKIPS its hidden children. That part is fine. What is
+worth recording is that the first version of the check asserted THREE things and
+**two of them could never fail**:
+
+    "the panel is at least as wide as it needs"
+        get_combined_minimum_size() <= size
+        ALWAYS TRUE — a container never lays a child out below its own minimum.
+
+    "the panel fits the column it lives in"
+        size.x <= column.size.x
+        ALWAYS TRUE — the column GROWS to hold its children.
+
+    "everything is inside the window"
+        real.
+
+Measured, not reasoned about: with an 88 px cell instead of 68 the column simply
+went from 300 px to 354 px, **both dead clauses stayed true**, and the panel ran off
+the right-hand edge of a 1280 px window — the exact failure the check was written
+for, reported as `[OK]`.
+
+**The tell is what the clauses were made of.** Both dead ones describe what the
+layout rules DO ("it is laid out inside the column"), and anything derivable from a
+rule cannot witness that the rule was violated. The live one names a FAILURE — "the
+right-hand column of cells is not on the screen" — and a failure is something a
+world can be in.
+
+The fix keeps the two things that can actually be false:
+
+    the content needs more room than the width the file DECLARES for it
+    the column carrying that overflow is off the edge of the window
+
+Both go red under the same mutation, and both are red for the right reason.
+
+**And this is the same lesson as `## A declared capability with no consumer`, one
+level up.** There it was a field nobody reads; here it is a clause nothing can
+falsify. In both cases the artifact is present, well written, and load-bearing in
+appearance only — and the way to find either is the same: **break the thing it is
+supposed to be watching, and see whether it notices.**

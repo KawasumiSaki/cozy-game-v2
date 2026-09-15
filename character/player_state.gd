@@ -105,6 +105,56 @@ func describe() -> String:
 	return pack.describe()
 
 
+# ---------------------------------------------------------------- wearing
+
+## Take a worn item off and stow it in the bag. Returns whether it moved.
+##
+## REFUSES WHOLE WHEN THE BAG IS FULL — the item stays on the body and NOTHING
+## changes. The other shape, handing the item back to the caller to deal with,
+## would make it the menu's problem, and the menu has nowhere to put it: the
+## failure this avoids is a sword that is neither worn nor carried, which is a
+## thing a player can neither see nor report.
+##
+## The ORDER is why this is a method rather than two calls at the menu. Asking the
+## bag first and taking the item off second is the only order that cannot lose it;
+## the other order has to be undone when the answer is no.
+func stow(instance_id: String) -> bool:
+	if bag.is_full() or not equipment.is_wearing(instance_id):
+		return false
+	bag.add_item(equipment.unequip_instance(instance_id))
+	return true
+
+
+## Put a bagged item on, and hand back to the bag whatever it displaced.
+##
+## THE DISPLACED ITEM ALWAYS FITS, and that is not luck: taking this item out of
+## the bag frees exactly the one place the displaced one needs. So a swap made this
+## way can never lose anything, which is the property worth having — `equip()`
+## returns what it pushed out precisely so the caller can decide, and the only
+## decision left here is "put it back".
+##
+## Returns false without touching anything when the id is not in the bag, or names
+## something with no place on a body.
+func wear(instance_id: String) -> bool:
+	var at := bag.slot_of(instance_id)
+	if at < 0:
+		return false
+	var item := bag.item_at(at)
+	if item == null or not CozyItemDefs.is_slot(item.slot()):
+		return false
+	bag.remove_item(instance_id)
+	var displaced := equipment.equip(item)
+	if displaced != null and bag.add_item(displaced) < 0:
+		# UNREACHABLE while the container and the capacity table agree, and an
+		# ERROR rather than a return value because there is no correct way to carry
+		# on: an item that exists nowhere is the one failure a player cannot see,
+		# describe, or get back. Reaching here means the two disagree, which is a
+		# broken build rather than a refused action.
+		push_error("player: wearing %s displaced %s with nowhere to put it" % [
+			item.display_name(), displaced.display_name()])
+	return true
+
+
 # ---------------------------------------------------------------- serialise
 
 ## Facts only. The shape follows `CozyNpcState`'s and the save rules in
