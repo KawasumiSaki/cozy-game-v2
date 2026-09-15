@@ -96,6 +96,11 @@ var assets: CozyAssetLibrary = null
 ## World positions of built things — see CozyBiome.classify for why this is a
 ## list of points rather than of nodes.
 var building_points: Array = []
+
+## The wind, INJECTED rather than reached for — the same rule `navigator` and
+## `clock` follow on the agents. Null is legitimate: a scatter in a unit test
+## has no weather, and the shader's own defaults are a still day.
+var wind: CozyWindSystem = null
 var world_seed := 20260911
 
 var _meshes: Dictionary = {}       ## asset_id -> MultiMeshInstance3D
@@ -364,6 +369,40 @@ static func _toward_camera() -> Vector3:
 	return -Vector3(-sin(yaw), 0.0, -cos(yaw))
 
 
+## Re-tell every plant how windy it is.
+##
+## THE STRENGTH A KIND OF PLANT HAS IS MULTIPLIED, NOT REPLACED, and that is
+## division of labour: `WIND_STRENGTH` says how much a KIND of plant moves (a
+## fact about a plant, owned here), and the wind system says how windy it is
+## (a fact about the world, owned there). A gust of zero has to leave the
+## ORDER intact — a trunk still moves less than its leaves when the wind drops,
+## or the tree comes apart.
+##
+## Called on every publish and after every rebuild: a mesh built between two
+## publishes would otherwise carry the shader defaults until the next one, which
+## is a field that snaps when the wind next changes.
+func apply_wind() -> void:
+	if wind == null:
+		return
+	for asset_id in _meshes:
+		var mat := image_material(_meshes[asset_id])
+		if mat == null:
+			continue
+		mat.set_shader_parameter("wind_direction", wind.direction)
+		mat.set_shader_parameter("wind_speed", wind.speed)
+		mat.set_shader_parameter("wind_strength",
+			float(WIND_STRENGTH.get(String(asset_id), 1.0)) * wind.gust)
+
+
+## The ShaderMaterial on a plant's mesh, or null when it is drawn some other
+## way (`USE_VEGETATION_SHADER` false).
+func image_material(mmi: MultiMeshInstance3D) -> ShaderMaterial:
+	if mmi == null or not is_instance_valid(mmi):
+		return null
+	var m := mmi.material_override
+	return m as ShaderMaterial
+
+
 func _build_multimesh(asset_id: String, items: Array) -> void:
 	if items.is_empty():
 		return
@@ -396,6 +435,15 @@ func _build_multimesh(asset_id: String, items: Array) -> void:
 	mmi.multimesh = mm
 	_world_sizes[asset_id] = world_size
 	mmi.material_override = _material_for(asset_id, world_size, tex)
+	# A MESH BUILT BETWEEN TWO PUBLISHES carries the shader's defaults until the
+	# next one, and a field that snaps when the wind next changes is worse than
+	# one that was never told. So the build tells it too.
+	var mat := image_material(mmi)
+	if mat != null and wind != null:
+		mat.set_shader_parameter("wind_direction", wind.direction)
+		mat.set_shader_parameter("wind_speed", wind.speed)
+		mat.set_shader_parameter("wind_strength",
+			float(WIND_STRENGTH.get(asset_id, 1.0)) * wind.gust)
 	add_child(mmi)
 	_meshes[asset_id] = mmi
 
@@ -607,9 +655,19 @@ func texture_of(asset_id: String) -> Texture2D:
 ## not in this field. For the self-check: a material is the one part of the
 ## scatter that renders rather than places, and until this existed nothing
 ## asserted anything about it.
-func material_of(asset_id: String) -> Material:
-	var mmi: MultiMeshInstance3D = _meshes.get(asset_id)
-	return mmi.material_override if mmi != null else null
+## The ShaderMaterial a kind of plant is drawn with, or null.
+##
+## For a caller that wants to READ what the wind published rather than trust that it
+## was written — a check, and nothing else today.
+##
+## THIS ONE ALREADY EXISTED, and the version added for the wind was a second copy of
+## it forty lines above. Both guarded a null mesh; the older one did not guard a mesh
+## that has been FREED since the rebuild, which is the case that actually happens.
+## One function, and it calls `image_material` rather than reading the field again.
+func material_of(asset_id: String) -> ShaderMaterial:
+	if not _meshes.has(asset_id):
+		return null
+	return image_material(_meshes[asset_id])
 
 
 ## The kinds of plant this field actually built, sorted.

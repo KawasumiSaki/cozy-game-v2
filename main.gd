@@ -315,6 +315,10 @@ var npc_panel: CozyNpcPanel = null
 var _npc_panel_target: CozyNpcAgent = null
 
 var clock: CozyTimeSystem = null
+
+## The wind (ENV V1.0 V0.3). Built after the clock, because it is derived from
+## it, and before the scatter, which listens to it.
+var wind: CozyWindSystem = null
 var building: CozyBuildingSystem = null
 var terrain: CozyTerrainSystem = null
 var terrain_renderer: CozyTerrainRenderer = null
@@ -456,6 +460,7 @@ func _ready() -> void:
 		print("[cozyv2] headless self-check start")
 	_build_environment()
 	_build_clock()
+	_build_wind()
 	_build_self_check()
 	_build_assets()
 	_build_terrain()
@@ -564,6 +569,25 @@ func _tick_screenshot() -> bool:
 	get_tree().quit(0 if err == OK else 1)
 	return true
 
+
+
+## The wind, and the one wire between it and the plants.
+##
+## ONE LISTENER, and it is the scatter rather than each material: the wind system
+## answers "how windy is it", the scatter owns "how much does this KIND of plant
+## move", and the multiplication happens in one place. See `apply_wind`.
+func _build_wind() -> void:
+	wind = CozyWindSystem.new()
+	add_child(wind)
+	wind.clock = clock
+	wind.world_seed = 20260911
+	wind.wind_changed.connect(_on_wind_changed)
+	wind.publish()
+
+
+func _on_wind_changed(_direction: Vector2, _speed: float, _gust: float) -> void:
+	if scatter != null:
+		scatter.apply_wind()
 
 
 func _build_clock() -> void:
@@ -710,6 +734,10 @@ func _build_scatter() -> void:
 	scatter = CozyVegetationScatter.new()
 	add_child(scatter)
 	scatter.setup(terrain, assets, 20260911)
+	# INJECTED AFTER `setup`, because that is what rebuilds the meshes — and the
+	# wind has to be in place before the first build or the opening frames are a
+	# still day. See `apply_wind` for why the build applies it too.
+	scatter.wind = wind
 	_refresh_scatter()
 
 
@@ -5191,6 +5219,20 @@ func _check_openings() -> void:
 ##   2. instancing holds — thousands of plants in a handful of draw calls (#61)
 ##   3. density responds to terrain and to buildings (E.20.1 / E.20.2)
 ##   4. it is DETERMINISTIC, so the field survives a save and reload (E.21)
+## What the shader was TOLD about the wind, for one kind of plant.
+##
+## Read off the material rather than off the wind system, because the question is
+## not what the wind is — it is whether it got there. A check that asked the wind
+## would pass against materials nothing ever writes to.
+func _wind_param(asset_id: String, param: String) -> float:
+	return float(_wind_param_v(asset_id, param))
+
+
+func _wind_param_v(asset_id: String, param: String) -> Variant:
+	var mat: ShaderMaterial = scatter.material_of(asset_id)
+	return null if mat == null else mat.get_shader_parameter(param)
+
+
 func _check_scatter() -> void:
 	if scatter == null:
 		print("[cozyv2] scatter: NOT BUILT  [FAIL]")
@@ -5307,6 +5349,61 @@ func _check_scatter() -> void:
 	print("[cozyv2] sprite density (native is x1.00): %s -- %d of %d off  [%s]" % [
 		" | ".join(density), off, scatter.asset_ids().size(),
 		"OK" if off == 0 else "NOTE"])
+
+	# ---- the wind, and whether it reaches the plants ------------------------
+	#
+	# THE WIND IS DERIVED FROM THE CLOCK, so a check steers it by MOVING THE CLOCK
+	# rather than by poking at the value — the same reason the day/night check
+	# advances the hour instead of the light. Two hours are found by search: the
+	# calmest and the windiest this world's curve has, so the comparison is between
+	# two states the game really reaches rather than between a number and its double.
+	if wind == null:
+		print("[cozyv2] wind: NOT BUILT  [FAIL]")
+	else:
+		var calm := -1.0
+		var windy := -1.0
+		for i in 1200:
+			var h := float(i) * 0.25
+			if calm < 0.0 and wind.gust_at(h) < 0.10:
+				calm = h
+			if windy < 0.0 and wind.gust_at(h) > 0.90:
+				windy = h
+		var hour_before := clock.hour
+		clock.hour = calm
+		wind.publish()
+		var calm_gust := float(wind.gust)
+		var calm_trunk := _wind_param("tree_oak_trunk", "wind_strength")
+		var calm_front := _wind_param("tree_oak_leaves_front", "wind_strength")
+		var front_asked_for := float(CozyVegetationScatter.WIND_STRENGTH["tree_oak_leaves_front"])
+		clock.hour = windy
+		wind.publish()
+		var windy_front := _wind_param("tree_oak_leaves_front", "wind_strength")
+		var told_the_direction: Variant = _wind_param_v("grass_tuft_01", "wind_direction")
+		# CAPTURED HERE, at the moment the material was read. The first version
+		# compared it against `wind.direction` at PRINT time — after the clock had
+		# been put back — so it compared one hour's wind against another hour's
+		# material and reported a working wire as broken.
+		var wanted_direction: Vector2 = wind.direction
+		clock.hour = hour_before
+		wind.publish()
+
+		var found := calm >= 0.0 and windy >= 0.0
+		# THE SAME PLANT BENDS MORE IN MORE WIND, and the ORDER inside the tree is
+		# untouched — a trunk still moves less than its leaves in a lull, or the tree
+		# comes apart the moment the wind drops.
+		var bends_more := windy_front > calm_front
+		var order_kept := calm_trunk < calm_front and calm_trunk >= 0.0
+		# ...and the number is EXACTLY the kind's own strength times the gust, read
+		# back off the material rather than trusted to have been written.
+		var arithmetic := is_equal_approx(calm_front, front_asked_for * calm_gust)
+		var reached := told_the_direction is Vector2 \
+			and (told_the_direction as Vector2).is_equal_approx(wanted_direction)
+		print("[cozyv2] wind reaches the plants: calm hour %.1f gust %.2f, windy hour %.1f gust %.2f; front leaves %.3f -> %.3f (bends more=%s), trunk %.3f < leaves in the calm=%s, exactly strength x gust=%s, direction told=%s (got %s, want %s)  [%s]" % [
+			calm, calm_gust, windy, float(wind.gust), calm_front, windy_front,
+			str(bends_more), calm_trunk, str(order_kept), str(arithmetic), str(reached),
+			str(told_the_direction), str(wanted_direction),
+			"OK" if found and bends_more and order_kept and arithmetic and reached
+				else "FAIL, the wind is not getting from the clock to the shader"])
 
 	# ...AND EVERY PIECE OF ONE PLANT IS THE SAME SIZE, which is what makes the
 	# layers line up at all. Four canvases that agree today, in a table somebody
