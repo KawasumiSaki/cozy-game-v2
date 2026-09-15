@@ -42,8 +42,13 @@ const SAMPLE_STEP := 1.0
 ## accident, so the bound is written here instead.
 const JITTER := SAMPLE_STEP * 0.45
 
-## World size of each placeholder sprite, metres. Real definitions will carry
-## this, derived from resolution and the profile's pixel density.
+## World size of each GENERATED sprite, metres.
+##
+## THE HAND-PICKED NUMBERS ARE THE DEBT, and the header above has said the right
+## thing since before there was a reason to act on it. An asset's world size
+## follows from its own pixels (see `_world_size`), so every entry here describes
+## a placeholder that is NOT yet drawn at the profile's density: 16 or 24 px
+## stretched over 0.4 to 2.4 m. `_check_scatter` prints how far off each one is.
 const PLACEHOLDER_SIZE := {
 	"grass_tuft_01": 0.55,
 	"flower_daisy_01": 0.45,
@@ -86,6 +91,11 @@ var world_seed := 20260911
 var _meshes: Dictionary = {}       ## asset_id -> MultiMeshInstance3D
 var _counts: Dictionary = {}       ## rule_id  -> instances placed
 var _candidates := 0
+
+## asset_id -> the world size its quad was built at, so the self-check can ask
+## how far each sprite is from the profile's pixel density without rebuilding
+## anything. What is DRAWN is the thing to measure, not what the table says.
+var _world_sizes: Dictionary = {}
 
 ## Lowest ground height any sampled point had. Exposed so a check can prove the
 ## field follows the terrain's HEIGHT and not just its material — plants are
@@ -305,7 +315,8 @@ func _build_multimesh(asset_id: String, items: Array) -> void:
 	if items.is_empty():
 		return
 
-	var world_size := float(PLACEHOLDER_SIZE.get(asset_id, 0.5))
+	var tex := _texture_for(asset_id)
+	var world_size := _world_size(asset_id, tex)
 
 	var quad := QuadMesh.new()
 	quad.size = Vector2(world_size, world_size)
@@ -326,9 +337,27 @@ func _build_multimesh(asset_id: String, items: Array) -> void:
 
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
-	mmi.material_override = _material_for(asset_id, world_size)
+	_world_sizes[asset_id] = world_size
+	mmi.material_override = _material_for(asset_id, world_size, tex)
 	add_child(mmi)
 	_meshes[asset_id] = mmi
+
+
+## How big this sprite is in the world.
+##
+## A REAL asset is sized by its own pixels at the profile's density, because that
+## is what the density IS — 24 px at 60 px/m is 0.40 m, and drawing it over 0.55 m
+## magnifies every pixel by 1.38 and turns a blade of grass into a bush.
+##
+## A PLACEHOLDER keeps its hand-picked `PLACEHOLDER_SIZE`, and that is a debt
+## rather than a design: the generated sprites are 16 or 24 px, so sizing THEM by
+## density would make a 0.27 m tree. `_check_scatter` prints how far each one is
+## from the profile, so the list is a measured number rather than a complaint.
+func _world_size(asset_id: String, tex: Texture2D) -> float:
+	var real_path := String(REAL_TEXTURES.get(asset_id, ""))
+	if real_path != "" and tex != null and ResourceLoader.exists(real_path):
+		return CozyPixelArt.metres_for_pixels(float(tex.get_width()))
+	return float(PLACEHOLDER_SIZE.get(asset_id, 0.5))
 
 
 ## The material a kind of plant is drawn with.
@@ -338,13 +367,13 @@ func _build_multimesh(asset_id: String, items: Array) -> void:
 ## point, so if the two numbers disagree the plant spins about something that is
 ## not where it meets the ground, and it does so by an amount that grows with the
 ## distance from the wrong pivot. One number, read twice, in this file.
-func _material_for(asset_id: String, world_size: float) -> Material:
+func _material_for(asset_id: String, world_size: float, tex: Texture2D) -> Material:
 	if not USE_VEGETATION_SHADER:
-		return CozyPixelArt.make_billboard_material(_texture_for(asset_id))
+		return CozyPixelArt.make_billboard_material(tex)
 	var silhouette := bool(SILHOUETTE.get(asset_id, false))
 	var size: Vector2 = SPRITE_SIZE.get(asset_id, Vector2.ONE)
 	return CozyPixelArt.make_vegetation_material(
-		_texture_for(asset_id), world_size * 0.5,
+		tex, world_size * 0.5,
 		float(WIND_STRENGTH.get(asset_id, 1.0)),
 		silhouette,
 		Vector2(1.0 / size.x, 1.0 / size.y),
@@ -410,6 +439,24 @@ func _texture_for(asset_id: String) -> Texture2D:
 
 
 # ---------------------------------------------------------------- queries
+
+## The world size a kind of plant was actually built at, metres.
+func world_size_of(asset_id: String) -> float:
+	return float(_world_sizes.get(asset_id, 0.0))
+
+
+## The sprite a kind of plant is drawn with.
+func texture_of(asset_id: String) -> Texture2D:
+	var mmi: MultiMeshInstance3D = _meshes.get(asset_id)
+	if mmi == null:
+		return null
+	var mat := mmi.material_override
+	if mat is ShaderMaterial:
+		return (mat as ShaderMaterial).get_shader_parameter("albedo_texture")
+	if mat is StandardMaterial3D:
+		return (mat as StandardMaterial3D).albedo_texture
+	return null
+
 
 ## The material a kind of plant is actually drawn with, or null if that kind is
 ## not in this field. For the self-check: a material is the one part of the

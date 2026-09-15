@@ -466,6 +466,57 @@ func _ready() -> void:
 			_cross_process_save()
 		elif _has_arg("--cozy-load-first"):
 			_cross_process_verify()
+	else:
+		_maybe_arm_screenshot()
+
+
+## `--cozy-shot <path>`: draw a few frames, save what the camera sees, quit.
+##
+## A MEASUREMENT, in the same spirit as the `--cozy-probe-*` flags: for anything
+## about how the world LOOKS, the number to read is a picture. Everything the
+## self-check asserts is about PLACEMENT — counts, fingerprints, standability —
+## and none of it can tell the difference between a field of grass and a field of
+## the same grass repeated until it reads as wallpaper. That distinction is the
+## whole of what art is, and it was being argued about from memory.
+##
+## NOT headless: the dummy renderer draws nothing, so a screenshot needs a real
+## device and a real window. That is why this is opt-in and why nothing arms it
+## by default — see the GUI rule in CLAUDE.md.
+##
+## The delay is for the first frames, when shadows and the scatter are still
+## settling; a picture of a half-built world is worse than no picture, because it
+## looks like a bug in whatever was just changed.
+const SHOT_FRAMES := 30
+
+func _maybe_arm_screenshot() -> void:
+	var args := OS.get_cmdline_user_args()
+	var at := args.find("--cozy-shot")
+	if at < 0 or at + 1 >= args.size():
+		return
+	var path := args[at + 1]
+	_shot_frames_left = SHOT_FRAMES
+	_shot_path = path
+	print("[cozyv2] screenshot armed: %s after %d frame(s)" % [path, SHOT_FRAMES])
+
+var _shot_frames_left := 0
+var _shot_path := ""
+
+
+## One frame of the screenshot countdown. True once the picture has been taken
+## and the process is on its way out, so the normal update can be skipped.
+func _tick_screenshot() -> bool:
+	if _shot_frames_left <= 0:
+		return false
+	_shot_frames_left -= 1
+	if _shot_frames_left > 0:
+		return false
+	var img := get_viewport().get_texture().get_image()
+	var err := img.save_png(_shot_path)
+	print("[cozyv2] screenshot %s: %s" % [
+		"written" if err == OK else "FAILED (%d)" % err, _shot_path])
+	get_tree().quit(0 if err == OK else 1)
+	return true
+
 
 
 func _build_clock() -> void:
@@ -2191,6 +2242,8 @@ func _grow_the_world() -> void:
 
 
 func _process(delta: float) -> void:
+	if _tick_screenshot():
+		return
 	_clock += delta
 	_expire_message()
 	_grow_the_world()
@@ -2817,6 +2870,8 @@ func _check_outline_build() -> void:
 func _check_scatter_incremental() -> void:
 	var snapshot := terrain.to_dict()
 	_refresh_scatter()
+	# Read BEFORE the incremental pass below, which overwrites them.
+	var full_ms := scatter.sample_ms + scatter.build_ms
 	var full_fp := scatter.fingerprint()
 	var full_total := scatter.total_instances()
 
@@ -2830,7 +2885,14 @@ func _check_scatter_incremental() -> void:
 	terrain.apply_intent(CozyTerrainIntent.clear_brush(Vector2(px, pz), 3.0))
 	var touched := terrain.dirty_chunks().size()
 	_rebuild_terrain_surface()
+	# TIMED, because this is the number a player feels and the full rebuild is
+	# not. A stroke re-samples the chunks it touched and leaves the rest of the
+	# field alone (`_refresh_scatter`), so this is the cost that lands between a
+	# player's mouse button and the plants appearing — and until now nothing
+	# printed it, which made "the scatter is slow" impossible to answer.
+	var t_inc := Time.get_ticks_usec()
 	_refresh_scatter()
+	var inc_ms := float(Time.get_ticks_usec() - t_inc) / 1000.0
 	var inc_fp := scatter.fingerprint()
 	var inc_total := scatter.total_instances()
 
@@ -2840,8 +2902,15 @@ func _check_scatter_incremental() -> void:
 
 	var moved := inc_fp != full_fp
 	var same := inc_fp == ref_fp and inc_total == scatter.total_instances()
-	print("[cozyv2] scatter incremental rebuild: %d chunk(s) dirty, %d -> %d instance(s), moved=%s, matches a full rebuild=%s  [%s]" % [
-		touched, full_total, inc_total, str(moved), str(same),
+	# PER KIND, because "15367 instance(s) in 4 mesh(es)" cannot answer the
+	# question a player actually asks, which is "where did the flowers go". Total
+	# counts move with the grass and hide everything under it.
+	var per_kind: Array[String] = []
+	for rule_id in CozyScatterRule.ids():
+		per_kind.append("%s=%d" % [String(rule_id), scatter.instance_count(String(rule_id))])
+	print("[cozyv2] scatter by kind: %s" % ", ".join(per_kind))
+	print("[cozyv2] scatter incremental rebuild: %d chunk(s) dirty of %d, %d -> %d instance(s) in %.1f ms (a full rebuild is %.1f ms), moved=%s, matches a full rebuild=%s  [%s]" % [
+		touched, terrain.chunk_count(), full_total, inc_total, inc_ms, full_ms, str(moved), str(same),
 		"OK" if same and moved and touched > 0
 			else "FAIL, incremental differs from a full rebuild"])
 
@@ -3633,6 +3702,33 @@ func _check_scatter() -> void:
 			shader_kinds += 1
 		else:
 			unlit.append(String(asset_id))
+	# AND EVERY SPRITE IS DRAWN AT THE DENSITY THE PROFILE ASKS FOR.
+	#
+	# `ART_PROFILE.md` §2 fixes it: 12 m of visible height over 720 px is 60
+	# screen px per world metre, so a 24 px sprite is 0.40 m and one drawn over
+	# 0.55 m has every pixel stretched 1.38 times. That is not a small difference
+	# in size — it is what makes a blade of grass read as a bush, and it was
+	# invisible until there was a screenshot to look at.
+	#
+	# THIS PRINTS RATHER THAN FAILS, for now: the placeholders are 16 and 24 px
+	# and sizing THEM by density would make a 0.27 m tree, so the number is the
+	# work list rather than a regression. The grass is the one asset that is
+	# already right, and it is named first so the line reads as a target.
+	var density: Array[String] = []
+	var off := 0
+	for asset_id in scatter.asset_ids():
+		var mag := CozyPixelArt.magnification(scatter.texture_of(String(asset_id)),
+			scatter.world_size_of(String(asset_id)))
+		var tex := scatter.texture_of(String(asset_id))
+		var px := int(tex.get_width()) if tex != null else 0
+		if absf(mag - 1.0) > 0.06:
+			off += 1
+		density.append("%s %dpx over %.2fm = x%.2f" % [
+			String(asset_id), px, scatter.world_size_of(String(asset_id)), mag])
+	print("[cozyv2] sprite density (native is x1.00): %s -- %d of %d off  [%s]" % [
+		" | ".join(density), off, scatter.asset_ids().size(),
+		"OK" if off == 0 else "NOTE"])
+
 	print("[cozyv2] vegetation material: %d of %d kind(s) drawing, %s  [%s]" % [
 		shader_kinds, scatter.asset_ids().size(),
 		"all compiled" if unlit.is_empty() else "NOT DRAWING: %s" % ", ".join(unlit),

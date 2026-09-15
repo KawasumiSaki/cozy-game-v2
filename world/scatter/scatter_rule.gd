@@ -45,13 +45,14 @@ extends RefCounted
 ## claim and only one of them is true.
 
 const RULES := {
-	# 0.42 x ~10 = about four soft tufts per square metre. One tuft covers
-	# 0.3 m2, so the ground comes out a little over 100% covered — which is what
-	# "grass" means, and what a third of that visibly does not.
+	# 0.42 x ~17 = about seven tufts per square metre. A tuft is 0.40 m across —
+	# a 24 px sprite at the profile's 60 px/m, NOT a hand-picked number (see
+	# `CozyPixelArt.PIXELS_PER_METRE`) — so the ground comes out a little over
+	# 100% covered, which is what "grass" means and what a third of that is not.
 	"grass_tuft": {
 		"asset_id": "grass_tuft_01",
 		"base_density": 0.42,
-		"cluster": [6, 14],
+		"cluster": [12, 22],
 		"biomes": {"grassland": 1.0, "forest_edge": 1.0, "village": 0.45,
 			"shore": 0.25, "rocky": 0.0},
 		"materials": {"grass": 1.0, "soil": 0.45, "sand": 0.0, "stone": 0.0, "water": 0.0},

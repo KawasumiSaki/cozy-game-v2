@@ -423,6 +423,40 @@ static func make_billboard_material(tex: Texture2D) -> StandardMaterial3D:
 	return m
 
 
+## Screen pixels per world metre at the default zoom (docs/ART_PROFILE.md §2).
+##
+##     12 m of visible height over 720 px -> 60 screen px per world metre
+##
+## THE NUMBER WAS IN THE DOCUMENT AND NOT IN THE CODE, which is the same shape as
+## "a rule that lives only in a mouse handler is not a rule": every sprite's world
+## size was picked by hand next to it, and nothing could tell whether an asset
+## matched the density it was drawn at. The grass sprite is 24 px and was being
+## stretched over 0.55 m — a 1.38x magnification, which is what turns a blade of
+## grass into a bush, and it was invisible until someone looked at a screenshot.
+##
+## An asset authored at a different density is not a smaller or larger version of
+## the thing: it is a different texture scale, and it sits next to everything else
+## looking wrong. `ART_PROFILE.md` says it plainly — "if an asset disagrees with
+## this file, the asset is wrong, not the file".
+const PIXELS_PER_METRE := 60.0
+
+
+## The world size a sprite of this many pixels wants, at the profile's density.
+static func metres_for_pixels(px: float) -> float:
+	return px / PIXELS_PER_METRE
+
+
+## How far this texture is from the profile's density, as a magnification factor.
+## 1.0 is native; 2.0 means every source pixel is drawn twice as wide as it should
+## be. For the self-check, which names the assets that are off rather than
+## leaving it to whoever is looking at the screen.
+static func magnification(tex: Texture2D, world_size: float) -> float:
+	if tex == null or world_size <= 0.0:
+		return 0.0
+	var native := metres_for_pixels(float(tex.get_width()))
+	return world_size / native if native > 0.0 else 0.0
+
+
 ## The wind field the vegetation shader samples, as a generated resource.
 ##
 ## PROCEDURAL, and not only because generating beats shipping: a noise texture is
