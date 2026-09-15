@@ -257,6 +257,40 @@ static func is_gathered(def_id: String) -> bool:
 	return int(get_def(def_id).get("yields", NO_YIELDS)) > 0
 
 
+## The point types this object can be worked at, in the order they are declared.
+##
+## The ORDER is the definition's, so a tree that could one day be climbed as well
+## as felled lists `chop` first because that is what the row says.
+##
+## READ FROM THE DEFINITION, NOT FROM THE LIVE POINTS, and that is the whole
+## point of the accessor: a spent node has no points left, so asking a stump what
+## it can be used for through its points answers "nothing" — and a menu built
+## that way loses the VERB rather than the availability, which is a different
+## thing and a confusing one. Being worked out is a fact about whether the work
+## succeeds, not about whether the verb exists.
+static func interaction_types(def_id: String) -> Array[String]:
+	var out: Array[String] = []
+	for row in get_def(def_id).get("interactions", []):
+		var t := String((row as Dictionary).get("type", ""))
+		if t != "" and not out.has(t):
+			out.append(t)
+	return out
+
+
+## How close a person has to be to work this object, in metres.
+##
+## The PLAYER walks up to the object rather than to an interaction point: there
+## is one player, nothing path-finds for them, and a point would only be a place
+## to stand. The number is still the object's own — its interaction row already
+## says how near the work has to be done, and a second number here would be a
+## second answer.
+static func reach_of(def_id: String) -> float:
+	var best := 0.0
+	for row in get_def(def_id).get("interactions", []):
+		best = maxf(best, float((row as Dictionary).get("reach", 0.0)))
+	return best
+
+
 ## Why this object may not stand on this ground, or "" when it may.
 ##
 ## A REASON rather than a bool, the shape `CozyOutlineGenerator.reject_reason`

@@ -70,6 +70,12 @@ func open_for(entries: Array, at: Vector2, target: Variant = null) -> void:
 		b.add_theme_color_override("font_color", CozyUiTheme.TEXT)
 		if e.has("hint") and String(e["hint"]) != "":
 			b.tooltip_text = String(e["hint"])
+		# AN ENTRY CAN BE SHOWN AND NOT AVAILABLE, which is the point of it. A verb
+		# that vanishes when it cannot be used leaves the player guessing whether
+		# the game forgot it, whether they are standing in the wrong place, or
+		# whether the tree is simply spent — and `hint` already says which of the
+		# three. Deleting the button answers none of them.
+		b.disabled = bool(e.get("disabled", false))
 		b.pressed.connect(_on_entry.bind(String(e["id"])))
 		_box.add_child(b)
 

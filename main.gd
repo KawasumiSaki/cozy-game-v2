@@ -251,6 +251,13 @@ const OUTDOOR_CELL := 0.5
 
 var camera: CozyCameraRig = null
 var player: CozyCharacter = null
+
+## What the PLAYER owns: their own packing, separate from the village's.
+##
+## Two accounts on purpose (Willow 2026-09-15) — the resident economy runs
+## itself, so a player whose money came out of the village's store would be
+## watching a number go up rather than earning one. See `CozyPlayerState`.
+var player_state: CozyPlayerState = null
 var npc: CozyNpcAgent = null
 
 ## Points that come from the GROUND rather than from an object (sowing).
@@ -1100,6 +1107,13 @@ func _build_entity_registry() -> void:
 	entities.register_kind(CozyEntityRegistry.NPC,
 		_resident_states,
 		func(n) -> Dictionary: return n.to_dict())
+	# The player's ledger is saved like anything else that OWNS state. An
+	# inventory that a reload empties is worse than no inventory: the player
+	# watches their afternoon's work disappear and has no way to tell whether the
+	# game did it or they did.
+	entities.register_kind(CozyEntityRegistry.PLAYER,
+		_player_states,
+		func(s) -> Dictionary: return s.to_dict())
 
 
 ## The residents, as a list the registry can pull like any other kind. A method
@@ -1108,6 +1122,12 @@ func _resident_states() -> Array:
 	if npc == null or npc.npc_state == null:
 		return []
 	return [npc.npc_state]
+
+
+## The player's state, as a one-element list, for the same reason the residents
+## are: the registry pulls a LIST per kind and this kind has exactly one member.
+func _player_states() -> Array:
+	return [] if player_state == null else [player_state]
 
 
 func _place_object(def_id: String, x: float, z: float, floor_index: int) -> CozyWorldObject:
@@ -1378,6 +1398,13 @@ func _build_characters() -> void:
 	player.floor_max_angle = deg_to_rad(55.0)
 	add_child(player)
 	player.global_position = SPAWN_POINT
+
+	# THE PLAYER'S OWN LEDGER, and a DIFFERENT OBJECT from the village's
+	# (`building.inventory`, built below and paying for walls). Two accounts is a
+	# gameplay decision, not a data one — see `CozyPlayerState`. What keeps it
+	# from silently becoming one account is `_check_player_ledger`, which chops a
+	# tree and asserts the wood landed on exactly one side of the split.
+	player_state = CozyPlayerState.new()
 
 	# The NPC starts on the GROUND floor while its workstation is UPSTAIRS, so
 	# its first job exercises the whole stack: local nav -> portal -> room graph
@@ -1837,6 +1864,22 @@ func _open_context_menu(at: Vector2) -> void:
 		"object":
 			var o: CozyWorldObject = probe["node"]
 			target["title"] = CozyObjectDefs.display_name(o.def_id)
+			# WORK IT, if it is a thing to be worked and the player is close
+			# enough. Right-click is already the world's selection gesture and
+			# this does not take it away — the verb lives IN the menu rather than
+			# replacing it, so "what is that?" still works on a tree.
+			#
+			# THE ENTRIES COME FROM THE DEFINITION, NOT FROM THE LIVE POINTS
+			# (`CozyObjectDefs.interaction_types`), so a spent node still says
+			# what could be done to it and the menu says WHY it will not.
+			for verb in CozyObjectDefs.interaction_types(o.def_id):
+				if CozyRecipeDefs.for_point(verb).is_empty():
+					continue
+				var near := _within_reach(o)
+				entries.append({"id": "gather:%s" % verb,
+					"label": _verb_label(verb),
+					"hint": _gather_hint(o, verb, near),
+					"disabled": not (near and o.is_available(_game_hours()))})
 			entries.append({"id": "info", "label": "Info"})
 			entries.append({"id": "remove", "label": "Remove"})
 		"npc":
@@ -1875,6 +1918,98 @@ func _on_menu_action(id: String, target: Variant) -> void:
 			_open_npc_panel(target["node"])
 		"info":
 			_show_info(target)
+		_:
+			if id.begins_with("gather:"):
+				_gather_from(target["node"], id.trim_prefix("gather:"))
+
+
+# ---------------------------------------------------------------- the player's work
+
+## The player works a resource node by hand.
+##
+## IT PAYS INTO `player_state.pack`, NOT INTO THE VILLAGE. That is the whole of
+## the two-ledger decision (Willow 2026-09-15): the residents farm, cook and
+## store on their own schedule without anyone watching, so the only goods the
+## player can call their own are the ones they went and got. Routing this into
+## `building.inventory` instead would be a one-word change that quietly turns the
+## player into a spectator of their own economy — which is why the self-check
+## chops one tree and asserts which side the wood landed on.
+##
+## The OUTPUT comes from `CozyRecipeDefs.for_point`, the same table the residents
+## work from, so a tree that yields 3 wood yields 3 wood whoever fells it.
+func _gather_from(o: CozyWorldObject, verb: String) -> void:
+	if o == null or not is_instance_valid(o) or player_state == null:
+		return
+	var now := _game_hours()
+	if not _within_reach(o):
+		_say("too far away", true)
+		return
+	if not o.is_available(now):
+		_say("%s is worked out" % CozyObjectDefs.display_name(o.def_id), true)
+		return
+	var recipe := CozyRecipeDefs.for_point(verb)
+	if recipe.is_empty():
+		return
+	o.take_one(now)
+	var outs: Dictionary = recipe.get("outputs", {})
+	var got: Array[String] = []
+	for id in outs:
+		var n := float(outs[id])
+		player_state.pack.add(String(id), n)
+		got.append("%s x%d" % [String(id), int(n)])
+	# The node goes back through the same refresh the residents' loop uses, so a
+	# felled tree becomes a stump for the PLAYER by exactly the path it does for
+	# an agent — one rule, two callers.
+	if o.refresh_availability(now):
+		_rebuild_spatial()
+	_say("%s: %s" % [CozyObjectDefs.display_name(o.def_id), ", ".join(got)])
+
+
+## Is the player close enough to work this object by hand?
+##
+## Measured from the PLAYER, not from the mouse: the cursor can point at a tree
+## on the far side of the field, and a rule that only checked the cursor would
+## let a player fell the forest from their doorstep.
+func _within_reach(o: CozyWorldObject) -> bool:
+	if player == null or o == null or not is_instance_valid(o):
+		return false
+	var reach := CozyObjectDefs.reach_of(o.def_id)
+	# The object's own SIZE counts: its centre can be a metre away while its body
+	# is at your feet. Half the larger side, which is the same box the navigation
+	# obstacle uses.
+	var size: Vector2 = CozyObjectDefs.get_def(o.def_id).get("size", Vector2.ZERO)
+	var a := player.global_position
+	var b := o.global_position
+	return Vector2(a.x - b.x, a.z - b.z).length() <= reach + size.length() * 0.5
+
+
+func _verb_label(verb: String) -> String:
+	match verb:
+		CozyObjectDefs.INTERACT_CHOP:
+			return "Chop"
+		CozyObjectDefs.INTERACT_MINE:
+			return "Mine"
+		CozyObjectDefs.INTERACT_HARVEST:
+			return "Harvest"
+		_:
+			return verb.capitalize()
+
+
+## Why the verb is greyed out, or what it will produce. A disabled button with no
+## tooltip is a button that looks broken.
+func _gather_hint(o: CozyWorldObject, verb: String, near: bool) -> String:
+	if not near:
+		return "stand closer to the %s" % CozyObjectDefs.display_name(o.def_id).to_lower()
+	if not o.is_available(_game_hours()):
+		return "worked out for now"
+	var recipe := CozyRecipeDefs.for_point(verb)
+	if recipe.is_empty():
+		return ""
+	var parts: Array[String] = []
+	var outs: Dictionary = recipe.get("outputs", {})
+	for id in outs:
+		parts.append("%s x%d" % [String(id), int(float(outs[id]))])
+	return "yields %s" % ", ".join(parts)
 
 
 # ---------------------------------------------------------------- resident panel
@@ -2364,6 +2499,7 @@ func _report() -> void:
 	_check_farming_chain()
 	_check_scatter_incremental()
 	_check_resource_chain()
+	_check_player_ledger()
 
 	_report_house()
 	_report_runtime_building()
@@ -2406,6 +2542,101 @@ func _report_runtime_building() -> void:
 ## The point an object offers is deliberately OUTSIDE its own footprint
 ## (`inside_own_footprint=false`), because it is where the resident stands — so
 ## the honest question is whether the grid says a body can stand there.
+## The player's work pays into the player's account — and into nothing else.
+##
+## THE TWO-LEDGER DECISION IS ONLY REAL IF SOMETHING GUARDS IT. It is one word in
+## `_gather_from` — `player_state.pack.add(...)` against `building.inventory.add`
+## — and the two containers have the same shape, the same method names and the
+## same units, so a wrong call is invisible: the wood appears, the count goes up,
+## and the player's goods have silently become the village's. Nothing else in the
+## game can tell those two worlds apart.
+##
+## So the check CHOPS A REAL TREE with the real player and asserts which side the
+## wood landed on, and then asserts the OTHER side did not move.
+##
+## It also gives the reach rule teeth, by standing out of range FIRST. A check
+## that only ever stands in the right place has said nothing about the places the
+## game refuses — the same reason `_check_resource_chain` measures reachability
+## from a tree someone actually placed.
+func _check_player_ledger() -> void:
+	if player_state == null or player == null or building == null:
+		print("[cozyv2] player ledger: no player state to check  [FAIL]")
+		return
+
+	# (1) Two accounts, two objects. The cheapest half of the decision and the
+	#     one that a future "let us just share the village store" refactor would
+	#     break first.
+	var distinct := player_state.pack != building.inventory
+	print("[cozyv2] player ledger is its own account, not the village's: %s  [%s]" % [
+		str(distinct), "OK" if distinct else "FAIL, the player's goods ARE the village's"])
+
+	var tree := _first_object("tree")
+	if tree == null:
+		print("[cozyv2] player ledger: no tree in the world to chop  [FAIL]")
+		return
+
+	# Everything below MUTATES the world, so everything is put back at the end.
+	var village_before: Dictionary = building.inventory.items.duplicate()
+	var pack_before: Dictionary = player_state.pack.items.duplicate()
+	var tree_taken := tree.taken
+	var tree_worked := tree.worked_at
+	var here := player.global_position
+	# `for_point` hands back the RECIPE ROW, which does not carry its own id --
+	# `CozyRecipeDefs.outputs(id)` takes an id, so the row's own `outputs` is
+	# what to read. Reaching for `row["id"]` is an error rather than a null.
+	var want: Dictionary = CozyRecipeDefs.for_point(
+		CozyObjectDefs.INTERACT_CHOP).get("outputs", {})
+
+	# (2) Out of range first: the reach is measured from the PLAYER, not from the
+	#     mouse, so pointing at a distant tree must not fell it.
+	player.global_position = tree.global_position + Vector3(0.0, 0.0, 25.0)
+	_gather_from(tree, CozyObjectDefs.INTERACT_CHOP)
+	var refused_far := tree.taken == tree_taken
+
+	# (3) In range.
+	player.global_position = tree.global_position
+	_gather_from(tree, CozyObjectDefs.INTERACT_CHOP)
+	var took := tree.taken == tree_taken + 1
+
+	var got := 0.0
+	for id in want:
+		got += player_state.pack.count(String(id))
+	var expected := 0.0
+	for id in want:
+		expected += float(want[id])
+
+	var village_still := true
+	for id in village_before:
+		if not is_equal_approx(building.inventory.count(String(id)),
+				float(village_before[id])):
+			village_still = false
+	# And it did not merely take from one and give to the other under the same
+	# names: the village must have GAINED nothing either.
+	var village_total_before := 0.0
+	for id in village_before:
+		village_total_before += float(village_before[id])
+	var village_total_after := building.inventory.total()
+
+	print("[cozyv2] player chopped a tree: refused out of range=%s, took=%s, pack +%.0f (wanted %.0f), village %s (%.0f -> %.0f)  [%s]" % [
+		str(refused_far), str(took), got, expected,
+		"untouched" if village_still and is_equal_approx(
+			village_total_after, village_total_before) else "MOVED",
+		village_total_before, village_total_after,
+		"OK" if refused_far and took and is_equal_approx(got, expected)
+			and village_still and player_state.pack.count(
+				String(want.keys()[0])) > 0.0
+			else "FAIL, the player's work did not land on exactly one side of the split"])
+
+	# (4) Put the world back. The tree, the pack, the player, and the navigation
+	#     the gather refreshed.
+	tree.taken = tree_taken
+	tree.worked_at = tree_worked
+	tree.refresh_availability(_game_hours())
+	player_state.pack.items = pack_before
+	player.global_position = here
+	_rebuild_spatial()
+
+
 func _check_resource_chain() -> void:
 	var outdoor: CozyLocalNav = _nav_by_room.get(CozyRoomGraph.OUTDOORS)
 	if outdoor == null:
@@ -4338,10 +4569,18 @@ func _check_entity_registry() -> void:
 		CozyEntityRegistry.ROOF: building.state.roofs.size(),
 		CozyEntityRegistry.OBJECT: objects.size(),
 		CozyEntityRegistry.NPC: 1 if npc != null and npc.npc_state != null else 0,
+		CozyEntityRegistry.PLAYER: 1 if player_state != null else 0,
 	}
 	var complete := true
 	for kind in per_kind:
 		if entities.all_of(kind).size() != int(per_kind[kind]):
+			complete = false
+	# AND THE LIST ABOVE HAS TO BE THE WHOLE LIST. It is hand-written, so a kind
+	# registered in `_build_entity_registry` and forgotten here would never be
+	# counted — the check would agree with itself about a provider that returns
+	# nothing at all, which is the shape this file exists to refuse.
+	for kind in entities.kinds():
+		if not per_kind.has(String(kind)):
 			complete = false
 
 	# A lookup that returns *something* is not the claim; returning THIS is.
@@ -4463,6 +4702,12 @@ func _apply_world(d: Dictionary) -> void:
 	if npc != null and not npcs.is_empty():
 		npc.npc_state = CozyNpcState.from_dict(npcs[0])
 
+	# The player's ledger. An old save has no such entry and that is not an
+	# error: it means the pack was empty, which is what a new one is.
+	var players := CozyEntityRegistry.payloads(d, CozyEntityRegistry.PLAYER)
+	if player_state != null and not players.is_empty():
+		player_state = CozyPlayerState.from_dict(players[0])
+
 	var c: Dictionary = d.get("clock", {})
 	if not c.is_empty():
 		clock.day = int(c.get("day", 1))
@@ -4498,6 +4743,13 @@ const XPROC_ENERGY := 61.0
 const XPROC_DAY := 4
 const XPROC_WOOD := 9.0
 
+## A material the DEFAULT world does not start with, put in the PLAYER's pack
+## before the file is written. If the pack is not saved, pass 2 finds nothing and
+## says so — which an in-memory round trip cannot, because it never goes near a
+## file. `copper` rather than wood on purpose: the player starts with none, and a
+## marker that is also a default cannot tell "saved" from "never changed".
+const XPROC_COPPER := 7.0
+
 ## A real v1 save, kept in the repo so the migration is driven by output the game
 ## actually produced rather than by a hand-written idea of the format.
 const V1_FIXTURE := "res://tests/fixtures/saves/v1_world.json"
@@ -4530,6 +4782,8 @@ func _cross_process_save() -> void:
 	if chest != null and chest.container != null:
 		chest.container.inventory.items.clear()
 		chest.container.inventory.add("wood", XPROC_WOOD)
+	if player_state != null:
+		player_state.pack.add("copper", XPROC_COPPER)
 	# A wall somewhere the homestead does not build one, so the building facts
 	# have to have survived too — not just the numbers.
 	#
@@ -4564,6 +4818,11 @@ func _cross_process_verify() -> void:
 	_apply_world(d)
 
 	var st: CozyNpcState = npc.npc_state
+	var carried := player_state.pack.count("copper") if player_state != null else -1.0
+	print("[cozyv2] cross-process player pack: copper %.0f of %.0f  [%s]" % [
+		carried, XPROC_COPPER,
+		"OK" if is_equal_approx(carried, XPROC_COPPER)
+			else "FAIL, the player's pack did not survive the file"])
 	var chest := _first_object("chest")
 	var wood := -1.0
 	if chest != null and chest.container != null:

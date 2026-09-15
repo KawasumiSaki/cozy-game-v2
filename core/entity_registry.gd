@@ -42,6 +42,11 @@ const ROOF := "roof"
 const OBJECT := "object"
 const NPC := "npc"
 
+## The PLAYER's own ledger (Willow 2026-09-15: two accounts, the village's and
+## the player's). One state object, like a resident's — the difference between
+## them is WHO the goods belong to, not what shape a ledger is.
+const PLAYER := "player"
+
 ## kind -> {"provider": Callable() -> Array, "encode": Callable(state) -> Dictionary}
 ##
 ## A Dictionary, so registration order is the iteration order: a save lists walls
