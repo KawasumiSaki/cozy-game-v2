@@ -34,6 +34,23 @@ var affixes: Array = []
 
 var quantity := 1
 
+## WHAT THIS ITEM LOOKS LIKE, when that is not what it is.
+##
+## A definition id whose ART is worn while this item's numbers stay exactly as
+## they are — the whole of what a glamour is. `""` means "no glamour, I look like
+## myself", which is the state every item starts in and the state most stay in.
+##
+## ON THE INSTANCE, NOT THE DEFINITION, and that is the same argument the affixes
+## make one field up: two iron swords are two swords, so one of them can be made
+## to look like a steel sword without the other one changing. A field on the
+## definition would be a game-wide reskin, which is a different feature and a
+## worse one.
+##
+## IT IS NOT AN AFFIX. Nothing here reaches `modifiers()` — see `CozyGlamour` —
+## and that is the property worth having: an appearance that could move a number
+## is a stat system wearing a costume.
+var glamour_id := ""
+
 
 static func make(p_instance_id: String, p_definition_id: String,
 		p_rarity := "common", p_level := 1) -> CozyItemInstance:
@@ -157,6 +174,10 @@ func to_dict() -> Dictionary:
 		"level": level,
 		"affixes": rolled,
 		"quantity": quantity,
+		# Written ALWAYS, empty string included: a file that omits it and a file
+		# that says "" are the same item, and having one shape rather than two is
+		# what stops a load path from quietly dropping the appearance.
+		"glamour_id": glamour_id,
 	}
 
 
@@ -167,10 +188,42 @@ static func from_dict(d: Dictionary) -> CozyItemInstance:
 		String(d.get("rarity", "common")),
 		int(d.get("level", 1)))
 	it.quantity = int(d.get("quantity", 1))
+	it.glamour_id = String(d.get("glamour_id", ""))
 	for a in (d.get("affixes", []) as Array):
 		it.affixes.append({"id": String((a as Dictionary).get("id", "")),
 			"value": float((a as Dictionary).get("value", 0.0))})
 	return it
+
+
+## The definition whose ART this item wears — itself, unless it is glamoured.
+##
+## What a renderer asks. Nothing draws worn equipment yet (Willow, 2026-09-15:
+## the character visuals come after the animation work), so the callers today are
+## the panel's text and the tests — and when the sprites arrive, they ask THIS
+## and nothing else has to change.
+func appearance() -> Dictionary:
+	var id := glamour_id if glamour_id != "" else definition_id
+	return CozyItemDefs.get_def(id)
+
+
+## The definition id whose art this item wears.
+func appearance_id() -> String:
+	return glamour_id if glamour_id != "" else definition_id
+
+
+func is_glamoured() -> bool:
+	return glamour_id != "" and glamour_id != definition_id
+
+
+## What an item is CALLED on screen. A glamoured item is named after what it
+## looks like, not after what it is.
+##
+## DELIBERATE, and it is the one place a glamour is allowed to change a word
+## rather than a picture: a bag showing "Iron Sword" over a steel-sword sprite is
+## a bug report about a lie. What it is still shows in the tooltip and in
+## `display_name()`, which is what the stats are read from.
+func appearance_name() -> String:
+	return CozyItemDefs.display_name(appearance_id())
 
 
 func describe() -> String:
