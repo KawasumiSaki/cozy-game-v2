@@ -397,6 +397,47 @@ Stated plainly so it is not rediscovered later.
 
 ---
 
+## The equipment lane, end to end (2026-09-15)
+
+Everything below was finished and UNREACHABLE until a monster existed: the stats
+resolved, the generator rolled, the roller dropped, the container held and the
+equipment wore — and nothing in the world produced an item. Six commits closed
+the loop.
+
+| Block | Where |
+|---|---|
+| Stats / modifiers (four passes, credited by source) | `data/stats.gd` |
+| Item definitions | `data/items.gd` — 10 slot kinds, **13 slots** (3 charms, 2 rings) |
+| Rolled instances | `items/item_instance.gd` · `items/item_generator.gd` |
+| The bag | `items/item_container.gd` |
+| What is worn, and the modifier list | `items/equipment.gd` |
+| Loot tables and the roller | `data/loot.gd` · `items/loot_roller.gd` |
+| **Appearance without stats** | `items/glamour.gd` |
+| The source | `data/monsters.gd` · `character/monster.gd` |
+| The player's ledger, bag and swing | `character/player_state.gd` · `main.gd` |
+| Prices and the stall | `data/prices.gd` · `data/objects.gd` (`market_stall`) |
+| The pack, on screen | `ui/pack_panel.gd` |
+
+**The fight, measured rather than described:**
+
+```
+a swing from 25 m missed=true; up close one swing landed 1 hit(s), hurt=true;
+killed=true, bag=1 item(s) incl. 'Steel Sword', copper 7, village untouched  [OK]
+```
+
+**A MONSTER DOES NOT FIGHT BACK AND DOES NOT MOVE**, and both are decisions
+rather than omissions — an aggression row arrives with the driver that reads it.
+**NOTHING DRAWS WORN EQUIPMENT** (Willow: the character visuals come after the
+animation work), so a glamour's sprite half has no consumer yet and a renderer
+will ask `CozyItemInstance.appearance_id()` and nothing else.
+
+**Two ledgers, and they are asserted apart**: the player's pack and the village's
+account have the same shape, the same method names and the same units, so a
+mistake between them is invisible on screen. Teeth: routing the player's chopped
+wood into `building.inventory` reports "pack +0 (wanted 4), village MOVED".
+
+---
+
 ## Running
 
 ```bash
