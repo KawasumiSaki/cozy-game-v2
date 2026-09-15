@@ -30,7 +30,19 @@ var dirty := true
 ## Does this chunk contain any water? Maintained as cells change, because the
 ## shore test otherwise probes five neighbours per sample point and a world with
 ## no water in it pays that cost for nothing.
+##
+## AND IT IS A DERIVED FACT, WHICH IS WHAT MAKES IT DANGEROUS. It is not part of
+## the save; it is recomputed from the cells. Every route that writes cells has to
+## either keep it in step or recount, and the one route that did neither went
+## unnoticed for as long as the world happened to hold no water: see
+## `from_dict`. `chunk_flag_probe.gd` measures it.
 var has_water := false
+
+## Does this chunk contain any farmland? Same shape and same reason as
+## `has_water`, for a heavier consumer: a sow point exists only on farmland, and
+## a search that walks the whole 64 x 64 m field for one spends 40 ms on chunks
+## that cannot possibly hold it. Measured in `CozyGroundPoints`.
+var has_farmland := false
 
 var _material: PackedInt32Array
 var _height: PackedFloat32Array
@@ -52,7 +64,7 @@ func _init(p_chunk_x := 0, p_chunk_z := 0) -> void:
 	for i in n:
 		_build[i] = CozyTerrainMaterials.default_buildability(
 			CozyTerrainMaterials.id_of(_material[i]))
-	_recount_water()
+	_recount_flags()
 
 
 # ---------------------------------------------------------------- geometry
@@ -152,27 +164,46 @@ func set_material(lx: int, lz: int, material_id: String) -> bool:
 
 	var was_water := _material[i] == _water_index
 	var is_water := new_index == _water_index
+	var was_farmland := _material[i] == _farmland_index
+	var is_farmland := new_index == _farmland_index
 	_material[i] = new_index
 	# Default buildability follows the new material (doc #7 / #11).
 	_build[i] = CozyTerrainMaterials.default_buildability(material_id)
 	dirty = true
 
-	if was_water != is_water:
-		# A flip changes whether the shore test can short-circuit. Recounting
-		# beats tracking a running total with two counters to keep in step.
-		_recount_water()
+	# A cell that has JUST become water/farmland is itself proof that the chunk
+	# holds some, so the cheap direction is a plain set. Only LOSING the last one
+	# needs a recount — and that is the rare direction: a field is tilled once and
+	# then left, and a chunk is 4096 cells, so recounting on every till would cost
+	# more than the walk the flag exists to avoid.
+	if is_water:
+		has_water = true
+	elif was_water:
+		has_water = _any_cell_is(_water_index)
+	if is_farmland:
+		has_farmland = true
+	elif was_farmland:
+		has_farmland = _any_cell_is(_farmland_index)
 	return true
 
 
 static var _water_index := CozyTerrainMaterials.index_of("water")
+static var _farmland_index := CozyTerrainMaterials.index_of("farmland")
 
 
-func _recount_water() -> void:
+func _any_cell_is(material_index: int) -> bool:
 	for i in _material.size():
-		if _material[i] == _water_index:
-			has_water = true
-			return
-	has_water = false
+		if _material[i] == material_index:
+			return true
+	return false
+
+
+## Recompute both flags from the cells. For the routes that install cells
+## WHOLESALE rather than one at a time, where there is no "which cell changed" to
+## reason from — currently `from_dict`.
+func _recount_flags() -> void:
+	has_water = _any_cell_is(_water_index)
+	has_farmland = _any_cell_is(_farmland_index)
 
 
 func set_height(lx: int, lz: int, h: float) -> bool:
@@ -239,6 +270,19 @@ static func from_dict(d: Dictionary) -> CozyTerrainChunk:
 	if b.size() == c._build.size():
 		for i in b.size():
 			c._build[i] = int(b[i])
+	# THE FLAGS ARE NOT IN THE FILE, so nothing above has maintained them: this
+	# function assigns `_material` cell by cell and never goes through
+	# `set_material`. Without this line a loaded chunk claims to hold no water and
+	# no farmland while its cells say otherwise, and the reader is a classifier
+	# that then decides the world is dry. Measured in `chunk_flag_probe.gd`:
+	#
+	#     after set_material_at:   has_water=true   material=water
+	#     after to_dict/from_dict: has_water=false  material=water
+	#
+	# It went unnoticed because a world with no water in it reads false either
+	# way — and because the ONE caller that runs on the live terrain is
+	# `_check_scatter_incremental` (main.gd), which reloads the field mid-check.
+	c._recount_flags()
 	c.dirty = true
 	return c
 

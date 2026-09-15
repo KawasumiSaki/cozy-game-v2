@@ -2524,6 +2524,13 @@ func _check_ground_points() -> void:
 	var t0 := Time.get_ticks_usec()
 	var found := ground_points.free_points_of_type(CozyObjectDefs.INTERACT_PLANT)
 	var rebuild_us := Time.get_ticks_usec() - t0
+	# AND A SECOND TIME. The first call of the run also pays for every table it
+	# touches being built for the first time, so the cold number is not the one a
+	# resident feels — a resident asks on every scan for work. Reporting only the
+	# cold one would overstate what the chunk shortcut bought.
+	var t_warm := Time.get_ticks_usec()
+	ground_points.free_points_of_type(CozyObjectDefs.INTERACT_PLANT)
+	var warm_us := Time.get_ticks_usec() - t_warm
 	var standable := 0
 	var on_farmland := 0
 	var spots: Array[String] = []
@@ -2537,12 +2544,47 @@ func _check_ground_points() -> void:
 				Vector2(p.world_position.x, p.world_position.z))
 			if outdoor.is_walkable(cell):
 				standable += 1
-	print("[cozyv2] ground offers %d sow point(s) on the starter field, %d on farmland, %d standable, derived in %.2f ms: %s  [%s]" % [
+	print("[cozyv2] ground offers %d sow point(s) on the starter field, %d on farmland, %d standable, derived in %.2f ms (%.2f ms warm): %s  [%s]" % [
 		found.size(), on_farmland, standable, float(rebuild_us) / 1000.0,
+		float(warm_us) / 1000.0,
 		", ".join(spots) if not spots.is_empty() else "(none)",
 		"OK" if found.size() > 0 and standable == found.size()
 			and on_farmland == found.size()
 		else "FAIL, the field offers nowhere to sow, or a point nobody can stand at"])
+
+	# AND THE SHORTCUT ANSWERS EXACTLY WHAT A FULL WALK ANSWERS.
+	#
+	# The walk above only visits chunks whose `has_farmland` flag is set, which is
+	# 40 ms of work avoided. That shortcut is sound only while farmland is the
+	# only ground a sow point may stand on — a fact about `CozyObjectDefs`, not
+	# about the point source, and one a later author can change in a file that
+	# does not know this check exists.
+	#
+	# SO IT IS CHECKED, NOT ASSUMED, AND COMPARED AS A SET RATHER THAN A COUNT.
+	# Two walks that agree on how many points they found can disagree about which
+	# ones, and the difference would be a crop in the wrong place rather than a
+	# missing one. Duplicates are checked too: a chunk rectangle that does not
+	# line up with the tile lattice can offer the same square twice, and two crops
+	# in one square is a defect rather than a nuisance.
+	var t1 := Time.get_ticks_usec()
+	var reference := ground_points.full_free_points_of_type(CozyObjectDefs.INTERACT_PLANT)
+	var full_us := Time.get_ticks_usec() - t1
+	var fast_spots: Array[String] = []
+	var full_spots: Array[String] = []
+	for p in found:
+		fast_spots.append(_spot_key(p))
+	for p in reference:
+		full_spots.append(_spot_key(p))
+	var unique := {}
+	for s in fast_spots:
+		unique[s] = true
+	fast_spots.sort()
+	full_spots.sort()
+	print("[cozyv2] ground chunk shortcut: %d point(s) vs %d from a full walk, %d distinct, %d ms saved  [%s]" % [
+		fast_spots.size(), full_spots.size(), unique.size(),
+		int((full_us - rebuild_us) / 1000.0),
+		"OK" if fast_spots == full_spots and unique.size() == fast_spots.size()
+			else "FAIL, the shortcut does not answer what a full walk answers"])
 
 	# AND THE KIND IT OFFERS IS ONE A RECIPE IS WORKED AT. A point type the ground
 	# derives but no recipe consumes is a resident walking out to a field for
@@ -2555,6 +2597,15 @@ func _check_ground_points() -> void:
 		", ".join(CozyGroundPoints.offers()),
 		"OK" if unmatched.is_empty()
 		else "FAIL, the ground offers %s and nothing consumes it" % ", ".join(unmatched)])
+
+
+## A ground point's identity, for comparing two derivations of the same field.
+##
+## `CozyInteractionPoint` has no id, and a derived one is deliberately thrown
+## away when the call returns — so POSITION IS THE IDENTITY here, which is also
+## the right one: two sow points in the same square are the same square.
+func _spot_key(p: CozyInteractionPoint) -> String:
+	return "%.3f,%.3f" % [p.world_position.x, p.world_position.z]
 
 
 ## Would the resident actually SEEK those points, at the hour it would do the

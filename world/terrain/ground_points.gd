@@ -95,13 +95,49 @@ static func skill_for(point_type: String) -> String:
 ## without. Recorded rather than hidden; it belongs with "reserve on take" in the
 ## work-priority research.
 func free_points_of_type(t: String) -> Array[CozyInteractionPoint]:
+	return _derive(t, _candidate_areas())
+
+
+## The same derivation with the chunk shortcut OFF: every square of the field is
+## probed, exactly as this file did before the shortcut existed.
+##
+## Public because the SELF-CHECK HAS TO COMPARE THE TWO. The shortcut is sound
+## only while "the only ground a sow point can stand on is farmland" holds, and
+## that is a fact about `CozyObjectDefs.ground_problem` — a table this file does
+## not own and a later author can change. An assertion that the two answers agree
+## is the whole of what keeps the shortcut from being a claim.
+##
+## It costs the 40 ms the shortcut avoids, which is why it runs once, at startup,
+## in the self-check.
+func full_free_points_of_type(t: String) -> Array[CozyInteractionPoint]:
+	return _derive(t, [_area()])
+
+
+func _derive(t: String, areas: Array[Rect2]) -> Array[CozyInteractionPoint]:
 	var out: Array[CozyInteractionPoint] = []
 	var spawn_def := spawn_for(t)
-	if spawn_def == "" or terrain == null:
+	if spawn_def == "" or terrain == null or areas.is_empty():
 		return out
-	for pos in plan(_area(), _tile_size(), _material_at, _height_at, spawn_def, _blockers(spawn_def)):
-		out.append(CozyInteractionPoint.new(t, pos, _skill_of(spawn_def), _duration_of(spawn_def)))
+	var tile := _tile_size()
+	var blockers := _blockers(spawn_def)
+	for area in areas:
+		for pos in plan(area, tile, _material_at, _height_at, spawn_def, blockers):
+			out.append(CozyInteractionPoint.new(t, pos, _skill_of(spawn_def), _duration_of(spawn_def)))
 	return out
+
+
+## Which ground is worth walking. The chunks that hold farmland, or none.
+##
+## NO FALLBACK TO THE FULL FIELD when this comes back empty, and that is delib-
+## erate: a silent fallback would keep the answer right for another year while
+## the flag rotted, and this project has paid for exactly that shape ("a check
+## that passes for the wrong reason is worse than a skip", INVARIANTS). Empty is
+## both the correct answer and the expensive-to-be-wrong one, so it is asserted
+## against `full_free_points_of_type` rather than papered over.
+func _candidate_areas() -> Array[Rect2]:
+	if terrain == null:
+		return []
+	return terrain.farmland_areas()
 
 
 # ---------------------------------------------------------------- derivation
