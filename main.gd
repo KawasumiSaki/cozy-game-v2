@@ -220,6 +220,11 @@ const RESOURCE_TRADES: Array[String] = ["woodcutter", "miner", "farmer"]
 ## numbers that have to agree are two numbers that will stop agreeing.
 const STARTER_WHEAT := 8.0
 
+## Seeds in the same chest, for the sowing leg. Kept apart from the wheat because
+## they are different facts: wheat is what the oven eats, seed is what the FIELD
+## eats, and a check that read one constant for both would hide a split.
+const STARTER_SEED := 4.0
+
 ## The flat list the HOTKEYS index, and it MUST equal `TOOL_GROUPS` flattened.
 ##
 ## These are two hand-kept lists that have to agree, which is normally a bug
@@ -247,6 +252,13 @@ const OUTDOOR_CELL := 0.5
 var camera: CozyCameraRig = null
 var player: CozyCharacter = null
 var npc: CozyNpcAgent = null
+
+## Points that come from the GROUND rather than from an object (sowing).
+##
+## A second point source, NOT an entry in `objects`: that array is
+## `Array[CozyWorldObject]` and six readers iterate it assuming a world object.
+## Built once the terrain and the fields exist.
+var ground_points: CozyGroundPoints = null
 var occlusion: CozyOcclusion = null
 var hud: CozyHud = null
 var menu: CozyContextMenu = null
@@ -431,6 +443,11 @@ func _ready() -> void:
 	_place_initial_furniture()
 	_place_resource_nodes()
 	_rebuild_spatial()
+	# AFTER the crops are standing: the ground's points are derived from what is
+	# already there, so a provider built before them would offer a sow point under
+	# every crop. `_rebuild_spatial` above is also what makes the terrain they
+	# stand on settled.
+	_build_ground_points()
 	# Roofs come after room detection: the generator needs the room polygon and
 	# the floor elevations, and neither exists until _rebuild_spatial has run.
 	_build_roofs()
@@ -877,6 +894,12 @@ func _place_initial_furniture() -> void:
 	var chest := _place_object("chest", 6.6, 1.0, 0)
 	if chest != null and chest.container != null:
 		chest.container.inventory.add("wheat", STARTER_WHEAT)
+		# AND A FEW SEEDS, for the same reason and one more. `sow_crop` consumes
+		# one, and the only other source is a harvest — which needs a ripe crop,
+		# which is 24 hours of world time away. A chain whose first link cannot be
+		# supplied is a resident standing at an empty chest, and that is the exact
+		# sentence the line above was written for.
+		chest.container.inventory.add("seed", STARTER_SEED)
 		# What the chain gets measured AGAINST — captured here, rather than
 		# compared against the constant above. `STARTER_WHEAT` is what this line
 		# puts in; the check has to know what actually ARRIVED, or a world that
@@ -970,9 +993,20 @@ func _paint_demo_path() -> void:
 func _prepare_crop_ground() -> void:
 	if terrain == null:
 		return
+	# WIDENED 2026-09-15, and the crops did NOT move. The first field was
+	# 5.0 x 2.4 m with three 1 x 1 m crops in a row across the middle — and a sow
+	# point is one crop-sized square that must be clear of every crop standing
+	# near it, because a new crop's own interaction point reaches out from its
+	# body. Measured, with the check now in the self-check:
+	#
+	#     ground offers 0 sow point(s) on the starter field  [FAIL]
+	#
+	# Zero. A farmer could reap and never sow, which is the whole of what this
+	# block was for. The field is the player's work rather than a demo prop, so it
+	# grows and the three starter crops stay exactly where they were.
 	var plot := PackedVector2Array([
-		Vector2(-8.5, -4.2), Vector2(-3.5, -4.2),
-		Vector2(-3.5, -1.8), Vector2(-8.5, -1.8)])
+		Vector2(-13.5, -7.5), Vector2(-3.5, -7.5),
+		Vector2(-3.5, -1.8), Vector2(-13.5, -1.8)])
 	terrain.apply_intent(CozyTerrainIntent.clear_polygon(plot))
 	terrain.apply_intent(CozyTerrainIntent.till_polygon(plot))
 	# THE SAME TAIL AS `_prepare_starter_plot`, for the same reason: `setup()`
@@ -1325,6 +1359,45 @@ func _build_characters() -> void:
 	npc.navigator = world_navigator
 	npc.objects = objects
 	npc.clock = clock
+	# The second point source, and the way to leave something behind at a point.
+	# Both INJECTED, like `navigator` and `clock`: the agent never reaches for the
+	# world, which is what keeps it runnable in a test with no world at all.
+	npc.ground = ground_points
+	npc.place_object = _sow
+
+
+## Build the ground's point source, once the terrain and the fields exist.
+##
+## ORDER MATTERS: `objects` is read on every query to find out what is already
+## standing where, so the provider must exist after the crops are placed — and it
+## is handed the SAME array `main` owns, by reference, so a crop placed later is
+## seen without anything having to tell it.
+func _build_ground_points() -> void:
+	ground_points = CozyGroundPoints.new()
+	ground_points.terrain = terrain
+	ground_points.objects = objects
+	add_child(ground_points)
+
+
+## Leave a world object behind where work happened — the `spawns` half of a recipe.
+##
+## ONE PLACE, because three things have to happen together and forgetting the
+## third is invisible: the object is placed (which mints its id, applies the
+## ground rule and appends it to `objects`), navigation is rebuilt (an object
+## blocks movement, and `_place_object` deliberately does not touch navigation —
+## the furniture click path calls `_rebuild_spatial()` right after it for exactly
+## this reason), and nothing else needs telling because the ground source reads
+## `objects` live.
+##
+## Returns the new object, or null when the placement refused. The REFUSAL IS
+## PROPAGATED rather than swallowed: `_produce` spends nothing unless this returns
+## something, which is what keeps a failed planting from eating a seed.
+func _sow(def_id: String, at: Vector3) -> Node3D:
+	var o := _place_object(def_id, at.x, at.z, 0)
+	if o == null:
+		return null
+	_rebuild_spatial()
+	return o
 
 
 # ---------------------------------------------------------------- camera & occlusion
@@ -2427,6 +2500,61 @@ func _check_resource_chain() -> void:
 			"OK" if offered > 0 else "FAIL, a job that can never finish"])
 
 	_check_work_priority()
+	_check_ground_points()
+
+
+## The GROUND as a point source: does the field offer anywhere to sow, and can a
+## resident stand there?
+##
+## The measurement this exists for is the FIRST number: the starter field is
+## 5.0 x 2.5 m of farmland with three 1 x 1 m crops already standing in it, and
+## whether that leaves room to sow at all is not something to reason about. A
+## provider that offers nothing is a farmer who can still only reap, and every
+## assertion below would pass over a world with no sow point in it.
+##
+## A CHECK THAT PASSES FOR THE WRONG REASON IS WORSE THAN A SKIP (INVARIANTS):
+## "every offered point is standable" is vacuously true when none are offered, so
+## the count is asserted to be positive BEFORE standability means anything.
+func _check_ground_points() -> void:
+	if ground_points == null:
+		print("[cozyv2] ground points: no provider (no terrain?)  [SKIP]")
+		return
+
+	var outdoor: CozyLocalNav = _nav_by_room.get(CozyRoomGraph.OUTDOORS)
+	var t0 := Time.get_ticks_usec()
+	var found := ground_points.free_points_of_type(CozyObjectDefs.INTERACT_PLANT)
+	var rebuild_us := Time.get_ticks_usec() - t0
+	var standable := 0
+	var on_farmland := 0
+	var spots: Array[String] = []
+	for p in found:
+		spots.append("(%.1f,%.1f)" % [p.world_position.x, p.world_position.z])
+		if terrain != null and terrain.material_id_at(
+				p.world_position.x, p.world_position.z) == "farmland":
+			on_farmland += 1
+		if outdoor != null:
+			var cell := outdoor.world_to_cell(
+				Vector2(p.world_position.x, p.world_position.z))
+			if outdoor.is_walkable(cell):
+				standable += 1
+	print("[cozyv2] ground offers %d sow point(s) on the starter field, %d on farmland, %d standable, derived in %.2f ms: %s  [%s]" % [
+		found.size(), on_farmland, standable, float(rebuild_us) / 1000.0,
+		", ".join(spots) if not spots.is_empty() else "(none)",
+		"OK" if found.size() > 0 and standable == found.size()
+			and on_farmland == found.size()
+		else "FAIL, the field offers nowhere to sow, or a point nobody can stand at"])
+
+	# AND THE KIND IT OFFERS IS ONE A RECIPE IS WORKED AT. A point type the ground
+	# derives but no recipe consumes is a resident walking out to a field for
+	# nothing — the `chest`/`store` shape, in a new place.
+	var unmatched: Array[String] = []
+	for t in CozyGroundPoints.offers():
+		if CozyRecipeDefs.for_point(t).is_empty():
+			unmatched.append(t)
+	print("[cozyv2] every kind the ground offers is worked by a recipe: %s  [%s]" % [
+		", ".join(CozyGroundPoints.offers()),
+		"OK" if unmatched.is_empty()
+		else "FAIL, the ground offers %s and nothing consumes it" % ", ".join(unmatched)])
 
 
 ## Would the resident actually SEEK those points, at the hour it would do the

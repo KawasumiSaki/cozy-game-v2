@@ -153,7 +153,19 @@ static func plan(area: Rect2, tile: float, material_at: Callable, height_at: Cal
 
 
 ## The four corners and the centre, all of them ground the spawn accepts.
+##
+## THE RULE IS ASKED ONCE PER DISTINCT MATERIAL, not once per probe. `ground_problem`
+## builds a human-readable refusal string — a `join`, a lookup and a format — and
+## the lattice probes five points on each of 4096 tiles: measured at 45 ms per
+## derivation, which is far too slow for something a resident asks for whenever it
+## looks for work. Materials are six ids, so memoising turns 20,480 string builds
+## into at most six.
+##
+## The memo is LOCAL to the call rather than a member: a cache that outlives the
+## call is the thing this file exists without (see the header), and six strings
+## per query is not worth a staleness risk.
 static func _ground_accepts(spawn_def: String, material_at: Callable, rect: Rect2) -> bool:
+	var verdicts := {}          # material id -> bool
 	var probes: Array[Vector2] = [
 		rect.position,
 		Vector2(rect.end.x, rect.position.y),
@@ -163,7 +175,9 @@ static func _ground_accepts(spawn_def: String, material_at: Callable, rect: Rect
 	]
 	for p in probes:
 		var material := String(material_at.call(p.x, p.y))
-		if CozyObjectDefs.ground_problem(spawn_def, material) != "":
+		if not verdicts.has(material):
+			verdicts[material] = CozyObjectDefs.ground_problem(spawn_def, material) == ""
+		if not bool(verdicts[material]):
 			return false
 	return true
 
