@@ -47,6 +47,27 @@ var clock: CozyTimeSystem = null
 var navigator: CozyWorldNavigator = null
 var objects: Array = []        ## CozyWorldObject list, refreshed by the caller.
 
+## A SECOND point source, for work offered by the GROUND rather than by an object
+## (`CozyGroundPoints`). Injected like everything else — no autoloads here.
+##
+## NOT folded into `objects`, and that is a rule rather than taste: `objects` is
+## `Array[CozyWorldObject]`, so a point source in it is a runtime error, and the
+## half-dozen readers that iterate it (`_larder_food`, `_outdoor_obstacles`,
+## `_grow_the_world`, the save's entity list) all assume a world object.
+var ground = null
+
+## How to leave a world object behind at a point, for recipes that spawn one
+## instead of producing items (`sow_crop`).
+##
+## A `Callable` rather than a reference to `main`, because the alternative is an
+## agent that knows where the world lives — the same reason `navigator` and
+## `clock` are injected. `main.gd` owns placement, ids, navigation and the save;
+## the agent asks, and what happens is the world's business.
+##
+## Empty means "cannot spawn", and a recipe that wants one then refuses rather
+## than eating its inputs for nothing.
+var place_object := Callable()
+
 var completions := 0
 
 ## In-game hours, handed over by whatever owns the clock.
@@ -66,10 +87,16 @@ var last_status := "spawning"
 
 var _target_point: CozyInteractionPoint = null
 
-## The object that advertised `_target_point`. A point carries no back-reference
+## The thing that advertised `_target_point`. A point carries no back-reference
 ## to its owner, and hauling needs one — "the work finished" has to resolve to
 ## "the chest it finished at".
-var _target_object: CozyWorldObject = null
+##
+## `Node3D` RATHER THAN `CozyWorldObject` since 2026-09-15, because work can now
+## be offered by the GROUND (`CozyGroundPoints`) as well as by a world object.
+## Three sites below ask only world objects can answer — `container`, `def_id`,
+## `take_one` — and each of them now says `is CozyWorldObject` out loud instead of
+## relying on the type to have kept them honest.
+var _target_object: Node3D = null
 var _path := PackedVector3Array()
 var _path_i := 0
 var _work_left := 0.0
@@ -132,21 +159,59 @@ func want_point_types() -> Array[String]:
 	# What the day says — when it says anything. A block may name no point type
 	# at all, and the working block deliberately does not: `work` is the KIND of
 	# hour, and the trade is what says where (see `ACTIVITY_POINTS`).
-	var base := npc_state.job_point_type()
+	var schedule_type := ""
 	if clock != null:
-		var point := CozySchedule.point_for(CozySchedule.activity_at(clock.hour))
-		if point != "":
-			base = point
+		schedule_type = CozySchedule.point_for(CozySchedule.activity_at(clock.hour))
 
-	if base == npc_state.job_point_type():
-		# §45's container legs redirect WORK, and only work. They come FIRST
-		# because a resident still holding a finished batch stores it before
-		# fetching more (§45 lists Take and Store as separate steps) — and the
-		# trade stays on the list behind them, so a full or unreachable chest
-		# costs a detour rather than the whole job.
-		_add_point_type(out, _production_point_type())
-	_add_point_type(out, base)
+	if schedule_type != "":
+		# Sleeping, eating, resting: the day names one place and that is the list.
+		_add_point_type(out, schedule_type)
+		return out
+
+	# WORKING TIME. The §45 container legs come first — a resident holding a
+	# finished batch stores it before fetching more — and then EVERY KIND OF WORK
+	# this resident will take on, most wanted first.
+	#
+	# THE WHOLE LIST, NOT ONE TYPE, and that is the change Willow asked for:
+	# "所有人都可以干所有事" — a trade decides where a resident STARTS, not what
+	# they are allowed to do. So a farmer whose crops are all a day from ripe picks
+	# up an axe instead of standing in the field, and a cook with a free oven
+	# bakes. `CozyJobDefs.point_types()` builds the list; the only thing that ever
+	# removes an entry is a rule about the resident, and the one that exists is
+	# skill aversion (`is_assignable`, doc §10) — applied below, to the list.
+	_add_point_type(out, _production_point_type())
+	for t in _permitted(CozyJobDefs.point_types(npc_state.job_id)):
+		_add_point_type(out, t)
 	return out
+
+
+## The list with the kinds of work this resident is not allowed to do taken out.
+##
+## Doc §10's "厌恶：无法主动安排" is the mechanism, and it is a SKILL rule rather
+## than a trade rule — aversion to `farming` is how a resident refuses farm work.
+## It arrives through the point, because the POINT carries the skill: that field
+## was stored and never read from Phase 4 until 2026-09-15, the seventh
+## "declared with no consumer" this project has paid for, and reading it is what
+## makes "everyone can do every job except what they refuse" a rule instead of a
+## slogan.
+##
+## A point type whose skill cannot be resolved (no object offers it yet) is kept:
+## refusing work because the TABLE is incomplete would hide a missing row.
+func _permitted(types: Array[String]) -> Array[String]:
+	var out: Array[String] = []
+	for t in types:
+		var skill := _skill_of_point_type(t)
+		if skill == "" or npc_state.can_be_assigned_to(skill):
+			out.append(t)
+	return out
+
+
+## Which skill a kind of work trains, taken from the RECIPE rather than from the
+## station. The point's own `skill` field is doc #94's station property ("empty
+## means anyone may use it") — reading it here would mean a cook baking bread at a
+## research table trained research.
+func _skill_of_point_type(t: String) -> String:
+	return CozyRecipeDefs.skill_for_point(t)
 
 
 ## Append a point type to a ranked list, skipping "" and anything already there.
@@ -177,18 +242,57 @@ func _add_point_type(into: Array[String], t: String) -> void:
 ## A larder that CANNOT supply them is not a reason to go: without that check the
 ## resident would walk to an empty chest, take nothing, and walk back forever.
 func _production_point_type() -> String:
-	var r := CozyRecipeDefs.for_job(npc_state.job_id)
-	if r.is_empty():
-		return ""
-	if _carrying_outputs(r):
+	# WHAT THE RESIDENT IS CARRYING is judged against everything their work can
+	# produce — a reaped crop is a reason to go to the chest whoever reaped it.
+	if _carrying_outputs(_work_bag()):
 		return CozyObjectDefs.INTERACT_STORE
-	if _missing_inputs(r) and _larder_has_inputs(r):
+	# WHAT THEY NEED is judged against the work they would do FIRST, and it has to
+	# be, because `_larder_has_inputs` asks whether ONE container can supply the
+	# whole requirement in one trip. Merged across every kind of work, that
+	# question becomes "does a chest hold wheat AND seed", which no chest ever
+	# does — and the take-leg then never fires. Measured: the live chain went from
+	# `chest wheat 8 -> 6` to `8 -> 8` with the merged view, because the resident
+	# could no longer fetch the wheat it bakes with.
+	#
+	# The head is the trade's own specialty (`CozyJobDefs.point_types`), so this is
+	# the behaviour the recipe-per-trade lookup had, kept deliberately.
+	var head := _head_bag()
+	if _missing_inputs(head) and _larder_has_inputs(head):
 		return CozyObjectDefs.INTERACT_STORE
 	return ""
 
 
+## Everything the work this resident will take on consumes and produces, merged.
+##
+## It used to be the resident's single trade recipe. With work keyed by point type
+## and every resident able to do every kind of work, the §45 legs have to reason
+## about the whole set: a cook who can also reap needs the chest for wheat before
+## baking and for storing the wheat they just reaped.
+func _work_bag() -> Dictionary:
+	return CozyRecipeDefs.for_works(CozyJobDefs.point_types(npc_state.job_id))
+
+
+## The work this resident would do first — their trade's own kind — as a bag.
+##
+## Used for the TAKE leg only. See `_production_point_type` for why the two legs
+## ask different questions.
+func _head_bag() -> Dictionary:
+	return CozyRecipeDefs.for_works([CozyJobDefs.point_type(npc_state.job_id)])
+
+
+## Is the pack holding something FINISHED — a reason to go and put it away?
+##
+## ⚠️ AN ID THE SAME RESIDENT'S WORK ALSO CONSUMES IS NOT A FINISHED GOOD, and
+## this line is load-bearing rather than a tidy-up. `seed` is produced by
+## `harvest_crop` and consumed by `sow_crop`, so a resident holding one is holding
+## both a product and the thing they are about to use. Read as a product, `store`
+## outranks every kind of work every hour of the day: they walk to the chest,
+## deposit the seed, withdraw it again, and never sow anything. Measured on paper
+## before it was written — see `CozyRecipeDefs.for_works`.
 func _carrying_outputs(r: Dictionary) -> bool:
 	for id in r["outputs"]:
+		if r["inputs"].has(id):
+			continue
 		if npc_state.inventory.count(String(id)) > 0.0:
 			return true
 	return false
@@ -298,27 +402,50 @@ func _physics_process(delta: float) -> void:
 ## the list had `work` at its head for every trade, so which point a resident
 ## walked to was decided entirely by this function.
 ##
-## Returns `[point, object]`, or `[]` when no kind on the list has a free point.
-## The OBJECT comes back with the point because a point carries no back-reference
-## to its owner (doc #87) and hauling needs one: "the work finished" has to
-## resolve to "the chest it finished at".
+## TWO SOURCES, ONE RANKING. `objects` and the ground are scanned per TYPE rather
+## than one after the other, so a nearer point of a less-wanted kind does not win
+## by being in the other list. That is the same rule the ranking already follows
+## inside one source, and it would be a strange priority that depended on which
+## table a point came from.
+##
+## Returns `[point, owner]`, or `[]` when no kind on the list has a free point.
+## The OWNER comes back with the point because a point carries no back-reference
+## (doc #87) and hauling needs one: "the work finished" has to resolve to "the
+## chest it finished at" — or to the ground, for work that leaves something
+## behind rather than producing items.
 func _best_point(from: Vector3, want: Array[String]) -> Array:
 	for t in want:
 		var best: CozyInteractionPoint = null
+		# UNTYPED ON PURPOSE, and it is not laziness: this function is duck-typed
+		# by design (a source only has to answer `free_points_of_type`), and the
+		# unit tests hand it stubs that are not `Node3D`s at all. A typed local
+		# here aborts the whole call on the first stub, which reports as "nothing
+		# was picked" — a wrong answer rather than an error.
 		var best_obj = null
 		var best_dist := INF
-		for o in objects:
-			if not is_instance_valid(o):
-				continue
-			for p in o.free_points_of_type(t):
+		for source in _sources():
+			for p in source.free_points_of_type(t):
 				var d := from.distance_to(p.world_position)
 				if d < best_dist:
 					best_dist = d
 					best = p
-					best_obj = o
+					best_obj = source
 		if best != null:
 			return [best, best_obj]      # The best kind that exists wins outright.
 	return []
+
+
+## Everything that can advertise a point. A list rather than a union of two
+## arrays because the ground may be absent (a test, a world with no terrain) and
+## because `objects` must never be written to.
+func _sources() -> Array:
+	var out: Array = []
+	if ground != null and is_instance_valid(ground):
+		out.append(ground)
+	for o in objects:
+		if is_instance_valid(o):
+			out.append(o)
+	return out
 
 
 ## Take the best point on offer and start walking to it. It asks the world what it
@@ -327,7 +454,7 @@ func _acquire_job() -> void:
 	var want := want_point_types()
 	var picked := _best_point(global_position, want)
 	var best: CozyInteractionPoint = null
-	var best_obj: CozyWorldObject = null
+	var best_obj: Node3D = null
 	if not picked.is_empty():
 		best = picked[0]
 		best_obj = picked[1]
@@ -426,9 +553,15 @@ func _arrive() -> void:
 
 
 func _finish_work() -> void:
-	# Capture before releasing: the transfer below has to know WHAT was worked
-	# at, and both references are cleared on the next two lines.
+	# Capture before releasing: the transfer below has to know WHAT was worked at
+	# and WHERE, and every reference is cleared on the next lines.
+	#
+	# THE POSITION IS CAPTURED FOR THE SAME REASON, and it is easy to miss: a
+	# recipe that leaves something behind (`sow_crop`) has to put it where the work
+	# happened, and by the time anything knows that, the point is gone. Reading
+	# `_target_point` after the release below is a null dereference.
 	var finished_type := _target_point.type if _target_point != null else ""
+	var finished_at := _target_point.world_position if _target_point != null else global_position
 	var finished_obj := _target_object
 
 	if _target_point != null:
@@ -440,28 +573,38 @@ func _finish_work() -> void:
 	# Hauling is the one job whose work is a TRANSFER rather than a skill roll
 	# (doc §45). It resolves here because "the work completed" is exactly the
 	# moment at which the load is understood to have moved.
+	#
+	# `is CozyWorldObject` is now said OUT LOUD rather than guaranteed by the type:
+	# work can be offered by the ground, and the ground has no container.
 	var haul := ""
 	if finished_type == CozyObjectDefs.INTERACT_STORE \
-			and finished_obj != null and is_instance_valid(finished_obj):
+			and finished_obj is CozyWorldObject:
 		haul = _haul(finished_obj)
 	elif npc_state != null:
 		# §45's "Produce Output". Inputs are a REQUIREMENT, not a decoration: a
 		# batch with nothing to work from produces nothing, on the same rule as
 		# eating needing food. A chain that can run from an empty pack is not a
 		# chain, it is a conjuring trick.
-		haul = _produce(CozyRecipeDefs.for_job(npc_state.job_id))
+		#
+		# THE RECIPE FOR THE WORK JUST DONE, not for the resident's trade. Looked
+		# up by trade it produced that trade's goods at whatever point the resident
+		# happened to work — wheat from a farmer standing at a research table.
+		haul = _produce(CozyRecipeDefs.for_point(finished_type), finished_at)
 		# AND THE NODE IS THE POORER FOR IT. Only when something was actually
 		# made — a batch that produced nothing because the pack was empty did not
-		# take anything out of the ground either.
-		if haul != "" and finished_obj != null and is_instance_valid(finished_obj) 				and CozyObjectDefs.is_gathered(finished_obj.def_id):
+		# take anything out of the ground either. Guarded on the type because the
+		# ground has no `taken` to spend: it is not a node that is worked out, it
+		# is a place where something is planted.
+		if haul != "" and finished_obj is CozyWorldObject \
+				and CozyObjectDefs.is_gathered(finished_obj.def_id):
 			finished_obj.take_one(now_hours)
 			finished_obj.refresh_availability(now_hours)
 
-	# Working trains the job's skill, scaled by passion (愿景 §10: ×1 / ×2 / ×4).
+	# Working trains the skill of the WORK, scaled by passion (愿景 §10: ×1/×2/×4).
 	# This is what makes a resident grow into their role rather than staying a
 	# fixed production number.
 	if npc_state != null:
-		var skill_id := CozyJobDefs.primary_skill(npc_state.job_id)
+		var skill_id := CozyRecipeDefs.skill_for_point(finished_type)
 		if skill_id != "":
 			npc_state.train(skill_id,
 				maxi(1, int(round(npc_state.passion_multiplier(skill_id)))))
@@ -476,22 +619,31 @@ func _finish_work() -> void:
 
 ## §45's "Take" and "Store" — both happen here, at a container.
 ##
-## Which one it is follows from the resident's RECIPE and what they are carrying,
-## never from a per-workstation rule. A job with no recipe has no goods of its
-## own and gets the generic behaviour the `hauler` job exists for: put down what
-## you carry, pick up what is there.
+## Which one it is follows from WHAT THE RESIDENT'S WORK CONSUMES AND PRODUCES,
+## never from a per-workstation rule: put down what the work makes, pick up what
+## the work needs. When neither explains the visit, they are at a chest to move
+## goods, which is what hauling is.
 ##
 ## Every transfer is all-or-nothing. Depositing id by id would let a nearly-full
 ## chest absorb half a pack and refuse the rest, which is precisely the "goods
 ## quietly vanished" failure the conservation assertion exists to catch.
-func _haul(obj: CozyWorldObject) -> String:
-	var c := obj.container
+func _haul(obj: Node3D) -> String:
+	# The ground offers `plant` and has no container, so the type is checked
+	# rather than assumed. Nothing reaches here for a ground point — a `plant`
+	# point is not a `store` point — and a guard that is never taken is still
+	# cheaper than an invalid-property error the day something changes.
+	if not (obj is CozyWorldObject):
+		return "no container"
+	# A cast rather than the `is` above alone: GDScript does not narrow a
+	# variable's static type through `is`, so `obj.container` stays an
+	# unresolvable property on Node3D.
+	var wo := obj as CozyWorldObject
+	var c := wo.container
 	if c == null:
 		return "no container"
 	if npc_state == null or npc_state.inventory == null:
 		return "no pack"
 	var pack := npc_state.inventory
-	var r := CozyRecipeDefs.for_job(npc_state.job_id)
 
 	# ONE thing per visit, in the order the chain needs it.
 	#
@@ -500,37 +652,70 @@ func _haul(obj: CozyWorldObject) -> String:
 	# different things, and every later step then has to cope with a pack that is
 	# two things at once. §45 lists Take and Store as separate steps for the same
 	# reason.
-	if r.is_empty():
-		# No recipe, so no goods of its own: a hauler's trade is put down what you
-		# carry, or pick up what is there.
-		if pack.total() > 0.0:
-			return _deposit_all(c, pack)
-		return _withdraw_any(c, pack)
-
+	#
 	# Store first: a resident still holding a finished batch is not going to go
 	# and fetch more materials on top of it.
-	var put := _deposit_ids(c, pack, r["outputs"])
+	#
+	# PUT DOWN EVERYTHING THE WORK MAKES, PICK UP ONLY WHAT THE NEXT WORK NEEDS —
+	# the same split `_production_point_type` explains: deposits are judged against
+	# all of the resident's work, withdrawals against the trade's own recipe,
+	# because a chest that must hold every input at once holds none of them.
+	var put := _deposit_ids(c, pack, _work_bag()["outputs"])
 	if put != "":
 		return put
-	var got := _withdraw_for(c, pack, r["inputs"])
+	var got := _withdraw_for(c, pack, _head_bag()["inputs"])
 	if got != "":
 		return got
 	if _pack_food() <= 0.0:
-		return _withdraw_food(c, pack)
-	return "nothing to move"
+		var food := _withdraw_food(c, pack)
+		if food != "":
+			return food
+	# NOTHING IN THE BAG EXPLAINS THE VISIT, so they are here to move goods. This
+	# is the branch the `hauler` trade used to get for free by having no recipe;
+	# with work keyed by point type there is no recipe-less trade, so the
+	# fallback is written down instead of being implied by an empty table.
+	return _withdraw_any(c, pack)
 
 
 ## §45's "Produce Output", all-or-nothing. A batch that ate its inputs and
 ## produced nothing is worse than one that never started.
-func _produce(r: Dictionary) -> String:
+##
+## `at` is where the resident is standing when the work finishes, and it is only
+## read by recipes that LEAVE SOMETHING BEHIND (`spawns`) rather than filling the
+## pack. Defaulted so the existing direct callers keep compiling — `_check_production`
+## drives this function on purpose, and it has no world position to give.
+##
+##⚠️ AND IT IS STILL ALL-OR-NOTHING WHEN THE OUTPUT IS A WORLD OBJECT, which is
+## the case that is easy to get wrong. `_place_object` REFUSES SILENTLY — a crop
+## needs farmland and `ground_problem` says no to anything else — so spending the
+## seed first and spawning second would destroy a seed with nothing planted. The
+## placement therefore happens BEFORE `pack.spend`, and a refusal returns a reason
+## with the pack untouched.
+func _produce(r: Dictionary, at := Vector3.ZERO) -> String:
 	if r.is_empty():
 		return ""
 	var ins: Dictionary = r["inputs"]
 	var outs: Dictionary = r["outputs"]
+	var spawn := String(r.get("spawns", ""))
 	var pack := npc_state.inventory
+
+	if spawn != "":
+		if not place_object.is_valid():
+			return "cannot plant here"          # No world to plant into.
+		if not _can_stand_at(at):
+			return "nowhere to plant"
 	for id in ins:
 		if pack.count(String(id)) < float(ins[id]):
 			return "no %s to work with" % id
+
+	# The spawn comes second (all the inputs are known to be in hand) and before
+	# anything is spent. A refusal here costs nothing and says why.
+	var spawned: Node3D = null
+	if spawn != "":
+		spawned = place_object.call(spawn, at)
+		if spawned == null:
+			return "the ground refused a %s" % CozyObjectDefs.display_name(spawn)
+
 	for id in ins:
 		pack.spend({String(id): float(ins[id])})
 	var made := 0.0
@@ -540,22 +725,22 @@ func _produce(r: Dictionary) -> String:
 		made += float(outs[id])
 		named = String(id)
 	produced += 1
+	if spawn != "":
+		# Named rather than counted: "made 0 " with an empty name is what a
+		# spawn-only recipe reports otherwise, and it reads like a bug.
+		return "planted a %s" % CozyObjectDefs.display_name(spawn)
 	return "made %.0f %s" % [made, named]
 
 
-func _deposit_all(c: CozyContainerState, pack: CozyInventory) -> String:
-	var carrying := pack.total()
-	if carrying <= 0.0:
-		return ""
-	if not c.has_room_for(carrying):
-		return "store full (%.0f/%.0f, carrying %.0f)" % [
-			c.stored(), c.capacity, carrying]
-	# `keys()` returns a copy, so spending inside the loop is safe.
-	for id in pack.items.keys():
-		var n := pack.count(String(id))
-		c.deposit(String(id), n)
-		pack.spend({String(id): n})
-	return "stored %.0f" % carrying
+## Is there anywhere for a spawned thing to stand at `at`?
+##
+## The world owns the real answer (`_place_object` asks `ground_problem` and
+## refuses), and this is not a second copy of that rule — it is the cheap check
+## that keeps a resident from being sent to plant in a spot the placement will
+## reject. A refusal from the real call is still handled, because a rule with two
+## callers has to hold for both.
+func _can_stand_at(at: Vector3) -> bool:
+	return is_finite(at.x) and is_finite(at.z)
 
 
 func _deposit_ids(c: CozyContainerState, pack: CozyInventory, ids: Dictionary) -> String:
@@ -621,7 +806,12 @@ func target_point() -> CozyInteractionPoint:
 	return _target_point
 
 
-func target_object() -> CozyWorldObject:
+## The thing the current work is being done at: a world object, or the ground.
+##
+## `Node3D` rather than `CozyWorldObject` since 2026-09-15 — work can be offered
+## by the ground, which is not an object. The only readers are probes, and
+## `_object_label` already answers for anything.
+func target_object() -> Node3D:
 	return _target_object
 
 

@@ -33,6 +33,8 @@ func _init() -> void:
 	case("every placeable id is a real object", _placeables_exist)
 	case("a crop is refused on grass and allowed on farmland", _ground_rule)
 	case("a node gives its season, then waits", _yield_cycle)
+	case("sowing is wired end to end", _sowing_is_wired)
+	case("every job of work names the skill it trains", _work_skills_are_real)
 
 
 # ---------------------------------------------------------------- the teeth
@@ -45,6 +47,12 @@ func _offers_are_wanted() -> void:
 	for t in _offered_types():
 		is_true("'%s' is offered by an object and wanted by something" % t,
 			wanted.has(t))
+	# The ground is the second source and gets the same treatment. Without this
+	# half, `plant` could be derived by `CozyGroundPoints` and sought by nobody —
+	# which is the `chest`/`store` bug in a new place.
+	for t in CozyGroundPoints.offers():
+		is_true("'%s' is offered by the GROUND and wanted by something" % t,
+			wanted.has(t))
 
 
 ## The other direction, and the more dangerous one: a job or an activity that
@@ -52,8 +60,10 @@ func _offers_are_wanted() -> void:
 ## can never finish a task. That is the `hauler`/`chest` bug exactly.
 func _wants_are_offered() -> void:
 	var offered := _offered_types()
+	for t in CozyGroundPoints.offers():
+		offered.append(t)
 	for t in _demanded_types():
-		is_true("'%s' is wanted and some object offers it" % t, offered.has(t))
+		is_true("'%s' is wanted and something offers it" % t, offered.has(t))
 
 
 ## Guards the pair above from passing because both sides are empty. Without this,
@@ -75,21 +85,29 @@ func _recipes_have_jobs() -> void:
 		is_true("recipe '%s' names a job that exists" % id, CozyJobDefs.exists(job))
 
 
-## A recipe says where its work happens. If that disagrees with the job's own
-## point type, the resident walks to one kind of place and the recipe claims
-## another — the work would happen somewhere the agent never went.
+## A recipe says where its work happens. That place has to be one the resident's
+## own trade will reach for, and somewhere something actually offers.
+##
+## "IS A MEMBER OF", not "equals": a trade now has a whole ranked list of work it
+## will take on (`CozyJobDefs.point_types`) and its specialty leads it. Comparing
+## against the head alone would have said `sow_crop` is worked where the farmer
+## does not work — which was true of a resident who could only ever do one thing,
+## and is exactly what changed on 2026-09-15.
 func _recipe_matches_job() -> void:
 	for id in CozyRecipeDefs.ids():
 		var job := String(CozyRecipeDefs.RECIPES[id]["job"])
 		if not CozyJobDefs.exists(job):
 			continue
-		eq("recipe '%s' is worked where its job works" % id,
-			CozyRecipeDefs.point_type(id), CozyJobDefs.point_type(job))
+		is_true("recipe '%s' is worked somewhere its trade will go" % id,
+			CozyJobDefs.point_types(job).has(CozyRecipeDefs.point_type(id)))
 
-	# And that place has to be somewhere a resident can actually stand.
+	# And that place has to be somewhere a resident can actually reach — offered
+	# by an object, or by the ground.
 	var offered := _offered_types()
+	for t in CozyGroundPoints.offers():
+		offered.append(t)
 	for id in CozyRecipeDefs.ids():
-		is_true("recipe '%s' names a point an object offers" % id,
+		is_true("recipe '%s' names a point something offers" % id,
 			offered.has(CozyRecipeDefs.point_type(id)))
 
 
@@ -106,8 +124,59 @@ func _recipe_items_exist() -> void:
 	# The food chain specifically: harvest makes wheat, baking eats it. If either
 	# end drifted, the live production check in the world would be the first to
 	# notice — and it would look like a production bug rather than a table one.
-	eq("harvest produces wheat", CozyRecipeDefs.outputs("harvest_crop"), {"wheat": 2.0})
+	eq("harvest produces wheat", CozyRecipeDefs.outputs("harvest_crop"),
+		{"wheat": 2.0, "seed": 1.0})
 	eq("baking consumes wheat", CozyRecipeDefs.inputs("bake_bread"), {"wheat": 2.0})
+
+
+## SOWING — the leg that had nowhere to be offered from until the GROUND could
+## offer a point, and the first recipe whose product is a THING IN THE WORLD
+## rather than an entry in the pack.
+##
+## Both halves are asserted, because either one alone is useless: a `plant` point
+## that spawns nothing is a resident waving at a field, and a `spawns` field
+## naming an object nothing may plant is a row that reads as working.
+func _sowing_is_wired() -> void:
+	eq("sowing is worked on the ground", CozyGroundPoints.offers(), _want(["plant"]))
+	eq("and the ground names the crop it plants", CozyGroundPoints.spawn_for("plant"), "crop")
+
+	var r := CozyRecipeDefs.for_point("plant")
+	is_true("sowing has a recipe", not r.is_empty())
+	eq("it consumes a seed", CozyRecipeDefs.inputs("sow_crop"), {"seed": 1.0})
+	eq("and produces the crop in the world, not in the pack",
+		CozyRecipeDefs.outputs("sow_crop"), {})
+
+	# The spawned object has to be REAL — `CozyObjectDefs.get_def()` falls back to
+	# `wood` for an unknown id, so a typo here would plant timber silently.
+	is_true("the crop it plants is a real object",
+		CozyObjectDefs.exists(CozyRecipeDefs.spawns("sow_crop")))
+
+	# And it has to be plantable SOMEWHERE, or the sow point is offered on ground
+	# the placement rule refuses — the resident would walk out and be told no.
+	var ground := "farmland"
+	eq("a crop may stand on the ground the sow point is offered on",
+		CozyObjectDefs.ground_problem(CozyRecipeDefs.spawns("sow_crop"), ground), "")
+	# The other direction: the same call on ground it does NOT accept must refuse,
+	# or the line above would pass for a rule that never refuses anything.
+	is_true("and the rule still refuses other ground",
+		CozyObjectDefs.ground_problem(CozyRecipeDefs.spawns("sow_crop"), "grass") != "")
+
+	# A seed that comes from nowhere cannot be sown twice. `harvest_crop` yields
+	# it, which is what a farm actually does with part of its grain.
+	is_true("a seed can be obtained at all",
+		float(CozyRecipeDefs.outputs("harvest_crop").get("seed", 0.0)) > 0.0)
+
+
+## The skill a job of work trains. Kept beside the recipes rather than on each row
+## (a smaller diff), so the two have to be held together by something.
+func _work_skills_are_real() -> void:
+	for id in CozyRecipeDefs.SKILLS:
+		is_true("skill row '%s' is a real recipe" % id, CozyRecipeDefs.exists(id))
+		is_true("and names a real skill ('%s')" % CozyRecipeDefs.SKILLS[id],
+			CozySkills.exists(String(CozyRecipeDefs.SKILLS[id])))
+	for id in CozyRecipeDefs.ids():
+		is_true("recipe '%s' says what skill it trains" % id,
+			CozyRecipeDefs.skill_for_point(CozyRecipeDefs.point_type(id)) != "")
 
 
 # ---------------------------------------------------------------- the rest
@@ -248,12 +317,19 @@ func _offered_types() -> Array[String]:
 
 ## Three tables demand a point: a job's work, a job's rest, and the schedule's
 ## activity. A check that read only the jobs would call `sleep` unclaimed.
+##
+## A JOB DEMANDS ITS WHOLE RANKED LIST, not just its head: since 2026-09-15 every
+## trade will take on every kind of work, with its specialty first
+## (`CozyJobDefs.point_types`). Reading `point_type()` alone would call `plant`
+## unclaimed while the farmer's own want-list is handing it out — and this check
+## exists precisely to catch a point nothing wants.
 func _demanded_types() -> Array[String]:
 	var out: Array[String] = []
 	for job in CozyJobDefs.JOBS:
 		var d: Dictionary = CozyJobDefs.JOBS[job]
-		_push(out, String(d.get("point_type", "")))
 		_push(out, String(d.get("rest_point_type", "")))
+		for t in CozyJobDefs.point_types(job):
+			_push(out, t)
 	for a in CozySchedule.ACTIVITY_POINTS:
 		_push(out, String(CozySchedule.ACTIVITY_POINTS[a]))
 	return out
@@ -266,3 +342,12 @@ func _push(into: Array[String], t: String) -> void:
 		return
 	into.append(t)
 	into.sort()
+
+
+## Expected lists, typed, so a case that quietly returned an untyped array is
+## still compared by value.
+func _want(a: Array) -> Array[String]:
+	var out: Array[String] = []
+	for x in a:
+		out.append(String(x))
+	return out

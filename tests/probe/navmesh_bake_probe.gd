@@ -174,7 +174,11 @@ func _time_grid() -> void:
 	var t0 := Time.get_ticks_usec()
 	for i in runs:
 		var nav := CozyLocalNav.new()
-		nav.build(room, obstacles)
+		# `clearance` has NO default on purpose (see local_nav.gd): an existing call
+		# site must not be able to keep the old behaviour by saying nothing. This
+		# probe said nothing and stopped parsing on 2026-09-14 — a probe that cannot
+		# load reports exactly what a probe that does not exist reports: nothing.
+		nav.build(room, AGENT_RADIUS, obstacles)
 	var per_ms := float(Time.get_ticks_usec() - t0) / 1000.0 / float(runs)
 	print("[probe] %-34s %7.3f ms each  (%d run(s))" % [
 		"3. grid rebuild (today's cost)", per_ms, runs])

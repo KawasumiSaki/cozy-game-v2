@@ -27,13 +27,34 @@ extends RefCounted
 ## row would say so.
 const POINT_WORK := "work"
 
+## THE RECIPE IS KEYED BY POINT TYPE, NOT BY TRADE (2026-09-15).
+##
+## It used to be keyed by `job`, and `for_job()` returned the FIRST match — which
+## meant a trade could only ever have one recipe, and that the farmer who reaped
+## could not also sow. Looked up by the trade alone it was also simply WRONG: the
+## resident produced their trade's goods at whatever point they happened to work,
+## so a farmer standing at a research table produced wheat.
+##
+## Keying on the point type fixes both at once, and it is what "everyone can do
+## every kind of work" needs: which goods come out of a job of work depends on the
+## WORK, not on who is doing it. A trade is therefore a preference for where to
+## start, not a licence — see `CozyJobDefs.point_types()`.
+##
+## `spawns` names a WORLD OBJECT the work leaves behind, and it is the first field
+## in this table that is not an item id. The dungeon blueprint refuses a `spawns`
+## field because nothing could resolve one; here something can —
+## `CozyObjectDefs.exists()` and the ground rule it already owns — so the field
+## arrives together with its validation (`test_resource_chain`), which is the rule
+## that document set.
+
 const RECIPES := {
 	# ---- the gathering legs (2026-09-14) -------------------------------------
 	#
-	# Each names a point type that an object in `CozyObjectDefs` actually offers.
-	# That is asserted rather than assumed: a recipe whose point type nothing
-	# offers is a resident that can never finish a task, which is exactly the
-	# failure this project has paid for repeatedly.
+	# Each names a point type that an object in `CozyObjectDefs` actually offers —
+	# or, for `plant`, that the GROUND offers (see `CozyGroundPoints`). That is
+	# asserted rather than assumed: a recipe whose point type nothing offers is a
+	# resident that can never finish a task, which is exactly the failure this
+	# project has paid for repeatedly.
 	"chop_tree": {
 		"job": "woodcutter",
 		"point_type": "chop",
@@ -54,11 +75,27 @@ const RECIPES := {
 	# table offers — so the resident farmed at a desk and wheat appeared next to
 	# it. `harvest` is a point a crop actually has, and the name says what the
 	# resident does rather than what happens to the field afterwards.
+	#
+	# AND IT YIELDS SEED, which is what `sow_crop` is worked from: keeping part of
+	# the harvest back as next year's seed is what a farm actually does, and it
+	# needs no second recipe, no second trade and no second point type.
 	"harvest_crop": {
 		"job": "farmer",
 		"point_type": "harvest",
 		"inputs": {},
-		"outputs": {"wheat": 2.0},
+		"outputs": {"wheat": 2.0, "seed": 1.0},
+	},
+	# SOWING — worked at a point the GROUND offers, because a tilled field is
+	# terrain and not an object. One seed in, one crop standing where it was sown.
+	#
+	# NO `outputs`: the goods are the crop, which is a thing in the world with its
+	# own growth cycle rather than an entry in the pack.
+	"sow_crop": {
+		"job": "farmer",
+		"point_type": "plant",
+		"inputs": {"seed": 1.0},
+		"outputs": {},
+		"spawns": "crop",
 	},
 	# The first recipe with a real input leg, so it is the one that exercises
 	# "Find Input → Find Container → Take" rather than going straight to work.
@@ -75,9 +112,61 @@ const RECIPES := {
 const NONE := {}
 
 
-static func for_job(job_id: String) -> Dictionary:
+## The skill each job of work trains, by recipe.
+##
+## BY RECIPE AND NOT BY TRADE, and not by the point either. A resident used to
+## train their trade's skill whatever they were doing; with work keyed by point
+## type the trade no longer knows. The POINT's own `skill` field is a different
+## thing — doc #94's "empty means anyone may use it" makes it a property of the
+## STATION, and reading it here would mean a cook baking bread at a research table
+## trained `research`. What skill a job of work trains is a property of the work,
+## and the work is the recipe.
+##
+## ⚠️ Kept next to the recipes rather than as a field on each row only because
+## that is a smaller diff; `test_resource_chain` asserts the keys and the recipes
+## are the same set, so the two cannot drift apart unnoticed.
+const SKILLS := {
+	"chop_tree": "gathering",
+	"mine_rock": "mining",
+	"harvest_crop": "farming",
+	"sow_crop": "farming",
+	"bake_bread": "cooking",
+}
+
+## Skills for kinds of work that have NO RECIPE, by point type.
+##
+## Hauling is the one: its "output" is a transfer rather than a thing, so there is
+## nothing for a recipe to name — and it is still a trade the doc's ten-skill
+## table has (`hauling`, which `hauler` already leans on). Without this, a
+## resident whose finished job was a container leg trained nothing at all, and the
+## live assertion that work grows a skill went red on a resident that had only
+## hauled so far — a real change in behaviour rather than a broken check.
+const POINT_SKILLS := {
+	"store": "hauling",
+}
+
+
+## The skill worked at this point type, or "" when nothing says.
+static func skill_for_point(point_type: String) -> String:
 	for id in ids():
-		if String(RECIPES[id]["job"]) == job_id:
+		if point_type(id) == point_type:
+			return String(SKILLS.get(String(id), ""))
+	return String(POINT_SKILLS.get(point_type, ""))
+
+
+## The recipe worked at this point type, or `NONE`.
+##
+## The second parameter used to be a trade, and dropping it is the point: two
+## residents of different trades working the same point produce the same thing,
+## and one resident working two points produces two different things.
+##
+## ONE RECIPE PER POINT TYPE is a limit rather than a rule: this returns the first
+## match in id order, so a second recipe at one type would be unreachable.
+## `test_resource_chain` refuses a second one rather than letting it sit in the
+## table looking usable.
+static func for_point(point_type: String) -> Dictionary:
+	for id in ids():
+		if String(RECIPES[id]["point_type"]) == point_type:
 			return RECIPES[id]
 	return NONE
 
@@ -104,6 +193,76 @@ static func outputs(id: String) -> Dictionary:
 	return RECIPES[id].get("outputs", {})
 
 
+## Which world object this recipe leaves behind, or "" when it leaves none.
+static func spawns(id: String) -> String:
+	return String(RECIPES[id].get("spawns", ""))
+
+
+## Every point type that is worked on the GROUND rather than at an object: the
+## point types of the recipes that spawn something.
+##
+## This is how `CozyGroundPoints` knows what it may be asked for, instead of the
+## string "plant" being written down in two places.
+static func ground_point_types() -> Array[String]:
+	var out: Array[String] = []
+	for id in ids():
+		var s := spawns(id)
+		if s != "" and not out.has(point_type(id)):
+			out.append(point_type(id))
+	out.sort()
+	return out
+
+
+## The object a point of this type produces, or "" when the type is worked at an
+## object that is already there.
+static func spawn_for_point(point_type: String) -> String:
+	for id in ids():
+		if RECIPES[id]["point_type"] == point_type:
+			return spawns(String(id))
+	return ""
+
+
+## Every point type any recipe is worked at, in a fixed order. The "work" half of
+## the world's vocabulary, as opposed to the resting and eating halves.
+static func work_point_types() -> Array[String]:
+	var out: Array[String] = []
+	for id in ids():
+		var t := point_type(id)
+		if not out.has(t):
+			out.append(t)
+	out.sort()
+	return out
+
+
+## Everything a resident who does all of `point_types` consumes and produces,
+## merged into one pair of dictionaries.
+##
+## The §45 container legs ask "am I carrying finished goods?" and "do I lack
+## inputs a larder could supply?", and with work keyed by point type those
+## questions are about the WHOLE set of work a resident will do rather than about
+## one trade's single recipe.
+##
+## ⚠️ THE MERGE DELIBERATELY KEEPS AN ID ON BOTH SIDES, and the caller has to
+## handle it — see `CozyNpcAgent._carrying_outputs`. `seed` is produced by
+## `harvest_crop` and consumed by `sow_crop`, so a resident holding one is holding
+## both a finished good and the thing they are about to use. Read as a finished
+## good, `store` outranks every kind of work every hour of the day: the resident
+## walks to the chest, deposits the seed, withdraws it again, and never sows.
+## Dropping the id here instead would lose the input leg, which is why the rule
+## lives at the read site and is named there.
+static func for_works(point_types: Array[String]) -> Dictionary:
+	var ins := {}
+	var outs := {}
+	for id in ids():
+		if not point_types.has(point_type(id)):
+			continue
+		for k in inputs(id):
+			ins[k] = float(ins.get(k, 0.0)) + float(inputs(id)[k])
+		for k in outputs(id):
+			outs[k] = float(outs.get(k, 0.0)) + float(outputs(id)[k])
+	return {"inputs": ins, "outputs": outs}
+
+
 ## The recipe id a job runs, or "" when it has none.
 static func id_for_job(job_id: String) -> String:
 	for id in ids():
@@ -119,3 +278,4 @@ static func total_output(id: String) -> float:
 	for k in outputs(id):
 		t += float(outputs(id)[k])
 	return t
+

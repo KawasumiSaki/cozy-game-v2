@@ -26,6 +26,16 @@ const INTERACT_STORE := "store"
 const INTERACT_CHOP := "chop"
 const INTERACT_MINE := "mine"
 const INTERACT_HARVEST := "harvest"
+## SOWING — and the first point type in the project that NO OBJECT offers.
+##
+## A tilled field is terrain: no node, no id, nothing to initialise. So the point
+## comes from `CozyGroundPoints`, which derives it from the ground and answers the
+## same `free_points_of_type()` a world object does. It is declared here because
+## this is the interaction vocabulary, but **an assert that every offered type is
+## wanted and every wanted type is offered has to look in two places now**, and
+## `test_resource_chain` names which side each type came from rather than quietly
+## merging them.
+const INTERACT_PLANT := "plant"
 
 const OBJECTS := {
 	"research_table": {

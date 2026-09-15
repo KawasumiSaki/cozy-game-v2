@@ -2488,11 +2488,14 @@ func _check_work_priority() -> void:
 	var clock2 := CozyTimeSystem.new()
 	clock2.hour = 9.0
 	carrier.clock = clock2
+	# The rank is what matters and the tail is every kind of work the resident will
+	# take on, so the head is asserted rather than the whole list — comparing the
+	# list would be a second copy of `CozyWorkDefs.ORDER`.
 	var carrying := carrier.want_point_types()
-	var expected := ["store", "chop"]
-	print("[cozyv2] a woodcutter carrying wood wants %s (expected %s)  [%s]" % [
-		str(carrying), str(expected),
-		"OK" if carrying == expected
+	var head := carrying[0] if not carrying.is_empty() else ""
+	print("[cozyv2] a woodcutter carrying wood leads with '%s' (the container leg), and 'chop' is still on the list=%s)  [%s]" % [
+		head, str(carrying.has("chop")),
+		"OK" if head == "store" and carrying.has("chop")
 		else "FAIL, the container leg is not ranked ahead of the trade"])
 	carrier.free()
 	clock2.free()
@@ -3894,7 +3897,9 @@ func _check_production() -> void:
 	#     ids — never an object, a room or a position. That is doc #45's own
 	#     constraint: "NPC 不应该因为增加一个新工作台而增加一段特殊硬编码."
 	var rid := CozyRecipeDefs.id_for_job(NPC_JOB)
-	var r := CozyRecipeDefs.for_job(NPC_JOB)
+	# BY POINT TYPE, not by trade: `for_point` replaced `for_job` on 2026-09-15,
+	# and a recipe is now what a KIND OF WORK makes rather than what a trade makes.
+	var r := CozyRecipeDefs.for_point(CozyJobDefs.point_type(NPC_JOB))
 	# Typed by hand: `r["inputs"]` is a Variant, so `and` cannot infer a bool.
 	var ins: Dictionary = r.get("inputs", {})
 	var outs: Dictionary = r.get("outputs", {})
@@ -4840,16 +4845,31 @@ func _probe_npc_pathing() -> void:
 			_probe_wall_openings(h2["collider"])
 
 	# ---- A: is the point where it claims to be? ----------------------------
+	#
+	# ONLY FOR WORK AT A WORLD OBJECT. The target can now be the GROUND
+	# (`CozyGroundPoints`), which has no footprint and no origin — and "is the
+	# point inside the object it belongs to" is not a question about a patch of
+	# field. The guard is written rather than the type relied on, because this is
+	# a probe: a probe that crashes reports nothing about the thing it was pointed
+	# at, and the pathing probe is the instrument this project uses for exactly
+	# the faults that are hardest to see (`--cozy-probe-npc-pathing`).
 	if chosen != null:
-		var obj := npc.target_object()
-		if obj != null:
-			var inside := obj.footprint_rect().has_point(
+		var obj: Node3D = npc.target_object()
+		# A CAST, not an `is` guard: GDScript does not narrow a variable's static
+		# type through `is`, so `obj.footprint_rect()` stays an unresolvable call
+		# on Node3D and the whole of main.gd fails to parse.
+		var wo := obj as CozyWorldObject
+		if wo != null:
+			var inside := wo.footprint_rect().has_point(
 				Vector2(chosen.world_position.x, chosen.world_position.z))
 			var off := chosen.world_position.distance_to(
-				obj.to_global(Vector3.ZERO))
+				wo.to_global(Vector3.ZERO))
 			print("[cozyv2]   point geometry: %.2f m from the object's origin, inside_own_footprint=%s  [%s]" % [
 				off, str(inside),
 				"FAIL, the point is inside the object it belongs to" if inside else "OK"])
+		elif obj != null:
+			print("[cozyv2]   point geometry: offered by the GROUND at (%.2f, %.2f) — no object to measure against" % [
+				chosen.world_position.x, chosen.world_position.z])
 
 
 ## DECISIVE MEASUREMENT for the wall that is blocking.
@@ -5327,18 +5347,36 @@ func _check_npc_state() -> void:
 		p_neutral, p_interested, p_passionate, str(hate_blocked),
 		"OK" if is_equal_approx(p_neutral, 1.0) and is_equal_approx(p_interested, 2.0) 			and is_equal_approx(p_passionate, 4.0) and hate_blocked else "FAIL"])
 
-	# THE PAYOFF, checked FIRST: work must have grown the skill. Asserting it
-	# after the clamp test below would measure a value that test just destroyed —
-	# which is exactly what the first version of this did.
+	# THE PAYOFF: work must grow the skill OF THE WORK THAT WAS DONE.
 	#
-	# Starts at 6 with INTERESTED passion (x2), so each finished job adds 2.
-	# Derived from the trade, so this assertion follows the resident's job
-	# instead of naming a skill the job may no longer use.
+	# This used to read the trade's primary skill, and that stopped being the same
+	# question on 2026-09-15: a resident now trains what the finished POINT says
+	# (`CozyRecipeDefs.skill_for_point`), so a container leg trains `hauling` and a
+	# stint at the oven trains `cooking`. Reading `cooking` at frame 900 measured a
+	# resident who had so far only hauled — a real behaviour change, reported by a
+	# check that had been asking the wrong question.
+	#
+	# SO IT IS DRIVEN RATHER THAN WAITED FOR. The project has paid twice for an
+	# assertion that fired before its subject existed ("A check that fires before
+	# its subject exists does not report 'not yet', it reports 'broken'"), and
+	# "has the resident baked yet by frame N" is exactly that kind of bet. One
+	# synthetic work point through the REAL `_finish_work` is deterministic: it
+	# exercises the recipe lookup, the training and the passion multiplier without
+	# a frame budget.
 	var skill_id := CozyJobDefs.primary_skill(st.job_id)
+	var before := st.skill(skill_id)
+	var saved_point := npc._target_point
+	var saved_obj := npc._target_object
+	npc._target_point = CozyInteractionPoint.new(
+		CozyJobDefs.point_type(st.job_id), npc.global_position, "", 0.0)
+	npc._target_object = null
+	npc._finish_work()
+	npc._target_point = saved_point
+	npc._target_object = saved_obj
 	var trained := st.skill(skill_id)
-	print("[cozyv2] working trained the skill: %s=%d after %d job(s)  [%s]" % [
-		skill_id, trained, npc.completions,
-		"OK" if trained > 6 else "FAIL, skill did not grow"])
+	print("[cozyv2] working trained the skill of the work: %s %d -> %d, passion x%.0f  [%s]" % [
+		skill_id, before, trained, st.passion_multiplier(skill_id),
+		"OK" if trained > before else "FAIL, skill did not grow"])
 
 	# 愿景 §9 — 0..20, and a value beyond it must be clamped rather than stored.
 	# Destructive, so it runs after everything that reads the worked-for value.

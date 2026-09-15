@@ -56,13 +56,18 @@ func _trade_leads_at_work() -> void:
 		agent.free()
 	clock.free()
 
-	# And the tooth: a trade whose point type is not `work` must not be answered
-	# with `work`. Without this the case above would pass on a table where every
-	# job happened to work at the same kind of point — which is exactly how the
-	# bug hid for a day.
+	# And the tooth: the generic work point must not LEAD a trade that works
+	# somewhere else. Without this the case above would pass on the old model,
+	# where every trade was answered with `work` — which is the bug that hid for a
+	# day (see `test_schedule._work_names_no_point`).
 	var w := _agent("woodcutter", _clock_at(9.0))
-	eq("a woodcutter at 09:00 wants 'chop'", _head(w), "chop")
-	is_true("and not the generic work point", not w.want_point_types().has("work"))
+	eq("a woodcutter at 09:00 leads with 'chop'", _head(w), "chop")
+	is_true("and the generic work point does not lead it", _head(w) != "work")
+	# EVERY OTHER KIND OF WORK IS BEHIND IT — "所有人都可以干所有事" (Willow
+	# 2026-09-15). A trade is where a resident starts, not what they may do.
+	is_true("and every other kind of work follows behind",
+		w.want_point_types().has("mine") and w.want_point_types().has("plant")
+		and w.want_point_types().has("work"))
 	w.clock.free()
 	w.free()
 
@@ -144,15 +149,21 @@ func _eat_with_a_larder() -> void:
 ## §45's Take and Store are separate steps, so a resident holding a finished batch
 ## stores it before fetching more. Behind the container leg is the TRADE, which is
 ## what makes a full or unreachable chest cost a detour rather than the whole job.
+##
+## The head is asserted and the tail is asserted to still CONTAIN the trade, rather
+## than the whole list being compared: the list is every kind of work the resident
+## will take on, so an equality here would be a copy of `CozyWorkDefs.ORDER` and
+## would have to be edited every time that order changes — which is the opposite of
+## what that table is for.
 func _container_leg_comes_first() -> void:
 	var clock := _clock_at(9.0)
 	var agent := _agent("woodcutter", clock)
-	eq("a woodcutter with an empty pack just wants to chop",
-		agent.want_point_types(), _want(["chop"]))
+	eq("a woodcutter with an empty pack leads with chopping", _head(agent), "chop")
 
 	agent.npc_state.inventory.add("wood", 4.0)
-	eq("carrying a load, it stores first and chops after",
-		agent.want_point_types(), _want(["store", "chop"]))
+	eq("carrying a load, it stores first", _head(agent), "store")
+	is_true("and chopping is still on the list behind it",
+		agent.want_point_types().has("chop"))
 	agent.free()
 	clock.free()
 
@@ -164,11 +175,22 @@ func _container_leg_comes_first() -> void:
 ## bug, which the table-level suite catches on the TABLE and this one catches on
 ## the DECISION. Every job, every hour the day has.
 func _kinds_are_real() -> void:
-	var offered := {}
+	# TWO SOURCES, COUNTED SEPARATELY. `plant` is worked at a tilled field, which
+	# is terrain and not an object, so it appears in no row of `CozyObjectDefs` —
+	# and a check that read only that table would call the farmer's sow leg
+	# unoffered and be right about the wrong thing. Counting the two sides apart
+	# is what stops a type lost from the OBJECT table from hiding behind the
+	# ground's contribution.
+	var object_types := {}
 	for id in CozyObjectDefs.OBJECTS:
 		for it in CozyObjectDefs.OBJECTS[id]["interactions"]:
-			offered[String(it["type"])] = true
-	is_true("something is offered at all", offered.size() > 0)
+			object_types[String(it["type"])] = true
+	var offered := object_types.duplicate()
+	for t in CozyGroundPoints.offers():
+		offered[String(t)] = true
+	is_true("objects offer something at all", object_types.size() > 0)
+	is_true("and the ground offers something of its own",
+		CozyGroundPoints.offers().size() > 0)
 
 	var seen := 0
 	for job in CozyJobDefs.JOBS:
@@ -177,8 +199,9 @@ func _kinds_are_real() -> void:
 			var agent := _agent(job, clock)
 			for t in agent.want_point_types():
 				seen += 1
-				is_true("the %s at %02d:00 wants '%s', which something offers" % [
-					job, int(hour), t], offered.has(t))
+				var source := "an object" if object_types.has(t) else "the ground"
+				is_true("the %s at %02d:00 wants '%s', which %s offers" % [
+					job, int(hour), t, source], offered.has(t))
 			agent.free()
 			clock.free()
 	# Not vacuous: an empty loop would make every line above true and prove

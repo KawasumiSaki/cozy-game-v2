@@ -16,10 +16,28 @@ extends RefCounted
 ## So a job here is a filter over the world. Add a forge to the game and a
 ## blacksmith is a row in this table.
 
+## A TRADE IS A PREFERENCE FOR WHERE TO START, NOT A LICENCE (2026-09-15).
+##
+## Willow, on how work is assigned: "没有工种这个概念，我们参考 rimworld，所有人都
+## 可以干所有事，除非有那种特殊特质禁止了做什么事情."
+##
+## So `job_id` no longer decides what a resident is ALLOWED to do. It decides what
+## they will reach for first — their specialty — and everything else follows
+## behind it in one fixed order. A cook bakes bread because cooking is what they
+## do best, not because the other work is closed to them, and a farmer with
+## nothing ripe in front of them picks up an axe rather than standing still.
+##
+## What a resident is actually forbidden from doing already exists and is a
+## SKILL rule, not a trade rule: `CozyNpcState.is_assignable()` and
+## `CozySkills.Passion.AVERSION` — doc §10's "厌恶：无法主动安排". Aversion to
+## `farming` is how a resident refuses farm work, and it needs no new mechanism.
+## Nothing here had to be loosened for this: the trade was already only ever read
+## through `point_type()`.
+
 const JOBS := {
 	"researcher": {
 		"name": "Researcher",
-		"point_type": "work",          ## Which InteractionPoints it looks for
+		"point_type": "work",          ## Where this trade starts; see the note above
 		"preferred_skills": ["research"],
 		"preferred_interactions": ["research"],
 		"rest_point_type": "sit",
@@ -61,7 +79,9 @@ const JOBS := {
 	# now names `harvest`, which is a point a crop actually offers. The old
 	# `preferred_interactions: ["plant", "harvest"]` has lost "plant" for the
 	# same reason: no object offers one, and a declared interaction with no
-	# consumer is the shape this project has paid for seven times.
+	# consumer is the shape this project has paid for seven times. As of
+	# 2026-09-15 the GROUND offers one (`CozyGroundPoints`), so `plant` is back —
+	# see `CozyWorkDefs`.
 	"woodcutter": {
 		"name": "Woodcutter",
 		"point_type": "chop",
@@ -93,10 +113,26 @@ static func display_name(id: String) -> String:
 	return String(get_def(id).get("name", id))
 
 
-## What kind of InteractionPoint this job seeks. The agent asks the world for
-## this and never for a specific piece of furniture (doc #94).
+## Where this trade STARTS. Kept as a single value because seven call sites read
+## it and because "which one first" is a fair question to ask of a trade; the full
+## list is `point_types()`.
 static func point_type(id: String) -> String:
 	return String(get_def(id).get("point_type", "work"))
+
+
+## Every kind of work this trade will take on, most wanted first: its own
+## specialty, then the rest of the world's work in one fixed order.
+##
+## THIS IS WHAT "EVERYONE CAN DO EVERYTHING" MEANS IN CODE. The list is the same
+## for every trade except for which entry leads it, so no trade is a licence and
+## no kind of work is unreachable — which is what makes a resident whose own work
+## is not available do something else instead of standing still.
+##
+## The tail order is `CozyWorkDefs.ORDER` rather than the recipe table's key order,
+## because a resident's second choice is a design decision and should be readable
+## as one.
+static func point_types(id: String) -> Array[String]:
+	return CozyWorkDefs.ranked_for(point_type(id))
 
 
 static func preferred_skills(id: String) -> Array:
@@ -105,6 +141,12 @@ static func preferred_skills(id: String) -> Array:
 
 ## The skill whose passion governs this job — the first preferred one, since a
 ## job with two preferences has to pick a primary to be assignable at all.
+##
+## ⚠️ NO LONGER WHAT WORK TRAINS. A resident used to train this skill whatever
+## they were doing; with work keyed by point type they train the skill the POINT
+## names (`CozyInteractionPoint.skill`, which had been stored and never read since
+## Phase 4 — the seventh "declared with no consumer"). This stays because
+## `is_assignable()` uses it and because a trade still has a defining skill.
 static func primary_skill(id: String) -> String:
 	var s := preferred_skills(id)
 	return String(s[0]) if not s.is_empty() else ""

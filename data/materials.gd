@@ -81,6 +81,18 @@ const MATERIALS := {
 		"kind": "ingredient",
 		"color": Color(0.80, 0.72, 0.36),
 	},
+	# Kept back from the harvest and sown again (`sow_crop`) — the one item in the
+	# vocabulary that is both a product and a consumable for the same resident.
+	#
+	# It is an INGREDIENT and not a new kind: "grown or gathered, consumed by a
+	# recipe, not eaten as it stands" is already exactly what a seed is. What stops
+	# the resident endlessly trying to store the seed they are about to sow is a
+	# rule in `CozyRecipeDefs.for_point_merged()`, not a category here.
+	"seed": {
+		"name": "Seed",
+		"kind": "ingredient",
+		"color": Color(0.62, 0.66, 0.34),
+	},
 }
 
 const DEFAULT_MATERIAL := "wood"
