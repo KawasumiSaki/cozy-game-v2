@@ -62,6 +62,32 @@ regenerated, that line has to be put back by hand.
 
 ---
 
+### Roguelike / RPG pack (item and furniture sprites) — Kenney Vleugels
+
+| Source   | https://kenney.nl/assets/roguelike-rpg-pack |
+| Author   | Kenney Vleugels (www.kenney.nl), with help by Lynn Evers |
+| Licence  | **CC0-1.0** (public domain dedication) |
+| Used for | `assets/art/pixel/kenney/roguelikeSheet.png` and the eight tiles cut from it (`icon_*.png`) |
+
+**Why this licence and not a "free" one:** CC0 is a public-domain dedication, so
+it permits redistribution with no conditions at all — the pack's own `License.txt`
+says "you may use these graphics in personal and commercial projects; credit would
+be nice but is not mandatory". The project's rule is that an asset may enter the
+repo only if its licence ALLOWS REDISTRIBUTION (MIT / CC0 / CC BY); CC0 is the
+strongest of the three. **CC BY-SA was rejected on sight** for the same rule —
+share-alike is a condition this project cannot meet.
+
+**CC0 asks for no attribution, and the entry is here anyway.** The rule is that
+every external asset is recorded, and "nobody is owed this one" is a reason to
+write less, not a reason to write nothing: the next person to see a sprite in
+`assets/` should be able to find out where it came from without asking.
+
+**The sheet is committed whole** (94 KB) rather than only the tiles in use, so the
+other 1700 sprites are addressable by coordinate without another download — and so
+a tile already in the game can be traced back to the sheet it was cut from.
+
+---
+
 ## How to add an entry
 
 Copy this block, fill every line, and put it in "In use":

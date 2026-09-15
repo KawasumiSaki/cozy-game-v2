@@ -220,9 +220,17 @@ func _carried(pack: CozyInventory, id: String) -> bool:
 func _add_row(id: String) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 4)
+	var icon := TextureRect.new()
+	icon.custom_minimum_size = Vector2(CozyItemSlot.ICON, 0)
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	icon.texture = CozyItemIcons.icon_for(id)
+	icon.visible = icon.texture != null
+	row.add_child(icon)
+
 	var name_label := _label(CozyUiTheme.TEXT_DIM, CozyUiTheme.FONT_SIZE_SMALL)
 	name_label.text = CozyMaterials.display_name(id)
-	name_label.custom_minimum_size = Vector2(WIDTH - 60, 0)
+	name_label.custom_minimum_size = Vector2(WIDTH - 60 - CozyItemSlot.ICON, 0)
 	var count_label := _label(CozyUiTheme.TEXT, CozyUiTheme.FONT_SIZE_SMALL)
 	count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	count_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL

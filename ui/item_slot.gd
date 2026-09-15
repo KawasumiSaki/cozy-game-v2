@@ -35,8 +35,15 @@ signal right_clicked(instance_id: String)
 ## into its neighbour, and the FULL name is in the tooltip.
 const SIZE := Vector2(68, 22)
 
+## How wide the picture is. A 16 px sprite shown at 16 px, on a 22 px cell — the
+## one size at which a pixel sprite is exactly itself (see `ART_PROFILE` §4).
+const ICON := 16
+
 var _item: CozyItemInstance = null
 var _name: Label = null
+## The picture, when there is one. HIDDEN rather than absent for anything with
+## no icon, so the cell keeps its shape and the name starts in the same place.
+var _icon: TextureRect = null
 
 
 func _ready() -> void:
@@ -46,17 +53,34 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	add_theme_stylebox_override("panel", CozyUiTheme.slot_style(false))
 
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 3)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(row)
+	row.set_anchors_preset(Control.PRESET_FULL_RECT)
+	row.offset_left = 2
+	row.offset_right = -3
+
+	# THE ICON IS SMALLER THAN THE CELL AND SITS AT ITS LEFT. A 16 px sprite scaled
+	# to fill a 22 px cell would be blurry at any other scale, and the name is what
+	# tells a player which of two iron swords this is — the picture only has to say
+	# what KIND of thing it is.
+	_icon = TextureRect.new()
+	_icon.custom_minimum_size = Vector2(ICON, 0)
+	_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(_icon)
+
 	_name = Label.new()
 	_name.add_theme_font_size_override("font_size", CozyUiTheme.FONT_SIZE_SMALL)
 	_name.add_theme_color_override("font_color", CozyUiTheme.TEXT)
 	_name.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_name.clip_text = true
+	_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	# And the label does not eat the click that is meant for the cell underneath it.
 	_name.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(_name)
-	_name.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_name.offset_left = 3
-	_name.offset_right = -3
+	row.add_child(_name)
 
 	show_item(null)
 
@@ -70,6 +94,8 @@ func show_item(item: CozyItemInstance) -> void:
 	_item = item
 	if item == null:
 		_name.text = ""
+		_icon.texture = null
+		_icon.visible = false
 		tooltip_text = ""
 		add_theme_stylebox_override("panel", CozyUiTheme.slot_style(false))
 		return
@@ -78,6 +104,15 @@ func show_item(item: CozyItemInstance) -> void:
 	# existed, had no consumer: a cell showing "Iron Sword" over a steel sword
 	# would be a bug report about a lie, and the tooltip is where the truth lives.
 	_name.text = item.appearance_name()
+	# BY THE DEFINITION, not by the instance: two iron swords are two swords and they
+	# are the same PICTURE. `appearance_id()` rather than `definition_id`, so a
+	# glamoured item wears the icon of what it looks like — the same rule the name
+	# above already follows.
+	_icon.texture = CozyItemIcons.icon_for(item.appearance_id())
+	# HIDDEN, not merely empty: an empty TextureRect still takes its 16 px, and the
+	# name would start in a different place on a cell with no picture — so a bag of
+	# mixed icons would have a ragged left edge for no reason.
+	_icon.visible = _icon.texture != null
 	tooltip_text = item.describe()
 	add_theme_stylebox_override("panel", CozyUiTheme.slot_style(true))
 
