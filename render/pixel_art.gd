@@ -423,6 +423,82 @@ static func make_billboard_material(tex: Texture2D) -> StandardMaterial3D:
 	return m
 
 
+## The wind field the vegetation shader samples, as a generated resource.
+##
+## PROCEDURAL, and not only because generating beats shipping: a noise texture is
+## an implementation detail of a shader rather than an art asset. Committing it
+## as a PNG would put something in `assets/` that nobody drew and that no art
+## pipeline should ever touch — and it would then need a `docs/CREDITS.md` line
+## saying where it came from, which is a strange thing to write about a gradient.
+static func make_wind_noise(seed_val := 20260915) -> NoiseTexture2D:
+	var noise := FastNoiseLite.new()
+	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise.seed = seed_val
+	# Low frequency, because the texel is a PLACE on the field: the shader samples
+	# this at world metres times `wind_scale`, so a high frequency would make the
+	# gust smaller than a single plant.
+	noise.frequency = 0.01
+	var tex := NoiseTexture2D.new()
+	tex.noise = noise
+	tex.width = 256
+	tex.height = 256
+	tex.seamless = true
+	tex.generate_mipmaps = true
+	return tex
+
+
+const VEGETATION_SHADER := "res://shaders/vegetation.gdshader"
+
+
+## Every parameter `shaders/vegetation.gdshader` is driven by, in one place.
+##
+## ONE PLACE, BECAUSE `set_shader_parameter` FAILS SILENTLY. A name that is not a
+## uniform on the shader is accepted and dropped on the floor: no error, no
+## warning, and the plant simply keeps the default from the shader file. That is
+## the "looks green and proves nothing" shape this project keeps paying for, so
+## the names live here and `main.gd`'s self-check compares this dictionary
+## against the shader's actual uniform list — a rename on either side goes red
+## instead of quietly doing nothing.
+##
+## `half_height` is half the sprite's world height, in metres: the shader rotates
+## about it, so it has to be the same number the scatter lifts the quad by.
+static func vegetation_parameters(half_height: float, wind_strength := 1.0,
+		tex: Texture2D = null, wind: Texture2D = null) -> Dictionary:
+	return {
+		"albedo_texture": tex,
+		"wind_noise": wind,
+		"quad_half_height": half_height,
+		"wind_strength": wind_strength,
+	}
+
+
+## One wind field for the whole world, built on first use.
+##
+## Shared rather than per-asset because it describes the WEATHER, not the plant:
+## two plants a metre apart have to sample the same field or the gust splits
+## around them. The shader reads it in world XZ, so one texture is also what
+## makes the gust continuous across a chunk boundary.
+static var _wind_noise: NoiseTexture2D = null
+
+static func wind_noise() -> NoiseTexture2D:
+	if _wind_noise == null:
+		_wind_noise = make_wind_noise()
+	return _wind_noise
+
+
+## The moving-billboard material for scattered vegetation (see
+## `shaders/vegetation.gdshader` for what it does and what it deliberately does
+## not do yet).
+static func make_vegetation_material(tex: Texture2D, half_height: float,
+		wind_strength := 1.0) -> ShaderMaterial:
+	var values := vegetation_parameters(half_height, wind_strength, tex, wind_noise())
+	var mat := ShaderMaterial.new()
+	mat.shader = load(VEGETATION_SHADER)
+	for name in values:
+		mat.set_shader_parameter(name, values[name])
+	return mat
+
+
 ## Build a 3D material with nearest-neighbour filtering forced on.
 ## Pixel art must never be smoothed (doc #35).
 static func make_material(tex: Texture2D, uv_scale := Vector3.ONE) -> StandardMaterial3D:

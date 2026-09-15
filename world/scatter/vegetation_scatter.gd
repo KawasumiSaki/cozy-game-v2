@@ -40,6 +40,30 @@ const PLACEHOLDER_SIZE := {
 	"tree_oak_01": 2.40,
 }
 
+## How much each kind of plant moves in the wind, 0..1.
+##
+## A ROCK DOES NOT SWAY. It is drawn by the same material as the grass, because
+## one shader for the whole layer is what keeps the wind field shared between
+## neighbours and the code short — but a rock that bends reads as a bug rather
+## than as wind, so the strength is per-asset and the rock's is zero. A tree
+## moves a little: enough that a gust crosses the forest, not enough to look like
+## grass.
+const WIND_STRENGTH := {
+	"grass_tuft_01": 1.0,
+	"flower_daisy_01": 1.0,
+	"rock_small_01": 0.0,
+	"tree_oak_01": 0.30,
+}
+
+## Draw vegetation with the moving-billboard shader
+## (`shaders/vegetation.gdshader`) instead of Godot's built-in fixed-Y billboard.
+##
+## A CONSTANT RATHER THAN A DELETED BRANCH, the same shape as `HOUSE_ENABLED` in
+## `main.gd`: the built-in path is what this one has to match on everything
+## EXCEPT motion, and a comparison is how that gets checked. It is also the only
+## way to tell which half of a wrong picture is the shader.
+const USE_VEGETATION_SHADER := true
+
 var terrain: CozyTerrainSystem = null
 var assets: CozyAssetLibrary = null
 
@@ -270,10 +294,24 @@ func _build_multimesh(asset_id: String, items: Array) -> void:
 
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
-	mmi.material_override = CozyPixelArt.make_billboard_material(
-		_texture_for(asset_id))
+	mmi.material_override = _material_for(asset_id, world_size)
 	add_child(mmi)
 	_meshes[asset_id] = mmi
+
+
+## The material a kind of plant is drawn with.
+##
+## The half-height handed to the shader is EXACTLY the lift applied above
+## (`world_size * s * 0.5` at scale 1) — the shader rotates each quad about that
+## point, so if the two numbers disagree the plant spins about something that is
+## not where it meets the ground, and it does so by an amount that grows with the
+## distance from the wrong pivot. One number, read twice, in this file.
+func _material_for(asset_id: String, world_size: float) -> Material:
+	if not USE_VEGETATION_SHADER:
+		return CozyPixelArt.make_billboard_material(_texture_for(asset_id))
+	return CozyPixelArt.make_vegetation_material(
+		_texture_for(asset_id), world_size * 0.5,
+		float(WIND_STRENGTH.get(asset_id, 1.0)))
 
 
 ## Placeholder textures, keyed by asset id. When real art arrives this becomes a
