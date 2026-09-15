@@ -19,10 +19,34 @@ extends RefCounted
 ## something reads them. A field nothing consumes is this project's most
 ## expensive habit and it has seven entries in `docs/INVARIANTS.md`.
 
-## What an item can be worn in (section 10). The slot is also what an
-## `EquipmentManager` will key on, so two rings are two slots rather than one.
-const SLOTS: Array[String] = ["weapon", "shield", "helmet", "armor", "gloves",
-	"boots", "ring", "amulet"]
+## What a character can wear, in the order a panel draws it.
+##
+## Willow, 2026-09-15, gave this list: helmet / chest / legs / arms / boots /
+## backpack / three charms / two rings / weapon / off hand (which holds the
+## shield).
+const SLOTS: Array[String] = ["helmet", "armor", "legs", "arms", "boots",
+	"backpack", "charm", "ring", "weapon", "offhand"]
+
+## How many of each a character wears at once.
+##
+## A SLOT IS A KIND WITH A CAPACITY, NOT ONE PLACE. "Three charms and two rings"
+## is the whole reason: with one place per kind, a second ring would have to
+## displace the first, and `ring_1` / `ring_2` as separate ids would make the
+## ring a definition names a different thing from the ring it is worn in.
+##
+## The order of `SLOTS` is the PANEL's order, not this table's — this one is a
+## lookup, and a Dictionary's order is an implementation detail.
+const SLOT_CAPACITY := {
+	"helmet": 1, "armor": 1, "legs": 1, "arms": 1, "boots": 1, "backpack": 1,
+	"charm": 3, "ring": 2, "weapon": 1, "offhand": 1,
+}
+
+## What to call each one on screen. ASCII, because game text has to be.
+const SLOT_NAMES := {
+	"helmet": "Helmet", "armor": "Chest", "legs": "Legs", "arms": "Arms",
+	"boots": "Boots", "backpack": "Backpack", "charm": "Charm", "ring": "Ring",
+	"weapon": "Weapon", "offhand": "Off Hand",
+}
 
 ## How rare a drop is, and what rarity is WORTH.
 ##
@@ -53,6 +77,14 @@ const RARITY_ORDER: Array[String] = ["common", "uncommon", "rare", "epic", "lege
 ## vocabulary, so a sword's damage and a ring's attack bonus are the same kind of
 ## number and go through the same four passes.
 const ITEMS := {
+	# THE STEEL SWORD IS THE ONE THE PLAYER IS MEANT TO WALK AWAY WITH, and it is
+	# an iron sword with better numbers rather than a new KIND of thing: the loot
+	# table hands out instances, the bag holds them and the equipment resolves
+	# them, and none of those three needs to know this row exists.
+	"steel_sword": {
+		"name": "Steel Sword", "type": "weapon", "slot": "weapon",
+		"stats": {"attack": 18.0, "attack_speed": 1.1},
+	},
 	"iron_sword": {
 		"name": "Iron Sword", "type": "weapon", "slot": "weapon",
 		"stats": {"attack": 10.0, "attack_speed": 1.0},
@@ -62,7 +94,7 @@ const ITEMS := {
 		"stats": {"attack": 8.0, "attack_speed": 0.85},
 	},
 	"wooden_shield": {
-		"name": "Wooden Shield", "type": "shield", "slot": "shield",
+		"name": "Wooden Shield", "type": "shield", "slot": "offhand",
 		"stats": {"defense": 3.0, "physical_resistance": 0.05},
 	},
 	"cloth_armor": {
@@ -76,6 +108,37 @@ const ITEMS := {
 	"copper_ring": {
 		"name": "Copper Ring", "type": "ring", "slot": "ring",
 		"stats": {"max_hp": 5.0},
+	},
+	# ---- the slots that had nothing to go in them ---------------------------
+	#
+	# Every one of these exists because a slot with no item is a slot the panel
+	# draws empty forever, and a player who sees four empty squares concludes the
+	# game is unfinished rather than that they have not found them yet.
+	"iron_helmet": {
+		"name": "Iron Helmet", "type": "armor", "slot": "helmet",
+		"stats": {"defense": 3.0, "max_hp": 4.0},
+	},
+	"leather_legs": {
+		"name": "Leather Legs", "type": "armor", "slot": "legs",
+		"stats": {"defense": 2.0},
+	},
+	"leather_arms": {
+		"name": "Leather Arms", "type": "armor", "slot": "arms",
+		"stats": {"defense": 1.5},
+	},
+	# A PACK YOU WEAR, and it does not enlarge the bag YET. The slot is here
+	# because the layout calls for it; the effect arrives with the item grid that
+	# would have something to put in the extra room.
+	"leather_backpack": {
+		"name": "Leather Backpack", "type": "armor", "slot": "backpack",
+		"stats": {"max_hp": 6.0},
+	},
+	"jade_charm": {
+		"name": "Jade Charm", "type": "trinket", "slot": "charm",
+		# `luck` is a RESIDENT attribute and NOT a stat — writing it here would
+		# have been a row the resolver silently ignores, which `test_loot` refused
+		# by name on the first run.
+		"stats": {"crit_chance": 0.03, "max_hp": 3.0},
 	},
 }
 
@@ -94,6 +157,21 @@ static func display_name(id: String) -> String:
 
 static func type_of(id: String) -> String:
 	return String(get_def(id).get("type", ""))
+
+
+## How many of this kind a character wears at once. 0 for a kind that is not
+## one — which is how `CozyEquipment` refuses a definition rather than growing a
+## slot for it.
+static func capacity_of(slot_kind: String) -> int:
+	return int(SLOT_CAPACITY.get(slot_kind, 0))
+
+
+static func slot_name(slot_kind: String) -> String:
+	return String(SLOT_NAMES.get(slot_kind, slot_kind.capitalize()))
+
+
+static func is_slot(slot_kind: String) -> bool:
+	return SLOTS.has(slot_kind)
 
 
 static func slot_of(id: String) -> String:

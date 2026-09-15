@@ -30,6 +30,9 @@ func _init() -> void:
 	case("wearing displaces, and hands back what it displaced", _equip)
 	case("two swords worn is still two swords", _two_worn_swords)
 	case("the numbers move when it is put on", _stats_move)
+	case("two rings are two places, not one", _two_rings)
+	case("a third ring gives way at the first place", _third_ring)
+	case("which place an item is in survives a file", _places_round_trip)
 	case("an unwearable slot is refused and named", _unknown_slot)
 	case("what is worn survives a file", _equipment_round_trip)
 
@@ -156,18 +159,18 @@ func _equip() -> void:
 	var eq := CozyEquipment.new()
 	is_true("wearing nothing", eq.is_empty())
 	is_true("nothing was displaced by the first", eq.equip(_sword("a")) == null)
-	eq("it is on", eq.worn("weapon").instance_id, "a")
+	eq("it is on", eq.worn("weapon", 0).instance_id, "a")
 	is_true("in the slot its definition says",
-		eq.is_wearing(CozyItemDefs.slot_of("iron_sword")))
+		eq.place_of("a")["kind"] == CozyItemDefs.slot_of("iron_sword"))
 	# A second sword in HAND displaces the first and HANDS IT BACK. An item
 	# destroyed by putting another one on is the kind of loss that reads as a bug.
 	eq("a second displaces the first", eq.equip(_sword("b")).instance_id, "a")
-	eq("and the new one is on", eq.worn("weapon").instance_id, "b")
-	eq("the first is not worn anywhere", eq.slot_wearing("a"), "")
-	eq("but the second is", eq.slot_wearing("b"), "weapon")
+	eq("and the new one is on", eq.worn("weapon", 0).instance_id, "b")
+	eq("the first is not worn anywhere", eq.place_of("a"), {})
+	eq("but the second is", String(eq.place_of("b")["kind"]), "weapon")
 	# Different slots do not displace each other.
 	eq("a shield displaces nothing", eq.equip(_shield("s")), null)
-	eq("two slots are worn", eq.worn_slots().size(), 2)
+	eq("two slots are worn", eq.worn_kinds().size(), 2)
 	eq("a slot it cannot go in is refused", eq.equip(null), null)
 
 
@@ -194,18 +197,80 @@ func _stats_move() -> void:
 		armed > bare)
 	# And it says the same thing as the resolver fed by hand, because it IS the
 	# resolver — a second implementation here is a second thing to drift.
-	var by_hand := CozyStats.resolve(eq.worn("weapon").modifiers(), "attack", 0.0)
+	var by_hand := CozyStats.resolve(eq.worn("weapon", 0).modifiers(), "attack", 0.0)
 	near("and it agrees with the resolver", armed, by_hand)
 	eq("a stat nothing touches is the base", eq.stat("crit_chance", 0.0), 0.0)
 
 
+## WILLOW'S LIST HAS THREE CHARMS AND TWO RINGS, and that is the whole reason a
+## slot is a kind with a capacity rather than a place. With one place per kind
+## the second ring could only displace the first — and the player would see a
+## ring vanish every time they found one.
+func _two_rings() -> void:
+	var eq := CozyEquipment.new()
+	eq.equip(_sword("s"))
+	eq.equip(_ring("r1"))
+	is_true("the first ring displaced nothing", eq.equip(_ring("r2")) == null)
+	eq("there are two ring places", eq.capacity("ring"), 2)
+	eq("and both are filled", eq.filled("ring"), 2)
+	eq("in the order they went on", eq.worn("ring", 0).instance_id, "r1")
+	eq("the second in the second", eq.worn("ring", 1).instance_id, "r2")
+	# Three charms, because the list says three.
+	eq("there are three charm places", eq.capacity("charm"), 3)
+	eq("and one helmet place", eq.capacity("helmet"), 1)
+	eq("and a kind that is not a slot has none", eq.capacity("tail"), 0)
+
+
+## The kind is full, so something has to give — and it is HANDED BACK rather than
+## destroyed, because a ring lost to putting another ring on is a loss the player
+## reads as a bug.
+func _third_ring() -> void:
+	var eq := CozyEquipment.new()
+	eq.equip(_ring("r1"))
+	eq.equip(_ring("r2"))
+	var displaced := eq.equip(_ring("r3"))
+	ne("the third displaced something", displaced, null)
+	eq("and it was the FIRST place that gave way", displaced.instance_id, "r1")
+	eq("the new ring is there", eq.worn("ring", 0).instance_id, "r3")
+	eq("and the second place is untouched", eq.worn("ring", 1).instance_id, "r2")
+	eq("the displaced ring is not worn anywhere", eq.place_of("r1"), {})
+	# Taking one off by id is per-INSTANCE: two identical rings, one comes off.
+	is_true("a ring can be taken off by id", eq.unequip_instance("r3") != null)
+	eq("and the other is still on", eq.worn("ring", 1).instance_id, "r2")
+	eq("whose place did not move", int(eq.place_of("r2")["index"]), 1)
+
+
+## A RING IN THE SECOND PLACE AND A RING IN THE FIRST ARE DIFFERENT STATES of the
+## same two rings, so the file has to carry the position. A sparse list — only
+## the items — would put both back in the first place and the second would be
+## lost, silently and visibly.
+func _places_round_trip() -> void:
+	var eq := CozyEquipment.new()
+	eq.equip(_ring("r1"))
+	eq.equip(_ring("r2"))
+	eq.unequip("ring", 0)
+	var back := CozyEquipment.from_dict(
+		JSON.parse_string(JSON.stringify(eq.to_dict())))
+	eq("the ring that was left is still worn", back.worn("ring", 1).instance_id, "r2")
+	eq("in the place it was in", back.worn("ring", 0), null)
+	eq("and the description matches", back.describe(), eq.describe())
+	# A file that names a slot this game does not have is refused, not stored.
+	var bad := eq.to_dict()
+	bad["tail"] = [_ring("x").to_dict()]
+	eq("a slot the game lacks is named", CozyEquipment.unknown_slots(bad).size(), 1)
+	eq("and refused on load", CozyEquipment.from_dict(bad).worn("ring", 1).instance_id, "r2")
+	# A payload that is not the list this format writes must not crash the loader.
+	var broken := {"ring": _ring("y").to_dict()}
+	eq("a malformed payload places nothing", CozyEquipment.from_dict(broken).filled("ring"), 0)
+
+
 func _unknown_slot() -> void:
-	var d := {"weapon": _sword("a").to_dict(), "tail": _sword("b").to_dict()}
+	var d := {"weapon": [_sword("a").to_dict()], "tail": [_sword("b").to_dict()]}
 	var names := CozyEquipment.unknown_slots(d)
 	eq("the slot the game does not have is named", names.size(), 1)
 	eq("by name", names[0], "tail")
 	var eq := CozyEquipment.from_dict(d)
-	eq("and it was refused rather than stored", eq.worn_slots().size(), 1)
+	eq("and it was refused rather than stored", eq.worn_kinds().size(), 1)
 	eq("so it cannot contribute to a stat while being invisible",
 		eq.items().size(), 1)
 
@@ -216,8 +281,8 @@ func _equipment_round_trip() -> void:
 	eq.equip(_shield("s"))
 	var payload := eq.to_dict()
 	var back := CozyEquipment.from_dict(JSON.parse_string(JSON.stringify(payload)))
-	eq("both slots came back", back.worn_slots(), eq.worn_slots())
-	eq("with the same items", back.worn("weapon").instance_id, "a")
+	eq("both slots came back", back.worn_kinds(), eq.worn_kinds())
+	eq("with the same items", back.worn("weapon", 0).instance_id, "a")
 	eq("and the same description", back.describe(), eq.describe())
 	is_true("so the numbers match", is_equal_approx(
 		back.stat("attack", 0.0), eq.stat("attack", 0.0)))
@@ -235,3 +300,7 @@ func _axe(instance_id: String) -> CozyItemInstance:
 
 func _shield(instance_id: String) -> CozyItemInstance:
 	return CozyItemInstance.make(instance_id, "wooden_shield", "common", 1)
+
+
+func _ring(instance_id: String) -> CozyItemInstance:
+	return CozyItemInstance.make(instance_id, "copper_ring", "common", 1)
