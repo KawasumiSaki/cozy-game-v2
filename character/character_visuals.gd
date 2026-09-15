@@ -25,6 +25,22 @@ const FPS := {"idle": 3.0, "walk": 8.0, "work": 3.0, "sit": 2.0, "sleep": 1.5}
 
 const SHEET_ROOT := "res://assets/art/pixel/characters"
 
+## How big ONE FRAME of a rendered sheet is, in texels — and therefore how tall a
+## sheet is, since a sheet is one row.
+##
+## THE FACTORY HAS TO MATCH THIS, and nothing in the engine will complain if it
+## does not: `pixel_size` is a world-metres number, so a sheet at the wrong size is
+## simply a person of the wrong height, drawn with no error and no warning.
+##
+## 32 x 112 is 1.75 m at 64 px/m — TWICE the profile's world density of 32 px/m,
+## on purpose: a character is the one thing on screen worth oversampling, and the
+## game draws it at half. A sheet is `(FRAMES[anim] * 32) x 112` px.
+##
+## TAKEN FROM `CozyPixelArt`, which draws the placeholder on the same canvas, so
+## the sheet and the body cannot disagree about how many pixels a person is.
+const FRAME_W := CozyPixelArt.CHARACTER_TEX_W
+const FRAME_H := CozyPixelArt.CHARACTER_TEX_H
+
 
 ## Which animation this character should be playing.
 ##

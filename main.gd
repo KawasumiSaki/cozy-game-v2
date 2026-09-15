@@ -5301,6 +5301,32 @@ func _check_scatter() -> void:
 		" | ".join(density), off, scatter.asset_ids().size(),
 		"OK" if off == 0 else "NOTE"])
 
+	# ...AND THE SIZE OF A TUFT IS NOT ITS PIXEL COUNT.
+	#
+	# `scatter_rule.gd` says in prose that the ground comes out "a little over 100%
+	# covered", and computes it from a density, a cluster size and the size of a
+	# tuft. Until 2026-09-15 that size was DERIVED from the sprite's pixels, which
+	# made the claim true only while the profile's density happened to be 60: the
+	# day it became 32, every tuft would have doubled and the coverage would have
+	# gone to about 400%, with the density line above still reporting x1.00 — a
+	# green number over a field that had turned into a carpet.
+	#
+	# So the coverage the comment claims is MEASURED here, and a tuft's size is
+	# asserted as the design fact it is. This is the assertion that has teeth for
+	# `vegetation_scatter.REAL_SIZE`; without it, deleting that table changes how
+	# the game looks and nothing anywhere says a word.
+	var rule: Dictionary = CozyScatterRule.RULES.get("grass_tuft", {})
+	var cluster: Array = rule.get("cluster", [0, 0])
+	var per_m2 := float(rule.get("base_density", 0.0)) \
+		* (float(cluster[0]) + float(cluster[1])) * 0.5
+	var tuft := scatter.world_size_of("grass_tuft_01")
+	var coverage := per_m2 * tuft * tuft
+	var planted := coverage > 0.8 and coverage < 1.6
+	print("[cozyv2] grass coverage: %.2f tuft(s)/m2 x %.2f m each = %.0f%% of the ground (a little over 100 is the design)  [%s]" % [
+		per_m2, tuft, coverage * 100.0,
+		"OK" if planted
+			else "FAIL, the ground is bare or carpeted, and a tuft's size is the reason"])
+
 	print("[cozyv2] vegetation material: %d of %d kind(s) drawing, %s  [%s]" % [
 		shader_kinds, scatter.asset_ids().size(),
 		"all compiled" if unlit.is_empty() else "NOT DRAWING: %s" % ", ".join(unlit),
@@ -6531,6 +6557,45 @@ func _check_camera() -> void:
 	print("[cozyv2] camera debug unlock: rotates=%s, relocks=%s  [%s]" % [
 		str(unlocked), str(camera.is_locked()),
 		"OK" if unlocked and camera.is_locked() else "FAIL"])
+
+	# AND THE ART PROFILE'S DENSITY IS THIS CAMERA'S OWN NUMBER.
+	#
+	# `PIXELS_PER_METRE` and `ZOOM_STEPS[DEFAULT_ZOOM_INDEX]` are ONE number written
+	# twice: the profile derives px/m from "the base window height over the default
+	# step's visible height", and written as two independent constants nothing makes
+	# them agree. On the day they stop agreeing, every sprite in the game is at the
+	# wrong magnification and the only symptom is that the art "looks a bit off" —
+	# which is the complaint with no number in it.
+	#
+	# The BASE window, not the live viewport: the density is a contract with whoever
+	# draws the art, and a window that has been resized is not.
+	var base_h := float(ProjectSettings.get_setting(
+		"display/window/size/viewport_height", 720))
+	var visible := CozyCameraRig.ZOOM_STEPS[CozyCameraRig.DEFAULT_ZOOM_INDEX]
+	var derived := base_h / visible
+	var tied := absf(derived - CozyPixelArt.PIXELS_PER_METRE) < 0.01
+	print("[cozyv2] camera and art profile agree on the density: %d px over %.1f m = %.2f px/m, profile says %.0f  [%s]" % [
+		int(base_h), visible, derived, CozyPixelArt.PIXELS_PER_METRE,
+		"OK" if tied
+			else "FAIL, the profile's density is not this camera's default framing"])
+
+	# AND THE PERSPECTIVE DID NOT CHANGE WHEN THE FRAMING DID.
+	#
+	# The FOV is DERIVED from the visible height and the camera's distance, so
+	# widening the view without moving the camera back would have widened the lens
+	# as well — and a wider lens is a different PICTURE (everything side-on gets more
+	# foreshortened), not a wider one. That is the one thing a locked camera exists
+	# to prevent, and `ART_PROFILE.md` calls the look "narrow FOV".
+	#
+	# DERIVED FROM THE CONSTANTS rather than read off the live camera, on purpose: a
+	# player who has zoomed out leaves a saved index behind, and a check that read
+	# `camera.fov` would then be measuring that player's last session.
+	var lens := rad_to_deg(2.0 * atan(visible * 0.5 / CozyCameraRig.CAM_DISTANCE))
+	var narrow := lens >= CozyCameraRig.FOV_MIN and lens <= 25.0
+	print("[cozyv2] camera lens at the default zoom: %.2f degrees from %.1f m visible at %.0f m back (narrow band %.0f..25)  [%s]" % [
+		lens, visible, CozyCameraRig.CAM_DISTANCE, CozyCameraRig.FOV_MIN,
+		"OK" if narrow
+			else "FAIL, widening the view widened the lens instead of moving the camera back"])
 
 
 ## Pixel VFX (V2.1 doc E.18 / E.21).

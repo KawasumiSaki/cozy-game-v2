@@ -46,9 +46,12 @@ extends RefCounted
 
 const RULES := {
 	# 0.42 x ~17 = about seven tufts per square metre. A tuft is 0.40 m across —
-	# a 24 px sprite at the profile's 60 px/m, NOT a hand-picked number (see
-	# `CozyPixelArt.PIXELS_PER_METRE`) — so the ground comes out a little over
-	# 100% covered, which is what "grass" means and what a third of that is not.
+	# the size a tuft IS, declared in `REAL_SIZE`, NOT a number derived from its
+	# pixel count. It used to be derived (24 px at the profile's 60 px/m), and the
+	# day the profile moved to 32 px/m that derivation would have made every tuft
+	# 0.75 m and taken this line's "a little over 100% covered" to around 350%,
+	# with nothing anywhere saying so. So the ground comes out a little over 100%
+	# covered, which is what "grass" means and what a third of that is not.
 	"grass_tuft": {
 		"asset_id": "grass_tuft_01",
 		"base_density": 0.42,

@@ -16,6 +16,7 @@ func _init() -> void:
 	case("every result is a real animation", _results_are_real)
 	case("the reachable set IS the animation set", _coverage)
 	case("sit activities come from the schedule", _sit_derived)
+	case("the sheet and the body agree about how many pixels a person is", _sizes_agree)
 
 
 func _vocabulary() -> Array:
@@ -89,3 +90,34 @@ func _sit_derived() -> void:
 	derived.sort()
 	eq("sit activities match the schedule bridge", str(derived), str(from_schedule))
 	is_true("there is more than one sit activity", derived.size() > 1)
+
+
+## THE SHEET AND THE BODY ARE TWO HALVES OF ONE NUMBER, and neither can see the
+## other's: `CozyCharacter` sizes its billboard from `SPRITE_TEX_*` and
+## `pixel_size`, while `CozyCharacterVisuals` and the Blender factory draw on
+## `FRAME_W x FRAME_H`. Nothing errors when they disagree — a sheet drawn on a
+## canvas the body does not expect is a person of the wrong height, with no
+## message, and the only symptom is that the art "looks a bit off".
+##
+## So the relation is asserted rather than assumed, and it is the relation the file
+## states in prose: THE SPRITE'S WORLD HEIGHT IS THE CAPSULE HEIGHT.
+func _sizes_agree() -> void:
+	eq("the sheet's canvas is the body's canvas",
+		CozyCharacterVisuals.FRAME_W, CozyCharacter.SPRITE_TEX_W)
+	eq("and in both directions", CozyCharacterVisuals.FRAME_H, CozyCharacter.SPRITE_TEX_H)
+
+	var metres_per_texel := CozyCharacter.SPRITE_WORLD_W / float(CozyCharacter.SPRITE_TEX_W)
+	var sprite_h := float(CozyCharacter.SPRITE_TEX_H) * metres_per_texel
+	near("the sprite stands exactly as tall as the capsule",
+		sprite_h, CozyCharacter.CAPSULE_HEIGHT, 0.001)
+
+	# ...and the character is a real person, which it was not until 2026-09-15:
+	# the pair read 0.8 m wide and 1.2 m tall, and 1.2 m is nobody's height.
+	near("a person's height", CozyCharacter.CAPSULE_HEIGHT, 1.75, 0.001)
+
+	# The authoring density, which is what the factory is asked to match: 112
+	# texels over 1.75 m is 64 px/m, TWICE the profile's 32. Asserted as a
+	# relation because the number that matters is the RATIO, not either constant.
+	var authored := float(CozyCharacterVisuals.FRAME_H) / CozyCharacter.CAPSULE_HEIGHT
+	near("a character sheet is authored at twice the world's density",
+		authored, CozyPixelArt.PIXELS_PER_METRE * 2.0, 0.01)

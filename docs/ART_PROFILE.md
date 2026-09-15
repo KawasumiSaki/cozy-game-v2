@@ -23,8 +23,8 @@ feature.
 | Projection | **Perspective, narrow FOV** (8–40°, derived from zoom) | `CozyCameraRig.USE_PERSPECTIVE` |
 | Yaw | **180°** — locked | `CozyCameraRig.FIXED_YAW` |
 | Pitch | **40°** — locked | `CozyCameraRig.FIXED_PITCH` |
-| Distance | 40 m back along the view axis | `CozyCameraRig.CAM_DISTANCE` |
-| Zoom | 5 discrete steps: 6 / 9 / 12 / 18 / 26 m visible height | `CozyCameraRig.ZOOM_STEPS` |
+| Distance | 75 m back along the view axis | `CozyCameraRig.CAM_DISTANCE` |
+| Zoom | 5 discrete steps: 11.25 / 16.875 / **22.5** / 33.75 / 48.75 m visible height (default in bold) | `CozyCameraRig.ZOOM_STEPS` |
 | Follow | Position follows the player; **angle never changes** | `_process` |
 
 > **Changed 2026-09-12; this table used to read 45° / 52° / orthographic.** The
@@ -66,19 +66,84 @@ OPTIONAL post-process, to be decided from real screenshots.
 ### What that means for an asset
 
 Given the locked camera, work out how many screen pixels one world metre covers,
-then author at that density. At the default zoom (12 m visible height over 720
-px):
+then author at that density. At the default zoom (**22.5 m** visible height over
+720 px):
 
 ```
-60 screen px per world metre
+32 screen px per world metre
 ```
 
-So a 1 m wide object drawn at 1:1 wants roughly **60 px** of width to look
+So a 1 m wide object drawn at 1:1 wants exactly **32 px** of width to look
 native. An object authored at a different density will look too sharp or too
 coarse next to everything else, even if it is beautiful on its own.
 
-**Scale reference is the house**: walls are 3 m tall, floors 3 m apart, the
-doorway 1.5 m wide.
+**This number is not independent of the camera.** It is `720 / ZOOM_STEPS[2]`
+written down, and `_check_camera` asserts the division — change the default zoom
+without changing this and every asset in the game is at the wrong magnification,
+with nothing anywhere saying so. (60 px/m until 2026-09-15, when the view widened
+to 22.5 m; the two moved together.)
+
+`_check_scatter` prints every sprite's distance from this density as a
+magnification factor, and that line is the **work list** for redrawing them.
+
+### 2.1 Density per asset kind
+
+One world density (32 px/m) with deliberate exceptions. A sprite drawn at a
+different density is a different texture scale, not a bigger or smaller drawing of
+the same thing — so the exceptions are listed here rather than chosen per asset.
+
+| Asset kind | Density | Why |
+|---|---|---|
+| **Environment** (ground, vegetation, props, buildings) | **32 px/m** | The world's own density. 1 m = 32 px |
+| **Characters** | **64 px/m** | **Drawn at twice the world's density and displayed at half.** A person is the one thing on screen worth oversampling, and this is what keeps a face readable at 22.5 m of visible height |
+| **Important items** (icons, the thing a pickup looks like) | **32–64 px/m** | 64 when it will be seen large or in a UI cell, 32 when it sits in the world |
+| **Small decorations** (pebbles, single flowers) | **16–32 px/m** | Whole multiples of the world density ONLY (32, 16) — anything between puts the texel grid out of step with the world grid and the sprite shimmers as it moves |
+
+**A character sheet is therefore 112 px tall per 1.75 m** (`64 px/m × 1.75 m`), and
+the game displays it at 1.75 m. `CozyPixelArt.CHARACTER_TEX_H` is that number and
+`CozyCharacter.CAPSULE_HEIGHT` is the other half of it; the two are checked against
+each other rather than typed twice.
+
+### 2.2 World sizes — the module table
+
+Willow, 2026-09-15. These are **module sizes for the building system**, in metres,
+and they are the numbers a new asset or a new building block should be drawn to.
+
+| Thing | Size | Notes |
+|---|---|---|
+| One ground grid cell | 1 × 1 m | The *module*. Terrain's own cell is still 0.25 m — see below |
+| Door | 1 × 2 m | |
+| Plain wall | 1 × 1 m | 3 m tall |
+| Large wall | 2 × 1 m | |
+| Window | 1 × 1 m | |
+| Stair | 1 × 2 m | |
+| Small room | 4 × 4 m | |
+| Small house | 4 × 5 m | |
+| Medium house | 6 × 6 m | |
+| Large building | 8 × 8 m and up | |
+| One storey | 3 m | `main.gd`'s `FLOOR_H` agrees |
+| Second storey | +3 m | |
+| **Player height** | **1.75 m** | `CozyCharacter.CAPSULE_HEIGHT` agrees |
+
+**Two things this table is NOT yet, both on purpose:**
+
+1. **The demo house is a hand-written PREFAB, not built from modules.** It is 8 × 6 m
+   with a 1.2 m doorway and a 2.5 m stairwell — it never went through the outline
+   generator (see `INVARIANTS.md`). It will be rebuilt on these modules when the
+   building system is unparked; changing its fixtures now would move navigation
+   geometry for no gameplay gain.
+2. **The ground grid is a module, not the terrain cell.** Terrain is still
+   0.25 m (`CozyTerrainChunk.CELL_SIZE`) and objects still snap at 0.25 m. That
+   question — edit unit vs pixel scale — is a separate decision with a measured
+   6.25× cost, and it is still open (`03-流程/待拍板-C类.md` #5).
+
+**Why the door is 1 m and the prefab's is 1.2 m is worth knowing before it bites:**
+the navigation grid rasterises obstacles exactly and inflates by the agent radius,
+so a **1.0 m doorway is sealed by the 0.25 m grid** (see `INVARIANTS.md`, "A grid
+that rasterises obstacles exactly is routing a POINT"). A 1 m door module needs the
+finer clearance field first, or the resident walks into the frame.
+
+**Scale reference is the house**: walls are 3 m tall, floors 3 m apart.
 
 ---
 
@@ -212,18 +277,24 @@ you author a tree sprite produces something that cannot be used.
 | Terrain ground (grass/soil/sand/stone/water) | **Per-cell colour map**, 1 cell = 1 px | `terrain_renderer._make_chunk_texture()` | ❌ needs the renderer reworked |
 | VFX | **2D sprite sequence**, centre or bottom pivot | VFX library | ✅ replacing a placeholder texture |
 
-### Resolution: `px = world_metres x 60`
+### Resolution: `px = world_metres x 32`
 
-From §2 — at the default zoom, 60 screen px per world metre. A sprite's canvas
-should be `world_size x 60` px in **both** dimensions, because the billboard quad
+From §2 — at the default zoom, 32 screen px per world metre. A sprite's canvas
+should be `world_size x 32` px in **both** dimensions, because the billboard quad
 is square and the sprite is stretched to fill it:
 
 | Asset | World size | Canvas |
 |---|---|---|
-| `grass_tuft_01` | 0.55 m | 32 x 32 |
-| `flower_daisy_01` | 0.45 m | 32 x 32 |
-| `rock_small_01` | 0.40 m | 32 x 32 |
-| `tree_oak_01` | 2.40 m | 144 x 144 |
+| `grass_tuft_01` | 0.40 m | 13 x 13 |
+| `flower_daisy_01` | 0.45 m | 14 x 14 |
+| `rock_small_01` | 0.40 m | 13 x 13 |
+| `tree_oak_01` | 2.40 m | 77 x 77 |
+
+**THE TWO REAL SPRITES ARE STILL 24 x 24, WHICH IS THE OLD DENSITY** — they cover
+0.75 m of world now instead of 0.40 m, unless redrawn. `vegetation_scatter.REAL_SIZE`
+pins the grass tuft's world size at 0.40 m so the ground's coverage does not move,
+which means the sprite is now drawn at 0.53x and `_check_scatter` says so: the
+tuft wants redrawing at 13 px. That line is the work list, not a complaint.
 
 Draw into the canvas with transparent margins rather than resizing it — a sprite
 that does not fill its canvas is correct, a canvas that does not match the world

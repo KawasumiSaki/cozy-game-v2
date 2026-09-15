@@ -7,12 +7,32 @@ extends CharacterBody3D
 ## player sees is a pixel drawing. That is the whole thesis of the doc:
 ##     #3.6  "Real Space Under the Hood, Pixel Art on the Surface."
 
-const SPRITE_TEX_W := 16       ## Sprite is 16px wide
-const SPRITE_TEX_H := 24       ## Sprite is 24px tall
-const SPRITE_WORLD_W := 0.8    ## Want the character 0.8m wide -> pixel_size = 0.8/16
+## The billboard's canvas, in texels. TAKEN FROM `CozyPixelArt` rather than typed
+## here: the placeholder sheet is drawn on that canvas, and a body that expected a
+## different one would draw a correctly-authored figure at the wrong size — with no
+## error, no warning, and nothing but "the characters look off" to go on.
+const SPRITE_TEX_W := CozyPixelArt.CHARACTER_TEX_W
+const SPRITE_TEX_H := CozyPixelArt.CHARACTER_TEX_H
 
+## How wide the figure stands in the world. `pixel_size` is this over the canvas
+## width, so these two together decide the sprite's world HEIGHT — 112 texels at
+## 0.5/32 m each is 1.75 m, which is what `CAPSULE_HEIGHT` says.
+##
+## THE SHEET IS AUTHORED AT 64 px/m AND DRAWN AT 32. That factor of two is the
+## whole reason the canvas is 112 texels rather than 56, and it is the number the
+## Blender factory is asked to match (`ART_PROFILE.md` §2.1).
+const SPRITE_WORLD_W := 0.5
+
+## A person, in metres. The capsule and the sprite agree, which is the rule this
+## pair has always followed — it used to read 1.2, which is nobody's height.
+const CAPSULE_HEIGHT := 1.75
+
+## NOT a height and NOT an art number: this is the NAVIGATION CLEARANCE.
+## `main.gd`'s `NAV_CLEARANCE` IS this value, and both navigation grids inflate
+## every obstacle by it — so changing it changes which gaps a resident can walk
+## through. It is deliberately left at 0.3 while the body around it became a real
+## size; 0.6 m is a person's shoulders and a door is narrower than that.
 const CAPSULE_RADIUS := 0.3
-const CAPSULE_HEIGHT := 1.2    ## Matches the sprite's world height, so visuals and collision agree
 
 const GRAVITY := 24.0
 

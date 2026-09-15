@@ -343,17 +343,41 @@ func _build_multimesh(asset_id: String, items: Array) -> void:
 	_meshes[asset_id] = mmi
 
 
+## How big a REAL sprite is in the world, in metres.
+##
+## A DESIGN FACT, and it is deliberately NOT `metres_for_pixels(width)` any more.
+## That made the world size FOLLOW the pixel count, which is backwards: a tuft is
+## 0.40 m because a tuft is 0.40 m, and how many pixels are used to draw it is the
+## art's job. Tied the other way, halving the profile's density (2026-09-15,
+## 60 -> 32 px/m) would have doubled every plant — and the ground's coverage,
+## which `scatter_rule.gd` computes on purpose to land just over 100%, would have
+## gone to roughly 350% with nothing anywhere saying so.
+##
+## With the size fixed, the density report NAMES the art that no longer matches —
+## a 24 px tuft over 0.40 m at 32 px/m is a 0.53x magnification, i.e. the tuft
+## wants redrawing at 13 px. That number is the work list.
+##
+## This is the same shape as `PLACEHOLDER_SIZE` and it is NOT the same thing: a
+## placeholder's number is a stopgap for art that does not exist, this one is the
+## size the thing IS.
+const REAL_SIZE := {
+	"grass_tuft_01": 0.40,
+}
+
+
 ## How big this sprite is in the world.
 ##
-## A REAL asset is sized by its own pixels at the profile's density, because that
-## is what the density IS — 24 px at 60 px/m is 0.40 m, and drawing it over 0.55 m
-## magnifies every pixel by 1.38 and turns a blade of grass into a bush.
+## Order: what a thing IS (a real asset's declared size), then what its pixels say
+## it should be (another real asset, sized by the profile), then the placeholder's
+## hand-picked number.
 ##
 ## A PLACEHOLDER keeps its hand-picked `PLACEHOLDER_SIZE`, and that is a debt
-## rather than a design: the generated sprites are 16 or 24 px, so sizing THEM by
-## density would make a 0.27 m tree. `_check_scatter` prints how far each one is
-## from the profile, so the list is a measured number rather than a complaint.
+## rather than a design: the generated sprites are 24 px, so sizing THEM by density
+## would make a 0.27 m tree. `_check_scatter` prints how far each one is from the
+## profile, so the list is a measured number rather than a complaint.
 func _world_size(asset_id: String, tex: Texture2D) -> float:
+	if REAL_SIZE.has(asset_id):
+		return float(REAL_SIZE[asset_id])
 	var real_path := String(REAL_TEXTURES.get(asset_id, ""))
 	if real_path != "" and tex != null and ResourceLoader.exists(real_path):
 		return CozyPixelArt.metres_for_pixels(float(tex.get_width()))

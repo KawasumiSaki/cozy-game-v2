@@ -50,70 +50,94 @@ static func make_plank_texture(size: int, base: Color, seed_val: int) -> ImageTe
 	return ImageTexture.create_from_image(img)
 
 
-## Simple 16x24 pixel character sprite — the Phase 0 stand-in.
+## Simple pixel character sprite — the Phase 0 stand-in.
 ##
 ## `pose` and `step` exist so `CozyCharacterVisuals` can build a whole sprite
 ## sheet from one function. These are PLACEHOLDER POSES, not animation: each is a
-## couple of pixels of difference, which is all a 16x24 figure can carry and all
-## the pipeline contract needs exercised. They have to be DISTINGUISHABLE, though
-## — a selector that plays `work` through a resident's sleep is invisible if
+## couple of pixels of difference, which is all a figure this size can carry and
+## all the pipeline contract needs exercised. They have to be DISTINGUISHABLE,
+## though — a selector that plays `work` through a resident's sleep is invisible if
 ## every pose draws the same figure.
+##
+## THE CANVAS IS THE ART CONTRACT: `CHARACTER_TEX_H` texels over
+## `CozyCharacter.CAPSULE_HEIGHT` metres is 64 px/m, and the world draws it at the
+## profile's 32 px/m. A character is the one thing on screen worth asking for twice
+## the pixels of, and saying so in ONE place is what stops the sheet and the body
+## from disagreeing about how tall a person is.
+##
+## EVERY COORDINATE BELOW IS A FRACTION OF THE CANVAS. The version this replaced
+## had 16 and 24 baked into its arithmetic in ten places, so raising a character
+## from 1.2 m to 1.75 m meant rewriting all of it — and "just scale the old one" is
+## the one thing this function must not become, because the sheet contract is a
+## PIXEL COUNT the factory has to match, not a look.
 ##
 ## Replace this function when real character art is ready. Neither the selection
 ## logic nor the sheet contract changes when it is.
 static func make_character_texture(skin: Color, cloth: Color, hair: Color,
 		pose := "idle", step := 0) -> ImageTexture:
-	const W := 16
-	const H := 24
-	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	var w := CHARACTER_TEX_W
+	var h := CHARACTER_TEX_H
+	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
 	img.fill(Color(0, 0, 0, 0))
 
 	# Lying down is a different SHAPE, not an offset — a standing figure shifted
 	# a few pixels still reads as standing.
 	if pose == "sleep":
-		for y in range(H - 7, H - 3):
-			for x in range(3, 13):
-				img.set_pixel(x, y, cloth)
-		for x in range(12, 16):                      # head at the far end
-			for y in range(H - 8, H - 3):
-				img.set_pixel(x, y, hair if y < H - 6 else skin)
-		return _outline(img, Color(0.15, 0.12, 0.18, 1.0))
+		_box(img, 0.09, 0.855, 0.72, 0.905, cloth)     # the body, along the floor
+		_box(img, 0.70, 0.815, 0.91, 0.885, hair)      # head at the far end
+		_box(img, 0.70, 0.885, 0.91, 0.915, skin)
+		return _outline(img, SPRITE_OUTLINE)
 
-	# Sitting drops the whole figure and shortens the legs.
-	var drop := 2 if pose == "sit" else 0
-	var breathe := 1 if (pose == "idle" or pose == "work") and step % 2 == 1 else 0
-	var lean := 1 if pose == "work" and step % 2 == 1 else 0
+	# Sitting drops the whole figure and folds the legs under it.
+	var drop := 0.09 if pose == "sit" else 0.0
+	var breathe := 0.01 if (pose == "idle" or pose == "work") and step % 2 == 1 else 0.0
+	var lean := 0.03 if pose == "work" and step % 2 == 1 else 0.0
 
-	var head_top := 3 + drop + breathe
-	var head_bot := 10 + drop + breathe
-	var body_top := 10 + drop + breathe
-	var body_bot := 19 + drop
-	var leg_bot := H - 1 if pose != "sit" else H - 4
+	var head_top := 0.05 + drop + breathe
+	var head_bot := 0.17 + drop + breathe
+	var body_top := 0.17 + drop + breathe
+	var body_bot := 0.52 + drop
+	var leg_bot := 0.97 if pose != "sit" else 0.80
 
-	# Head (top two rows read as hair)
-	for y in range(head_top, head_bot):
-		for x in range(5 + lean, 11 + lean):
-			img.set_pixel(x, y, hair if y < head_top + 2 else skin)
+	# Head, with the top third reading as hair.
+	var hair_bot := head_top + (head_bot - head_top) * 0.34
+	_box(img, 0.31 + lean, head_top, 0.69 + lean, hair_bot, hair)
+	_box(img, 0.31 + lean, hair_bot, 0.69 + lean, head_bot, skin)
 
-	# Torso
-	for y in range(body_top, body_bot):
-		for x in range(4 + lean, 12 + lean):
-			img.set_pixel(x, y, cloth)
+	# Torso.
+	_box(img, 0.25 + lean, body_top, 0.75 + lean, body_bot, cloth)
+
+	# Arms, beside the torso, swinging the other way from the legs.
+	var arm := 0.05 if pose == "walk" and (step % 4 == 1 or step % 4 == 2) else 0.0
+	_box(img, 0.17 + lean, body_top + 0.02, 0.27 + lean, body_bot - 0.05 - arm, cloth)
+	_box(img, 0.73 + lean, body_top + 0.02 + arm, 0.83 + lean, body_bot - 0.04, cloth)
 
 	# Legs. Walking swings them in opposite directions; everything else is still.
-	var lx := 5
-	var rx := 9
+	var swing := 0.0
 	if pose == "walk":
-		var swing: int = [0, 1, 0, -1][step % 4]
-		lx += swing
-		rx -= swing
-	for y in range(body_bot, leg_bot):
-		for x in range(lx, lx + 2):
-			img.set_pixel(x, y, skin)
-		for x in range(rx, rx + 2):
-			img.set_pixel(x, y, skin)
+		swing = [0.0, 0.05, 0.0, -0.05][step % 4]
+	_box(img, 0.28 - swing, body_bot, 0.46, leg_bot - absf(swing) * 0.5, skin)
+	_box(img, 0.54 + swing, body_bot, 0.72, leg_bot - absf(swing) * 0.5, skin)
 
-	return _outline(img, Color(0.15, 0.12, 0.18, 1.0))
+	return _outline(img, SPRITE_OUTLINE)
+
+
+## Fill a rectangle given in FRACTIONS of the canvas.
+##
+## The one place a fractional coordinate becomes a pixel, so a figure cannot end up
+## written in two units at once — which is exactly how the arithmetic it replaced
+## came to have a canvas size in it.
+static func _box(img: Image, x0: float, y0: float, x1: float, y1: float,
+		c: Color) -> void:
+	var w := img.get_width()
+	var h := img.get_height()
+	var px0 := clampi(int(round(x0 * float(w))), 0, w)
+	var px1 := clampi(int(round(x1 * float(w))), 0, w)
+	var py0 := clampi(int(round(y0 * float(h))), 0, h)
+	var py1 := clampi(int(round(y1 * float(h))), 0, h)
+	for y in range(py0, py1):
+		for x in range(px0, px1):
+			img.set_pixel(x, y, c)
 
 
 ## Trace a dark outline around opaque pixels so the sprite stays readable on grass.
@@ -425,7 +449,7 @@ static func make_billboard_material(tex: Texture2D) -> StandardMaterial3D:
 
 ## Screen pixels per world metre at the default zoom (docs/ART_PROFILE.md §2).
 ##
-##     12 m of visible height over 720 px -> 60 screen px per world metre
+##     22.5 m of visible height over 720 px -> 32 screen px per world metre
 ##
 ## THE NUMBER WAS IN THE DOCUMENT AND NOT IN THE CODE, which is the same shape as
 ## "a rule that lives only in a mouse handler is not a rule": every sprite's world
@@ -438,7 +462,30 @@ static func make_billboard_material(tex: Texture2D) -> StandardMaterial3D:
 ## the thing: it is a different texture scale, and it sits next to everything else
 ## looking wrong. `ART_PROFILE.md` says it plainly — "if an asset disagrees with
 ## this file, the asset is wrong, not the file".
-const PIXELS_PER_METRE := 60.0
+##
+## 60 UNTIL 2026-09-15, AND THE TWO NUMBERS MOVED TOGETHER. This constant and the
+## camera's `ZOOM_STEPS[DEFAULT_ZOOM_INDEX]` are ONE number written twice:
+## 720 / 22.5 = 32. `_check_camera` asserts that division rather than trusting it —
+## written as two independent constants, nothing makes them agree, and on the day
+## they stopped agreeing every asset in the game would be at the wrong
+## magnification with nothing anywhere saying so.
+const PIXELS_PER_METRE := 32.0
+
+## The canvas a character sprite is drawn on, in texels.
+##
+## `CozyCharacter` sizes its billboard from these, so the body and the sheet cannot
+## disagree about how tall a person is — which is the failure with no error message:
+## a sprite drawn on a canvas the body does not expect is simply a figure at the
+## wrong size. 112 texels over 1.75 m is 64 px/m, TWICE the profile's density, and
+## that is deliberate: a character is the one thing on screen worth oversampling,
+## and `ART_PROFILE.md` §2.1 says so.
+const CHARACTER_TEX_W := 32
+const CHARACTER_TEX_H := 112
+
+## The colour every generated sprite is outlined with, so a figure stays readable
+## against grass. NOT the same constant as the vegetation shader's `OUTLINE`, which
+## is a green that has to sit on grass and is a different colour for that reason.
+const SPRITE_OUTLINE := Color(0.15, 0.12, 0.18, 1.0)
 
 
 ## The world size a sprite of this many pixels wants, at the profile's density.

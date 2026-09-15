@@ -1031,3 +1031,62 @@ level up.** There it was a field nobody reads; here it is a clause nothing can
 falsify. In both cases the artifact is present, well written, and load-bearing in
 appearance only — and the way to find either is the same: **break the thing it is
 supposed to be watching, and see whether it notices.**
+
+## A size derived from a measurement cannot be checked against that measurement
+
+`CozyPixelArt.magnification(tex, world_size)` answers "how far is this sprite from
+the profile's density" as `world_size / metres_for_pixels(width)`. For a while, an
+asset's world size WAS `metres_for_pixels(width)` — so for every asset that took
+that branch, magnification was `x / x`, i.e. **exactly 1.00, always**. The density
+report printed `grass_tuft_01 24px over 0.40m = x1.00` and called it native, and
+that line could not have said anything else.
+
+It went unnoticed for a different reason than the usual one: the number was RIGHT.
+0.40 m really was 24 px at 60 px/m. What was wrong is that the check had no way to
+be wrong — and it stopped being right the moment the profile's density moved.
+
+**The density change is what exposed it.** With the profile at 32 px/m,
+`metres_for_pixels(24)` is 0.75 m, so an asset sized that way would have doubled —
+the grass tufts would have gone from 114% ground coverage to **402%**, and the
+report would have gone on saying x1.00.
+
+The fix is the one this project keeps arriving at: **separate the design fact from
+the measurement.**
+
+    vegetation_scatter.REAL_SIZE   a tuft is 0.40 m BECAUSE A TUFT IS 0.40 m
+    magnification()                how far the ART is from the density that implies
+
+With the size pinned, the report says `grass_tuft_01 24px over 0.40m = x0.53` —
+which is a real measurement with a real answer (the tuft wants redrawing at 13 px)
+— and `_check_scatter` asserts the coverage the rule's own comment claims, so
+deleting `REAL_SIZE` turns a green `x1.00` into a red `402% of the ground`.
+
+**The shape to watch for:** a check whose two sides are computed from one another
+is a tautology wearing a measurement's clothes. It is the same failure as
+`## A check written from the drawing rather than from the failure`, one layer down:
+there, a clause derived from a rule; here, a number derived from itself.
+
+## A view that widens must move the camera back, not widen the lens
+
+`CozyCameraRig` derives its field of view from two numbers:
+
+    fov = 2 * atan(visible_height / 2 / CAM_DISTANCE)
+
+So when the framing widened on 2026-09-15 (12 m of visible height to 22.5, to make
+the art profile's 32 px/m native), the distance had to move with it — 40 m to
+**75 m** — or the lens would have opened from 17.06° to 31.42° instead.
+
+**A wider lens is not a wider view, it is a different picture.** Under a locked
+camera every asset is drawn for exactly one observation direction, and the
+foreshortening is part of what was drawn. Opening the lens makes everything
+side-on lean away from the camera, which no asset was authored for — and nothing
+about the image would look "broken", it would just stop matching the art.
+
+`_check_camera` asserts both numbers now:
+
+    camera and art profile agree on the density: 720 px over 22.5 m = 32.00 px/m
+    camera lens at the default zoom: 17.06 degrees from 22.5 m visible at 75 m back
+
+The lens is computed from the CONSTANTS rather than read off the live camera,
+because a player who has zoomed out leaves a saved index behind and a check that
+read `camera.fov` would then be measuring their last session.

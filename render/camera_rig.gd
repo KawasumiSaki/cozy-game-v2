@@ -68,13 +68,34 @@ var target: Node3D = null
 ## projection this does not change framing, but it must be large: occlusion
 ## casts a ray from the camera to each character, and a camera sitting on top of
 ## them gives a zero-length ray.
-const CAM_DISTANCE := 40.0
+##
+## SCALED WITH THE ZOOM STEPS, and the two have to move together. The field of view
+## is DERIVED from both (`atan(visible_h / 2 / distance)`), so widening the view
+## without moving back would widen the FOV too — and a wider FOV is a different
+## PICTURE rather than a wider one: everything side-on gets more foreshortened,
+## which is the one thing the locked camera exists to avoid.
+##
+## 75 m with the 22.5 m step below gives 2*atan(11.25/75) = 17.06 degrees, which is
+## EXACTLY what 40 m with the old 12 m step gave. The framing changed; the
+## perspective did not.
+const CAM_DISTANCE := 75.0
 
 ## Visible height in world metres. A small set of steps — doc E.1.1 permits
 ## limited zoom, and a continuous zoom would invite framing that assets were
 ## never authored for.
-const ZOOM_STEPS: Array[float] = [6.0, 9.0, 12.0, 18.0, 26.0]
-var _zoom_idx := 2
+##
+## SCALED 1.875x ON 2026-09-15, which is the ratio the art profile's density moved
+## by (60 -> 32 screen px per world metre). The picture is the same size in PIXELS
+## as it was; only the amount of world it covers changed. 720 px over 22.5 m is
+## 32 px/m, and `_check_camera` asserts that rather than assuming it.
+const ZOOM_STEPS: Array[float] = [11.25, 16.875, 22.5, 33.75, 48.75]
+
+## The step the game opens on, and the one the profile's density is derived from.
+## A CONSTANT rather than a literal, because a whole art number hangs off this one
+## index — and a player's SAVED zoom must not be able to move it.
+const DEFAULT_ZOOM_INDEX := 2
+
+var _zoom_idx := DEFAULT_ZOOM_INDEX
 
 ## Debug escape hatch: allow free rotation for inspection.
 ##
