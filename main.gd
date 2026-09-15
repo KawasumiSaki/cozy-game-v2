@@ -208,6 +208,13 @@ const TOOL_GROUPS: Array = (
 ## this project has already paid for three times.
 const NPC_JOB := "cook"
 
+## The three trades the world has resources for, in the order the checks walk
+## them. One list, because two checks ask about the same three trades: whether
+## each has somewhere to STAND (`_check_resource_chain`) and whether the resident
+## would actually SEEK it (`_check_work_priority`). Two copies would drift, and
+## the drift would look like one of the two passing.
+const RESOURCE_TRADES: Array[String] = ["woodcutter", "miner", "farmer"]
+
 ## The starter sack in the chest, and the baseline the live chain is measured
 ## against. One constant, used both to fill the chest and to judge it — two
 ## numbers that have to agree are two numbers that will stop agreeing.
@@ -2279,9 +2286,13 @@ func _check_resource_chain() -> void:
 		print("[cozyv2] resource chain: no outdoor grid to stand on  [FAIL]")
 		return
 
-	for trade in [["woodcutter", "chop"], ["miner", "mine"], ["farmer", "harvest"]]:
-		var job := String(trade[0])
-		var want := String(trade[1])
+	for trade in RESOURCE_TRADES:
+		var job := String(trade)
+		# The point type comes from the JOB TABLE, not from a copy typed here. A
+		# second copy would agree with itself forever: the question is whether the
+		# trade the table declares has somewhere to stand, and a hardcoded string
+		# makes it "these three words have somewhere to stand".
+		var want := CozyJobDefs.point_type(job)
 		var found := 0
 		var standable := 0
 		for o in objects:
@@ -2405,7 +2416,7 @@ func _check_resource_chain() -> void:
 
 	# And the job that does the work must name a point the world actually has —
 	# the table check cannot tell a name from a place.
-	for job in ["woodcutter", "miner", "farmer"]:
+	for job in RESOURCE_TRADES:
 		var want := CozyJobDefs.point_type(job)
 		var offered := 0
 		for o in objects:
@@ -2414,6 +2425,77 @@ func _check_resource_chain() -> void:
 		print("[cozyv2] resource job '%s' seeks '%s': %d in the world  [%s]" % [
 			job, want, offered,
 			"OK" if offered > 0 else "FAIL, a job that can never finish"])
+
+	_check_work_priority()
+
+
+## Would the resident actually SEEK those points, at the hour it would do the
+## work? Everything above proves the world has `chop`, `mine` and `harvest`
+## points in it; none of it proves the agent ever asks for one.
+##
+## IT DID NOT, UNTIL 2026-09-15, and the reason is the shape this project has
+## paid for repeatedly: `CozySchedule.ACTIVITY_POINTS` mapped the activity `work`
+## onto the point type `work`, which is what a research table offers — so at 09:00
+## the schedule overrode the trade and a woodcutter sought a desk. It was
+## invisible while every job in the table happened to have `point_type: "work"`,
+## which was true when the schedule was written and stopped being true the day
+## the three gathering trades were added.
+##
+## Measured, not reasoned about: `tests/probe/work_priority_probe.gd` prints what
+## each trade wants at each hour of the day, and every one of the three read
+## `work` at 09:00 and 13:00.
+##
+## THE PROBE AGENT IS DETACHED — never added to the tree — so this cannot move
+## the resident, change its job, or run one frame of its script. A check that
+## borrows the live resident to answer a question about a woodcutter has to put
+## them back, and "putting it back" is another thing that can be forgotten.
+func _check_work_priority() -> void:
+	# A working hour, because that is the hour the bug lived in: this runs in the
+	# first frames, when the real clock still reads 06:00 and every trade is
+	# legitimately asleep.
+	var clock := CozyTimeSystem.new()
+	clock.hour = 9.0
+
+	var wrong: Array[String] = []
+	var line: Array[String] = []
+	for job in RESOURCE_TRADES:
+		var agent := CozyNpcAgent.new()
+		agent.npc_state = CozyNpcState.create("probe", "Probe", job, 7)
+		agent.clock = clock
+		var ranked := agent.want_point_types()
+		var head := ranked[0] if not ranked.is_empty() else ""
+		# The whole list, because "the trade is on it" and "the trade leads it" are
+		# different claims and only the second one is the fix.
+		line.append("%s->[%s]" % [job, ", ".join(ranked)])
+		if head != CozyJobDefs.point_type(job):
+			wrong.append(job)
+		agent.free()
+	clock.free()
+
+	print("[cozyv2] at 09:00 the trade leads the want-list: %s  [%s]" % [
+		"  ".join(line),
+		"OK" if wrong.is_empty()
+		else "FAIL, %s sought something other than their trade" % ", ".join(wrong)])
+
+	# AND THE TRADE IS A FALLBACK RATHER THAN THE ONLY ANSWER — the other half of
+	# a ranked list. A woodcutter carrying a finished load stores it first (§45's
+	# Take and Store are separate steps) and still chops behind it, so a chest
+	# that is full or unreachable costs a detour rather than the whole job.
+	var carrier := CozyNpcAgent.new()
+	var state := CozyNpcState.create("probe2", "Probe", "woodcutter", 7)
+	state.inventory.add("wood", 4.0)
+	carrier.npc_state = state
+	var clock2 := CozyTimeSystem.new()
+	clock2.hour = 9.0
+	carrier.clock = clock2
+	var carrying := carrier.want_point_types()
+	var expected := ["store", "chop"]
+	print("[cozyv2] a woodcutter carrying wood wants %s (expected %s)  [%s]" % [
+		str(carrying), str(expected),
+		"OK" if carrying == expected
+		else "FAIL, the container leg is not ranked ahead of the trade"])
+	carrier.free()
+	clock2.free()
 
 
 ## Everything that measures the house, and the systems derived from its walls.
@@ -4684,8 +4766,15 @@ func _probe_npc_pathing() -> void:
 	print("[cozyv2] probe npc pathing | %s" % npc.debug_line())
 
 	# ---- D: what it CHOSE, and what else was on offer -----------------------
-	var want := npc.want_point_type()
+	#
+	# The whole ranked list, not just its head: `chose: chop` means one thing from
+	# a resident whose list was `chop` alone and another from one that passed over
+	# `store` to get there. Reading only the head is how "the trade was overridden
+	# by the schedule's work block" stayed invisible for a day.
+	var want := npc.want_point_types()
 	var chosen: CozyInteractionPoint = npc.target_point()
+	print("[cozyv2]   wants (ranked): %s" % (
+		"(%s)" % "nothing" if want.is_empty() else ", ".join(want)))
 	if chosen == null:
 		print("[cozyv2]   chose: nothing (no target point)")
 	else:
@@ -4700,7 +4789,7 @@ func _probe_npc_pathing() -> void:
 	for o in objects:
 		if not is_instance_valid(o):
 			continue
-		for pt in o.free_points_of_type(want):
+		for pt in o.free_points_of_type(chosen.type if chosen != null else ""):
 			var straight := npc.global_position.distance_to(pt.world_position)
 			var route: Array = npc.navigator.plan(npc.global_position, pt.world_position)
 			print("[cozyv2]     %-14s %-8s straight=%5.2f m  path=%s" % [
@@ -5290,12 +5379,17 @@ func _check_schedule_and_needs() -> void:
 		slots[0], slots[1], slots[2], slots[3],
 		"OK" if varied and slots[0] == "sleep" and slots[1] == "work" else "FAIL"])
 
-	# The schedule resolves to a POINT TYPE, never to an object (doc #115).
+	# The schedule resolves to a POINT TYPE, never to an object (doc #115) — and
+	# the working block resolves to NOTHING ON PURPOSE. This line used to assert
+	# `work->work`, which was the bug: `work` is a point type a research table
+	# offers, so mapping the doc's work CATEGORY onto it overrode every trade that
+	# is not `work`. A woodcutter sought a desk. The trade decides now, and
+	# `_check_resource_chain` is where that is measured on the real world.
 	var work_point := CozySchedule.point_for("work")
 	var sleep_point := CozySchedule.point_for("sleep")
-	print("[cozyv2] schedule resolves to point types: work->%s sleep->%s  [%s]" % [
-		work_point, sleep_point,
-		"OK" if work_point == "work" and sleep_point == "sleep" else "FAIL"])
+	print("[cozyv2] schedule resolves to point types: work->%s (the trade decides) sleep->%s  [%s]" % [
+		work_point if work_point != "" else "(none)", sleep_point,
+		"OK" if work_point == "" and sleep_point == "sleep" else "FAIL"])
 
 	# Needs decay, and sleep is the only thing that restores energy.
 	var s1 := CozyNpcState.create("n1", "N", "researcher", 7)

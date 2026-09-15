@@ -35,8 +35,28 @@ const DEFAULT_DAY := [
 ## and the only place that bridge exists.
 ##
 ## Note what is absent: no furniture, no room, no specific object.
+##
+## TWO OF THESE ARE EMPTY, and they are empty for the same reason with two
+## different consequences. "" means "this block names no point type — the
+## resident's own tiers decide", which is the only honest answer for a block that
+## picks the KIND of hour rather than the place:
+##
+##   - `wake`  : there is nothing to seek; the need system decides.
+##   - `work`  : the doc's "work" is a CATEGORY, not a point type (doc #115:
+##               "Schedule 只决定现在应该做什么类型的事情"). `work` as a point type
+##               is what a research table offers, and mapping the category onto
+##               it made the schedule override every trade that is not `work`.
+##
+## THE SECOND ONE WAS A BUG FOR A DAY (found 2026-09-15, measured with
+## `tests/probe/work_priority_probe.gd`). At 09:00 a woodcutter sought `work`,
+## a miner sought `work`, a farmer sought `work` — so the three gathering trades
+## added on 09-14 were reachable in the tables and unreachable in the game, and
+## so was `hauler` (whose trade point is `store`). It was invisible while every
+## job in the table happened to have `point_type: "work"`, which is exactly the
+## shape this project keeps paying for: a rule that is only ever exercised by the
+## one case it was written for.
 const ACTIVITY_POINTS := {
-	"work": "work",
+	"work": "",          ## The trade decides; see above
 	"eat": "sit",        ## Eating happens at a seat until food items exist
 	"leisure": "sit",
 	"social": "sit",
@@ -55,8 +75,10 @@ static func activity_at(hour: float) -> String:
 	return current
 
 
-## Which interaction point type an activity wants. Empty means "nothing to
-## seek" — the agent should fall through to its needs instead.
+## Which interaction point type an activity wants. Empty means the schedule
+## names none: either there is nothing to seek (`wake`) or the KIND of hour is
+## all it is saying and the resident's own trade says where (`work`). Both fall
+## through to the agent's own tiers, which is what `want_point_types()` is for.
 static func point_for(activity: String) -> String:
 	return String(ACTIVITY_POINTS.get(activity, ""))
 

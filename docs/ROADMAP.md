@@ -212,9 +212,47 @@ and tills to farmland, in that order, and runs beside `_prepare_starter_plot`
 ending the same way — an edit after the renderer's `setup()` leaves the mesh stale
 and the dirty marks pending, and `describe()` reports those marks.
 
-Still to do: nothing grows or is consumed, the placed trees are not the 165
-instanced ones from `vegetation_scatter`, and a resident cannot both sow and reap
-until `want_point_type()` returns a ranked list rather than a single string.
+Still to do: the placed trees are not the 165 instanced ones from
+`vegetation_scatter`, and nothing sows — a farmer harvests and the player plants,
+because no object offers a `plant` point and sowing has to be worked at the
+ground, which is terrain rather than an object.
+
+#### The want-list is ranked, and the trade leads it (2026-09-15)
+
+`want_point_type()` returned one string, and a string cannot say "and if that is
+not there, this". So a resident whose single preference had no free point stood
+still and retried. It returns `want_point_types()` now — a ranked list, most
+wanted first — and `_acquire_job()` takes the first kind that HAS a free point
+before distance is consulted at all. Ranking first, distance second: taking the
+nearest point of any acceptable kind would do a trade only when the trade happened
+to be closer than the alternative, which is not a priority, it is a coin toss with
+a tape measure. `_best_point(from, want)` is that rule as a pure function, so it
+can be asserted without a world.
+
+**And the bug it uncovered is not in the agent.** At 09:00 every trade wanted
+`work` — because `CozySchedule.ACTIVITY_POINTS` mapped the activity `work` onto
+the point TYPE `work`, which is what a research table offers. So the schedule
+overrode every trade that is not `work`: a woodcutter sought a desk, and so did a
+miner and a farmer, and `hauler` (whose trade point is `store`) never hauled
+during working hours either. The three gathering trades existed in the tables and
+could not do their own work in the game.
+
+It hid for a day because every job in the table had `point_type: "work"` when that
+bridge was written — the rule was only ever exercised by the one case it was
+written for. `work` is a CATEGORY (doc #115: the schedule picks the kind of hour,
+the Task System picks the place), and mapping a category onto a member of the set
+it contains is the whole bug. The working block names no point type now, so the
+trade decides; `tests/probe/work_priority_probe.gd` is the measurement that found
+it, per trade and per hour, and it is worth re-running before touching either
+side.
+
+Teeth, all three seen red: reverting the schedule placeholder fails 10 unit checks
+and 3 live ones and prints the bug's own signature (`woodcutter->[work]`);
+reverting rank-before-distance fails exactly the case that names it; and making the
+container leg REPLACE the trade instead of preceding it fails the fallback in both
+places. What is still single-valued is the JOB (`point_type`) and the RECIPE
+(`point_type`) — a job that names two kinds of work is a row change away, on the
+day something offers the second kind.
 
 ### Dungeon lane (opened 2026-09-12)
 

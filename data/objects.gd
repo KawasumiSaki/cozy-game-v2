@@ -20,7 +20,7 @@ const INTERACT_STORE := "store"
 ## about — "a `chop` point is here" is.
 ##
 ## This is why the resource line needed no new system. `_acquire_job()` already
-## scans every object for `free_points_of_type(want_point_type())`, and a job's
+## scans every object for the point types `want_point_types()` ranks, and a job's
 ## point type is data. Adding these three rows and three jobs feeds a consumer
 ## that was written for furniture and does not care what it is looking at.
 const INTERACT_CHOP := "chop"
@@ -129,11 +129,19 @@ const OBJECTS := {
 		],
 	},
 	# A crop is HARVESTED by a farmer. Planting it is placement, not an NPC
-	# action, and that is a limit of the recipe model rather than a choice: a
-	# recipe names one job and one point type, so one job cannot both plant and
-	# harvest until `want_point_type()` returns a ranked LIST instead of a single
-	# string. That change is the resource line's real prerequisite and is
-	# recorded in the handoff; until then the farmer harvests and the player sows.
+	# action, and the half of that limit which was about the AGENT is gone as of
+	# 2026-09-15: `want_point_types()` returns a ranked list, so a resident holds
+	# two kinds of work at once (it stores a finished load before fetching more)
+	# and a job could name `plant` as well as `harvest` on the day something
+	# offers one.
+	#
+	# What is still missing is the other half, and it is not in this file: no
+	# object offers a `plant` point, and `test_resource_chain.gd` refuses a point
+	# type nothing offers — deliberately, because a declared interaction with no
+	# consumer is the shape this project has paid for seven times. Sowing has to
+	# be worked at the GROUND, which is terrain rather than an object, so adding
+	# it is a design step rather than a row. Until then the farmer harvests and
+	# the player sows.
 	"crop": {
 		"name": "Crop",
 		"kind": "resource",

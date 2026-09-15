@@ -565,10 +565,11 @@ log (`02-开发日志/游戏开发日志.md`).
 | 23 | `JSON.parse_string` printed on every malformed dungeon file, so refusing a bad file looked exactly like a broken build | mutation testing — see below |
 | 24 | `_check_building_state()` took `s.stairs[0]` outright: with no stair in the world it CRASHED rather than failing, and took its two neighbouring measurements with it | removing the demo house — the check died instead of reporting |
 | 25 | A wall added at RUNTIME with a door cut into it leaves the navigation routing through a door the collider keeps shut — the resident walks into the wall forever (debt 22) | the pathing probe, then a differential experiment on that one cause |
+| 26 | The schedule mapped the activity `work` onto the point type `work`, so at 09:00 it overrode every trade that is not `work` — a woodcutter sought a desk, and the three gathering trades could not do their own work in the game | `tests/probe/work_priority_probe.gd`, one day after the trades landed |
 
-**Twenty of the twenty-five were found by an assertion, not by looking at the
-screen.** Several were invisible in a still frame. That is the whole argument
-for the assertion discipline in `03-流程/更新方案.md`.
+**Twenty of the twenty-six were found by an assertion, not by looking at the
+screen.** Several were invisible in a still frame. That is the whole argument for
+the assertion discipline in `03-流程/更新方案.md`.
 
 Bug 22 is the sharpest case of the pattern yet, because **the old assertion was
 still green while it was happening**: `occlusion, player outdoors:` printed
@@ -829,3 +830,63 @@ counts main-loop iterations and the physics frame advances with wall-clock, so a
 faster machine reaches FEWER physics frames before quitting. A stage's frame
 number is therefore a budget against an unknown ceiling, and the honest place for
 a late stage is one measured against the real one.
+
+## A category is not a member of the set it contains
+
+`CozySchedule.ACTIVITY_POINTS` is the bridge from "what kind of thing should I be
+doing" to "which interaction point do I want". It said:
+
+    "work": "work"
+
+`work` is a CATEGORY — doc #115: *"Schedule 只决定现在应该做什么类型的事情"*, the
+schedule names the kind of HOUR and the Task System names the place. `work` is
+also, separately, a POINT TYPE that a research table offers. Mapping the category
+onto one member of the set it contains answered a question the trade was supposed
+to answer, and it answered it for every trade at once.
+
+    at 09:00   a woodcutter sought `work`
+               a miner sought `work`
+               a farmer sought `work`
+               a hauler (trade point `store`) sought `work`
+
+`work` is what a table offers, so all four were routed to a desk and the three
+gathering trades added the day before could not do their own work in the game.
+The tables said they could; the game did not.
+
+**Why it stayed invisible.** Every job in `CozyJobDefs` had
+`point_type: "work"` when that bridge was written, so the override was a no-op for
+all of them. The rule was only ever exercised by the one case it was written for —
+which is the same shape as `## A declared capability with no consumer is not a
+feature`, one level up: not a row nobody reads, but a rule whose only reader is the
+case it was designed around. **When a mapping takes a value from a set, ask what
+happens on the day the set has more than one member.**
+
+The block names no point type now (`""`, the same as `wake`), so the trade decides.
+`tests/probe/work_priority_probe.gd` prints what each trade wants at each hour of
+the day; it is what found this, and it is worth re-running before touching either
+side of the bridge.
+
+## A resident's preference is a LIST, and the first one that exists wins
+
+`want_point_type()` returned a single string, and a string cannot express "and if
+that is not there, this". A resident whose one preference had no free point stood
+still and retried once a second — a trade with nothing ripe in front of it became
+a resident doing nothing at all.
+
+`want_point_types()` returns a ranked list and `_best_point(from, want)` takes the
+first kind that HAS a free point, consulting distance only within that kind.
+
+**Ranking first, distance second, and the order is not a detail.** Choosing the
+nearest point of any acceptable kind would perform a trade only when the trade
+happened to be closer than the alternative — that is not a priority, it is a coin
+toss with a tape measure. The tiers, most wanted first: a critical need (which is
+NOT a preference and does not queue behind the trade), then §45's container legs,
+then the trade itself.
+
+**And there is no single-string accessor.** One existed alongside the list for a
+day; by the end of that day its only readers were the tests and a probe, kept
+alive by a doc comment claiming the HUD used it. That is
+`## A declared capability with no consumer` again, in the one place this project
+is most tempted to allow it — a convenience wrapper. A display that wants one word
+takes the first element; a decision that wants one word is the bug.
+

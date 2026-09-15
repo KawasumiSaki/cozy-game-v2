@@ -87,47 +87,84 @@ func _ready() -> void:
 		job_id = npc_state.job_id
 
 
-## What kind of point to look for.
+## Every kind of point this resident will accept right now, MOST WANTED FIRST.
 ##
-## Decided in three steps, most urgent first:
-##   1. a CRITICAL need overrides everything (doc #116)
-##   2. otherwise the SCHEDULE says what kind of thing to do (doc #115)
+## The single string this replaced could only say "what I would like"; it could
+## not say "and if that is not there, this". So a resident whose one preference
+## had no free point stood still and retried — which is how a trade with nothing
+## ripe in front of it became a resident doing nothing at all.
+##
+## Decided in tiers, most urgent first:
+##   1. a CRITICAL need, and it is the whole list (doc #116)
+##   2. otherwise the SCHEDULE says what kind of hour this is (doc #115)
 ##   3. and the JOB says which interaction the resident prefers (doc #138)
 ##
 ## Note that none of these name an object. The schedule resolves to an activity,
-## the activity to a point type, and the world is searched for one. That is what
-## keeps `if npc_is_textile_worker: go_upstairs()` from ever being necessary.
-func want_point_type() -> String:
+## the activity to a point TYPE, and the world is searched for one of those. That
+## is what keeps `if npc_is_textile_worker: go_upstairs()` from ever being
+## necessary.
+func want_point_types() -> Array[String]:
+	var out: Array[String] = []
 	if npc_state == null:
-		return job_point_type
+		out.append(job_point_type)
+		return out
 
 	var urgent := npc_state.critical_need()
 	if urgent != "":
+		# A CRITICAL need is not a PREFERENCE, so it leads the list and does not
+		# queue behind the trade: a resident out of energy does not fell one more
+		# tree because no bed is free, and one who is starving does not work
+		# through it.
+		#
+		# The one case that falls through is a need whose own point type is empty
+		# — there is then nowhere to send them, and standing still is not a
+		# treatment.
+		#
 		# A hungry resident whose pack is empty but whose larder is not goes to
 		# the larder FIRST. Eating needs food (debt 15), so sending them straight
 		# to a seat would have them sit and starve beside a full chest.
 		if urgent == "eat" and _pack_food() <= 0.0 and _larder_food() > 0.0:
-			return CozyObjectDefs.INTERACT_STORE
-		var urgent_point := CozySchedule.point_for(urgent)
-		if urgent_point != "":
-			return urgent_point
+			out.append(CozyObjectDefs.INTERACT_STORE)
+		_add_point_type(out, CozySchedule.point_for(urgent))
+		if not out.is_empty():
+			return out
 
+	# What the day says — when it says anything. A block may name no point type
+	# at all, and the working block deliberately does not: `work` is the KIND of
+	# hour, and the trade is what says where (see `ACTIVITY_POINTS`).
 	var base := npc_state.job_point_type()
 	if clock != null:
-		var activity := CozySchedule.activity_at(clock.hour)
-		var point := CozySchedule.point_for(activity)
+		var point := CozySchedule.point_for(CozySchedule.activity_at(clock.hour))
 		if point != "":
 			base = point
 
-	# §45's container legs redirect WORK, and only work. A resident whose day
-	# says sleep still sleeps: the chain says where a worker goes between
-	# batches, not that production outranks the schedule.
 	if base == npc_state.job_point_type():
-		var production := _production_point_type()
-		if production != "":
-			return production
+		# §45's container legs redirect WORK, and only work. They come FIRST
+		# because a resident still holding a finished batch stores it before
+		# fetching more (§45 lists Take and Store as separate steps) — and the
+		# trade stays on the list behind them, so a full or unreachable chest
+		# costs a detour rather than the whole job.
+		_add_point_type(out, _production_point_type())
+	_add_point_type(out, base)
+	return out
 
-	return base
+
+## Append a point type to a ranked list, skipping "" and anything already there.
+## Deduplicating matters because the tiers overlap: the container leg and the job
+## are both `store` for a hauler, and asking the world for the same type twice
+## would let the second pass pick a NEARER point of the same kind and quietly
+## come back with a different answer.
+func _add_point_type(into: Array[String], t: String) -> void:
+	if t != "" and not into.has(t):
+		into.append(t)
+
+
+## There is deliberately NO single-string accessor any more. `want_point_type()`
+## existed for a day alongside the list, and by the end of that day its only
+## readers were the tests and a probe — the "declared with no consumer" shape this
+## project has paid for seven times, kept alive by a doc comment claiming the HUD
+## used it. A display that wants one word takes the first element of the list;
+## a decision that wants one word is the bug the list exists to fix.
 
 
 ## §45's "Find Container" leg — why the chain wants the resident at a container.
@@ -247,21 +284,53 @@ func _physics_process(delta: float) -> void:
 
 # ---------------------------------------------------------------- job loop
 
-## Find the nearest free interaction point this agent can use. It asks the
-## world what it offers rather than knowing what any object is (#87 / #94).
+## Find the point to walk to for the ranked list `want`, from where the agent is
+## standing.
+##
+## RANKED FIRST, DISTANCE SECOND, and the order is the whole of the work priority
+## rule. A resident that took the nearest point of any acceptable kind would do
+## its trade only when the trade happened to be closer than the alternative —
+## which is not a priority, it is a coin toss with a tape measure.
+##
+## PURE, and it takes the origin as an ARGUMENT rather than reading
+## `global_position`. A decision that cannot be asked a question outside a tree
+## is a decision nobody can assert, and this one is the rule that broke: at 09:00
+## the list had `work` at its head for every trade, so which point a resident
+## walked to was decided entirely by this function.
+##
+## Returns `[point, object]`, or `[]` when no kind on the list has a free point.
+## The OBJECT comes back with the point because a point carries no back-reference
+## to its owner (doc #87) and hauling needs one: "the work finished" has to
+## resolve to "the chest it finished at".
+func _best_point(from: Vector3, want: Array[String]) -> Array:
+	for t in want:
+		var best: CozyInteractionPoint = null
+		var best_obj = null
+		var best_dist := INF
+		for o in objects:
+			if not is_instance_valid(o):
+				continue
+			for p in o.free_points_of_type(t):
+				var d := from.distance_to(p.world_position)
+				if d < best_dist:
+					best_dist = d
+					best = p
+					best_obj = o
+		if best != null:
+			return [best, best_obj]      # The best kind that exists wins outright.
+	return []
+
+
+## Take the best point on offer and start walking to it. It asks the world what it
+## offers rather than knowing what any object is (#87 / #94).
 func _acquire_job() -> void:
+	var want := want_point_types()
+	var picked := _best_point(global_position, want)
 	var best: CozyInteractionPoint = null
 	var best_obj: CozyWorldObject = null
-	var best_dist := INF
-	for o in objects:
-		if not is_instance_valid(o):
-			continue
-		for p in o.free_points_of_type(want_point_type()):
-			var d := global_position.distance_to(p.world_position)
-			if d < best_dist:
-				best_dist = d
-				best = p
-				best_obj = o
+	if not picked.is_empty():
+		best = picked[0]
+		best_obj = picked[1]
 
 	if npc_state != null and not npc_state.is_assignable():
 		last_status = "aversion: will not do %s" % npc_state.job_name()
@@ -269,7 +338,12 @@ func _acquire_job() -> void:
 		return
 
 	if best == null:
-		last_status = "no free %s point" % want_point_type()
+		# The whole list, not its head: "no free harvest point" was once printed
+		# by a resident whose list also held `chop`, and that message is what made
+		# a resident with a world full of trees look like a resident with nothing
+		# to do.
+		last_status = "nothing to seek" if want.is_empty() \
+			else "no free %s point" % ", ".join(want)
 		_idle_timer = 1.0
 		return
 
@@ -577,11 +651,16 @@ func status_line() -> String:
 
 
 ## Verbose state for the headless probe.
+##
+## `want=` prints the WHOLE ranked list rather than its head, because the list is
+## the thing a probe about priorities is asking about: a resident that chose
+## `chop` while the list also held `store` is a different fact from one whose list
+## was `chop` alone.
 func debug_line() -> String:
 	var wp := Vector3.ZERO
 	if _path_i < _path.size():
 		wp = _path[_path_i]
-	return "npc %s pos=(%.2f,%.2f,%.2f) wp=%d/%d -> (%.2f,%.2f,%.2f) stuck=%.1f want=%s act=%s why=%s" % [
+	return "npc %s pos=(%.2f,%.2f,%.2f) wp=%d/%d -> (%.2f,%.2f,%.2f) stuck=%.1f want=[%s] act=%s why=%s" % [
 		State.keys()[fsm_state], global_position.x, global_position.y, global_position.z,
 		_path_i, _path.size(), wp.x, wp.y, wp.z, _stuck_time,
-		want_point_type(), current_activity(), last_status]
+		", ".join(want_point_types()), current_activity(), last_status]

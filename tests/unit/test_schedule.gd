@@ -11,6 +11,7 @@ func _init() -> void:
 	case("every bridge entry is reachable from the day", _bridge_has_no_orphan)
 	case("the clock picks the right block", _activity_at)
 	case("every block names an activity", _blocks_well_formed)
+	case("the working block leaves the point type to the trade", _work_names_no_point)
 
 
 ## A "declared capability with no consumer" guard, as a pure test. An activity
@@ -56,3 +57,29 @@ func _blocks_well_formed() -> void:
 		is_true("hour %s is inside a day" % h, h >= 0.0 and h < 24.0)
 		is_true("block at %s names an activity" % h,
 			not String(block["activity"]).is_empty())
+
+
+## THE WORKING BLOCK NAMES NO POINT TYPE, and it is load-bearing rather than
+## missing data. doc #115: "Schedule 只决定现在应该做什么类型的事情" — the schedule
+## picks the KIND of hour, the Task System picks the place. `work` as a POINT
+## type is what a research table offers, and mapping the category onto it made
+## the schedule override every trade that is not `work`:
+##
+##     09:00  a woodcutter sought `work`, a miner `work`, a farmer `work`
+##
+## so the three gathering trades added on 09-14 could not do their own work in
+## the game, and neither could a hauler (whose trade point is `store`). It stayed
+## invisible because every job in the table had `point_type: "work"` when this
+## bridge was written — the rule was only ever exercised by the one case it was
+## written for. Measured with `tests/probe/work_priority_probe.gd`.
+##
+## The other blocks are asserted to still name theirs, so this case cannot pass
+## by the whole bridge having quietly gone empty.
+func _work_names_no_point() -> void:
+	eq("the working block names no point type", CozySchedule.point_for("work"), "")
+	is_true("so the trade decides; see `want_point_types()`",
+		CozyJobDefs.point_type("woodcutter") == "chop")
+
+	eq("sleeping still names a bed", CozySchedule.point_for("sleep"), "sleep")
+	eq("eating still names a seat", CozySchedule.point_for("eat"), "sit")
+	eq("leisure still names a seat", CozySchedule.point_for("leisure"), "sit")
