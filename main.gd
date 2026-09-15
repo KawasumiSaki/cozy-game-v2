@@ -261,6 +261,16 @@ var player_state: CozyPlayerState = null
 
 ## The player's pack, on screen. See `CozyPackPanel` for why it is only the pack.
 var pack_panel: CozyPackPanel = null
+
+## Everything alive that can be killed. A plain list rather than a group: there
+## are a handful, the swing asks all of them once per active frame, and a group
+## lookup would be a second way to ask the same question.
+var monsters: Array[CozyMonster] = []
+
+## Whether the attack button is down THIS frame. Set by the input handler and
+## cleared after the tick, so a click that lands between two frames is still a
+## click rather than a lost one.
+var _attack_held := false
 var npc: CozyNpcAgent = null
 
 ## Points that come from the GROUND rather than from an object (sowing).
@@ -452,6 +462,7 @@ func _ready() -> void:
 		_build_house()
 	_place_initial_furniture()
 	_place_resource_nodes()
+	_place_monsters()
 	_rebuild_spatial()
 	# AFTER the crops are standing: the ground's points are derived from what is
 	# already there, so a provider built before them would offer a sow point under
@@ -1056,6 +1067,25 @@ func _paint_demo_path() -> void:
 	for p in route:
 		terrain.apply_intent(CozyTerrainIntent.clear_brush(p, 0.85))
 	_rebuild_terrain_surface()
+
+
+## The world's monsters. A brigand carrying the steel sword, and two slimes.
+##
+## PLACED BY HAND for the same reason the resource nodes are: this is a test
+## fixture with a shape, not a spawner. A spawner is a different question — where,
+## how many, how often — and answering it before anything can be killed would be
+## inventing a rule for a system with nothing in it.
+func _place_monsters() -> void:
+	for m in monsters:
+		if is_instance_valid(m):
+			m.queue_free()
+	monsters.clear()
+	for spec in [["brigand", -2.0, 9.5], ["slime", 10.5, 6.0], ["slime", 12.0, -3.0]]:
+		var m := CozyMonster.new()
+		m.setup(String(spec[0]))
+		add_child(m)
+		m.global_position = Vector3(float(spec[1]), 0.0, float(spec[2]))
+		monsters.append(m)
 
 
 func _prepare_crop_ground() -> void:
@@ -1958,6 +1988,122 @@ func _on_menu_action(id: String, target: Variant) -> void:
 				_trade_with(target["node"], id.trim_prefix("trade:"))
 
 
+# ---------------------------------------------------------------- fighting
+
+const PLAYER_REACH := 1.6
+
+## One tick of the player's swing, and whatever it touched.
+##
+## THE SOLVER OWNS THE TIMING. `CozyCombatSolver.step` IS the frame-data state
+## machine — windup, active window, recovery, hitstop, combo — and this
+## function's only job is to feed it a button and then ask whether the swing is
+## in its active frames and has not already hit this target. Doing the timing here
+## instead would be a second implementation of a thing that has its own tests.
+func _tick_combat() -> void:
+	if player_state == null or player == null:
+		return
+	var state: Dictionary = player_state.combat
+	state["has_shield"] = player_state.has_shield()
+	CozyCombatSolver.step(state, {"light": _attack_held})
+	_attack_held = false
+	if not CozyCombatSolver.wants_query(state):
+		return
+	_resolve_swing(state)
+
+
+## Everything the active frames reach, hit ONCE.
+##
+## `has_hit` is the guard that keeps one swing from hitting the same target on
+## every active frame — without it a six-frame window is six hits, and the damage
+## a player sees would be six times what the frame data says.
+func _resolve_swing(state: Dictionary) -> void:
+	var damage := player_state.attack()
+	for m in monsters:
+		if not is_instance_valid(m) or m.is_dead():
+			continue
+		if CozyCombatSolver.has_hit(state, _monster_id(m)):
+			continue
+		if _flat_distance(player.global_position, m.global_position) > PLAYER_REACH:
+			continue
+		if not CozyCombatSolver.note_swing_landed(state, _monster_id(m)):
+			continue
+		var killed := m.take_damage(damage, player)
+		_say("%s takes %d" % [CozyMonsterDefs.display_name(m.def_id), int(damage)])
+		if killed:
+			_kill_monster(m)
+
+
+## A monster's identity to the solver. Its instance id is stable for the life of
+## the object, and "already hit" is exactly a statement about that object.
+func _monster_id(m: CozyMonster) -> String:
+	return "monster:%d" % m.get_instance_id()
+
+
+## Distance ON THE GROUND PLANE. A monster on a slope is not further away because
+## of the slope, and a swing measured in 3D would miss anything standing at a
+## different height.
+func _flat_distance(a: Vector3, b: Vector3) -> float:
+	return Vector2(a.x - b.x, a.z - b.z).length()
+
+
+## Instance ids for dropped items, so two swords from two kills are two swords.
+## A counter rather than a random suffix, because a file has to be able to name
+## one and `CozyItemInstance` ids travel in the save.
+var _next_item_id := 1
+
+
+## Roll the table and hand the drops to whoever killed it.
+##
+## THE DROP GOES TO THE PLAYER'S OWN ACCOUNT, which is the two-ledger decision
+## arriving at its point: a monster the player killed pays the player. Routing
+## this into `building.inventory` would make the sword the village's.
+##
+## Three kinds, three destinations, and they are the three the roller produces:
+## equipment becomes an INSTANCE and goes in the bag, materials go in the pack,
+## and gold becomes the currency — `KIND_GOLD` has said "currency, which is not
+## an item and has no row" since the table was written, and copper is now the only
+## thing that sentence can mean.
+func _kill_monster(m: CozyMonster) -> void:
+	_say("%s falls" % CozyMonsterDefs.display_name(m.def_id))
+	var table := CozyMonsterDefs.loot_table(m.def_id)
+	if table != "":
+		var rng := RandomNumberGenerator.new()
+		rng.randomize()
+		var rolled := CozyLootRoller.roll(table, rng, _next_item_id)
+		_next_item_id = int(rolled["next_id"])
+		_hand_out(rolled["drops"])
+	if is_instance_valid(m):
+		m.queue_free()
+
+
+## Put a rolled drop list into the player's things, and say what was picked up.
+##
+## Split from the kill so the self-check can hand it a roll it made itself: the
+## distribution is the roller's business and the destination is this one's, and a
+## check that had to kill something to test the destination would be testing both
+## at once.
+func _hand_out(drops: Array) -> void:
+	var got: Array[String] = []
+	for drop in drops:
+		var d: Dictionary = drop
+		match String(d["kind"]):
+			CozyLootRoller.DROP_EQUIPMENT:
+				var item: CozyItemInstance = d["item"]
+				if player_state.bag.add_item(item) < 0:
+					_say("the bag is full, %s is left behind" % item.display_name(), true)
+					continue
+				got.append(item.display_name())
+			CozyLootRoller.DROP_ITEM:
+				player_state.pack.add(String(d["id"]), float(d["amount"]))
+				got.append("%s x%d" % [String(d["id"]), int(d["amount"])])
+			CozyLootRoller.DROP_GOLD:
+				player_state.pack.add(CozyPrices.CURRENCY, float(d["amount"]))
+				got.append("%d %s" % [int(d["amount"]),
+					CozyMaterials.display_name(CozyPrices.CURRENCY)])
+	if not got.is_empty():
+		_say("picked up %s" % ", ".join(got))
+
+
 # ------------------------------------------------- the player's work and trade
 
 ## The player works a resource node by hand.
@@ -2447,11 +2593,18 @@ func _unhandled_input(event: InputEvent) -> void:
 				_end_drag()
 			return
 
-	if event is InputEventMouseButton and event.pressed:
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			camera.zoom_in()
-		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			camera.zoom_out()
+	if event is InputEventMouseButton:
+		# LEFT IS THE SWING, and only outside build mode — in build mode it draws
+		# the outline, and a click that both attacks and starts a wall does the
+		# wrong one half the time.
+		if event.button_index == MOUSE_BUTTON_LEFT and not build_mode:
+			_attack_held = event.pressed
+			return
+		if event.pressed:
+			if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+				camera.zoom_in()
+			elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+				camera.zoom_out()
 
 
 ## Game hours since the world began, as one monotonically rising number.
@@ -2522,6 +2675,7 @@ func _process(delta: float) -> void:
 
 	_refresh_npc_panel()
 	_refresh_pack_panel()
+	_tick_combat()
 	_update_hud()
 
 
@@ -2619,6 +2773,7 @@ func _report() -> void:
 	_check_player_ledger()
 	_check_trade()
 	_check_pack_panel()
+	_check_fight()
 
 	_report_house()
 	_report_runtime_building()
@@ -2905,6 +3060,115 @@ func _check_pack_panel() -> void:
 	player_state.pack.items = pack_before
 	_refresh_pack_panel()
 	pack_panel.visible = false
+
+
+## THE LOOP, END TO END, ON REAL OBJECTS.
+##
+## Every part of the equipment lane was finished and unreachable before today:
+## `CozyStats` resolved, the generator rolled, the roller dropped, the container
+## held and the equipment wore — and NOTHING IN THE WORLD PRODUCED AN ITEM. So
+## the check that matters is not any one of those. It is that a player can walk
+## up to something, hit it until it dies, and end up better equipped.
+##
+## Three things it holds down that nothing else can:
+##
+##   1. ONE SWING HITS ONCE. The active window is six frames; without the
+##      `has_hit` guard a swing would land six times and the damage numbers would
+##      be six times the frame data. Measured by counting hits, not by trusting
+##      the guard.
+##   2. THE DROP IS THE PLAYER'S. The village has an account too and the two look
+##      identical on screen. The brigand's steel sword must end up in
+##      `player_state.bag` and NOT in `building.inventory`.
+##   3. RANGE MEANS SOMETHING. A swing from across the field must miss — the
+##      reach is the one number that stops the game being a click anywhere.
+##
+## It MUTATES the world (a monster dies) and puts it back: monsters are re-placed
+## and the player's things are restored.
+func _check_fight() -> void:
+	if player_state == null or player == null or monsters.is_empty():
+		print("[cozyv2] fight: no monsters to fight  [FAIL]")
+		return
+	var brigand: CozyMonster = null
+	for m in monsters:
+		if m.def_id == "brigand":
+			brigand = m
+			break
+	if brigand == null:
+		print("[cozyv2] fight: no brigand in the world  [FAIL]")
+		return
+
+	var here := player.global_position
+	var pack_before: Dictionary = player_state.pack.items.duplicate()
+	var bag_before := player_state.bag.to_dict()
+	var village_before := building.inventory.total()
+
+	# (1) Out of range: 25 m away, a full swing must do nothing at all.
+	player.global_position = brigand.global_position + Vector3(0.0, 0.0, 25.0)
+	for i in 30:
+		_attack_held = true
+		_tick_combat()
+	var missed := is_equal_approx(brigand.hp, brigand.hp_max)
+
+	# (2) Up close: ONE press, and count the hits until the swing is over.
+	#
+	# THE FIRST VERSION OF THIS HELD THE BUTTON FORTY FRAMES AND COUNTED TWO
+	# HITS, and called it a guard failure. It was not: light_1 is twenty-two
+	# ticks from press to recovery, so forty frames is TWO SWINGS, and two hits
+	# is exactly right. A measurement that does not know what it is measuring
+	# reports a working system as broken — so the window is one swing, entered by
+	# one press and left when the solver says it is idle.
+	player.global_position = brigand.global_position + Vector3(0.0, 0.0, 1.0)
+	# SETTLE FIRST. Section (1) ended mid-swing, and a press during a recovery is
+	# swallowed by design — so the "one press" below would be no press at all and
+	# the measurement would read zero. Empty input until the solver says idle.
+	for i in 200:
+		_attack_held = false
+		_tick_combat()
+		if not CozyCombatSolver.is_attacking(player_state.combat):
+			break
+	var hp_before := brigand.hp
+	_attack_held = true
+	_tick_combat()
+	var hits := 0
+	for i in 60:
+		_attack_held = false
+		var before := brigand.hp
+		_tick_combat()
+		if brigand.hp < before:
+			hits += 1
+		if not CozyCombatSolver.is_attacking(player_state.combat):
+			break
+	var one_hit := hits == 1
+	var hurt := brigand.hp < hp_before
+
+	# (3) Kill it, and see where the sword went.
+	var guard := 0
+	while not brigand.is_dead() and guard < 900:
+		_attack_held = true
+		_tick_combat()
+		guard += 1
+	var dead := brigand.is_dead()
+
+	var sword := ""
+	for it in player_state.bag.get_items():
+		if it.definition_id == "steel_sword":
+			sword = it.display_name()
+	var copper := player_state.pack.count(CozyPrices.CURRENCY)
+	var village_still := is_equal_approx(building.inventory.total(), village_before)
+
+	print("[cozyv2] fight: a swing from 25 m missed=%s; up close one swing landed %d hit(s)=%s, hurt=%s; killed=%s, bag=%d item(s) incl. '%s', copper %d, village %s  [%s]" % [
+		str(missed), hits, str(one_hit), str(hurt), str(dead),
+		player_state.bag.count(), sword, int(copper),
+		"untouched" if village_still else "MOVED",
+		"OK" if missed and one_hit and hurt and dead and sword != "" \
+			and copper > 0.0 and village_still
+			else "FAIL, the fight did not put the drop in the player's own hands"])
+
+	# Put the world back: the player's things, the player, and the monsters.
+	player_state.pack.items = pack_before
+	player_state.bag = CozyItemContainer.from_dict(bag_before)
+	player.global_position = here
+	_place_monsters()
 
 
 func _check_resource_chain() -> void:

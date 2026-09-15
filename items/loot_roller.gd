@@ -97,13 +97,25 @@ static func _roll_equipment(pick_id: String, rng: RandomNumberGenerator,
 	var picked := _pick(pick_id, rng)
 	if picked == "":
 		return null
-	var choices := CozyLootDefs.items_of_type(picked)
-	if choices.is_empty():
-		return null
 
-	# The item within the type is drawn too, rather than taken as the first, so a
-	# type with two swords is two swords and not one sword and a dead row.
-	var definition := choices[rng.randi_range(0, choices.size() - 1)]
+	# A PICK ENTRY NAMES EITHER A TYPE OR ONE DEFINITION. A type is "some weapon"
+	# and one definition is "this sword" — and the second is not expressible
+	# through the first, because `weapon` has three items in it and a designed
+	# reward is a particular one of them.
+	#
+	# Checked before the type table, and the two cannot collide: an item id is
+	# never a type name (`steel_sword` is not a type, `weapon` is not a
+	# definition), and `complaints()` refuses an entry that names neither.
+	var definition := ""
+	if CozyItemDefs.exists(picked):
+		definition = picked
+	else:
+		var choices := CozyLootDefs.items_of_type(picked)
+		if choices.is_empty():
+			return null
+		# The item within the type is drawn too, rather than taken as the first,
+		# so a type with two swords is two swords and not one sword and a dead row.
+		definition = choices[rng.randi_range(0, choices.size() - 1)]
 	var rarity := CozyItemGenerator.roll_rarity(rng)
 	return CozyItemGenerator.generate(definition, rarity, DROP_LEVEL, rng,
 		"item_%03d" % instance_id)
@@ -126,11 +138,11 @@ static func _pick(table_id: String, rng: RandomNumberGenerator) -> String:
 	for e in list:
 		acc += float((e as Dictionary).get("weight", 0.0))
 		if roll <= acc:
-			return String((e as Dictionary).get("type", ""))
+			return CozyLootDefs.entry_target(e)
 	# Only reachable by floating-point error at the very top of the range, and
 	# falling back to the LAST entry keeps it biased towards the rarest rather
 	# than the commonest.
-	return String((list[list.size() - 1] as Dictionary).get("type", ""))
+	return CozyLootDefs.entry_target(list[list.size() - 1])
 
 
 ## A table's drop rates, measured rather than stated.

@@ -47,6 +47,18 @@ const TABLES := {
 			{"kind": KIND_EQUIPMENT, "chance": 0.35, "pick": "goblin_gear"},
 		],
 	},
+	"brigand": {
+		"kind": "drop",
+		"entries": [
+			{"kind": KIND_GOLD, "chance": 1.0, "min": 5, "max": 12},
+			{"kind": KIND_ITEM, "id": "stone", "chance": 0.4, "min": 1, "max": 2},
+			# CERTAIN, and deliberately: this is the drop the whole equipment lane
+			# exists to make possible, and a player who kills the one brigand in
+			# the world and gets nothing has learned that loot is a lottery rather
+			# than a reward.
+			{"kind": KIND_EQUIPMENT, "chance": 1.0, "pick": "brigand_gear"},
+		],
+	},
 	## Which SLOT the equipment lands in. Weights, not chances: exactly one of
 	## these is drawn, and a weapon is four times as likely as a ring.
 	##
@@ -55,6 +67,20 @@ const TABLES := {
 	## that silently does not happen — the failure this project has paid for seven
 	## times, arriving through a table rather than a field. The slot joins the
 	## table on the day an amulet exists, and `complaints()` will insist on it.
+	## WHAT ONE PARTICULAR MONSTER IS CARRYING.
+	##
+	## The first table in the game that NAMES a definition rather than a type,
+	## and the reason is the same one the pick table above is written the way it
+	## is: "some weapon" is three swords and "the steel sword" is one of them, and
+	## a designed reward is the second. A goblin drops whatever it drops; the
+	## brigand is carrying the sword the player is meant to walk away with.
+	"brigand_gear": {
+		"kind": "pick",
+		"pick": 1,
+		"entries": [
+			{"weight": 1.0, "item": "steel_sword"},
+		],
+	},
 	"goblin_gear": {
 		"kind": "pick",
 		"pick": 1,
@@ -66,6 +92,15 @@ const TABLES := {
 		],
 	},
 }
+
+
+## What a pick entry names: ONE DEFINITION (`item`) or a TYPE (`type`).
+##
+## One helper rather than two keys read in three places, so the roller and the
+## validator cannot disagree about which one an entry means.
+static func entry_target(entry: Dictionary) -> String:
+	var one := String(entry.get("item", ""))
+	return one if one != "" else String(entry.get("type", ""))
 
 
 static func get_def(id: String) -> Dictionary:
@@ -130,11 +165,14 @@ static func complaints() -> Array[String]:
 			if amount != "":
 				out.append(amount)
 			if k == "pick":
-				var t := String(entry.get("type", ""))
+				var t := entry_target(entry)
+				var by_type := String(entry.get("type", "")) != ""
 				if t == "":
-					out.append("%s has a pick entry with no type" % id)
-				elif items_of_type(t).is_empty():
+					out.append("%s has a pick entry naming nothing" % id)
+				elif by_type and items_of_type(t).is_empty():
 					out.append("%s can pick '%s', which no item has" % [id, t])
+				elif not by_type and not CozyItemDefs.exists(t):
+					out.append("%s can pick '%s', which is no item" % [id, t])
 				continue
 			match String(entry.get("kind", "")):
 				KIND_ITEM:

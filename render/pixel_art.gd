@@ -575,6 +575,21 @@ static func make_vegetation_material(tex: Texture2D, half_height: float,
 	return mat
 
 
+## A flat colour with no texture, for the shapes that are not sprites — a
+## monster's body, a health bar.
+##
+## UNSHADED, like the rest of the world's flat geometry: a lit box next to an
+## unshaded billboard is two objects from two different games, and this project
+## renders at one flat exposure on purpose (`ART_PROFILE.md` §2).
+static func make_flat_material(c: Color) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = c
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.roughness = 1.0
+	m.metallic_specular = 0.0
+	return m
+
+
 ## Build a 3D material with nearest-neighbour filtering forced on.
 ## Pixel art must never be smoothed (doc #35).
 static func make_material(tex: Texture2D, uv_scale := Vector3.ONE) -> StandardMaterial3D:
