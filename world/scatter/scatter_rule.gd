@@ -83,7 +83,23 @@ const RULES := {
 		"scale": [0.6, 1.0],
 	},
 	"tree": {
+		# A LAYERED TREE: four pieces, one plant.
+		#
+		# Willow, 2026-09-15: "树我想做那种分为树干和前中后三层树叶实现错开微微摆动
+		# 效果的那种". The pieces are separate ASSETS rather than bands inside one
+		# sprite, because each needs its own wind — a trunk that sways is a tree that
+		# has come loose, and three canopy layers that sway together are one canopy.
+		#
+		# THE ORDER IS BACK TO FRONT, and it is the draw order as well: with an
+		# alpha-scissor material these are depth-tested rather than sorted, so the
+		# scatter pushes each piece toward the camera by its `LAYER_DEPTH`.
+		#
+		# `asset_id` IS NOT DRAWN when `layers` is present. It stays as the rule's
+		# identity and its SIZE reference — every piece shares one canvas, or the
+		# layers would not line up — and `_check_scatter` measures the field by it.
 		"asset_id": "tree_oak_01",
+		"layers": ["tree_oak_leaves_back", "tree_oak_trunk",
+			"tree_oak_leaves_mid", "tree_oak_leaves_front"],
 		"base_density": 0.17,
 		"cluster": [1, 1],
 		# Trees belong to the woodland region and are essentially absent
@@ -121,6 +137,9 @@ static func resolve(rule_id: String) -> Dictionary:
 	return {
 		"id": rule_id,
 		"asset_id": r["asset_id"],
+		# Empty for a plant drawn as one sprite, which is every rule but the tree.
+		# See the tree rule for why the pieces are assets rather than bands.
+		"layers": r.get("layers", []),
 		"biomes": r["biomes"],
 		"materials": r["materials"],
 		"base_density": float(r["base_density"]),
@@ -133,6 +152,26 @@ static func resolve(rule_id: String) -> Dictionary:
 		"cluster_lo": int(r.get("cluster", [1, 1])[0]),
 		"cluster_hi": int(r.get("cluster", [1, 1])[1]),
 	}
+
+
+## Every asset id the rules actually DRAW, in a stable order.
+##
+## A layered rule draws its PIECES and not its `asset_id` — that one is the
+## rule's identity and its size reference (see the tree rule). This exists so a
+## check can say "one mesh per asset, and no more" without hard-coding a
+## number: the count of a thing belongs to the table that declares it.
+static func drawn_asset_ids() -> Array[String]:
+	var out: Array[String] = []
+	for id in ids():
+		var res := resolve(id)
+		var layers: Array = res.get("layers", [])
+		if layers.is_empty():
+			out.append(String(res["asset_id"]))
+		else:
+			for piece in layers:
+				out.append(String(piece))
+	out.sort()
+	return out
 
 
 ## The deterministic half of E.20.1 — everything except the random term.

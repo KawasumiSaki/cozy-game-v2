@@ -64,11 +64,21 @@ const PLACEHOLDER_SIZE := {
 ## than as wind, so the strength is per-asset and the rock's is zero. A tree
 ## moves a little: enough that a gust crosses the forest, not enough to look like
 ## grass.
+##
+## THE FOUR TREE PIECES ARE IN HERE TOO, and their order is the point: a trunk
+## barely moves and the front leaves move most, which is the whole of what makes
+## four coplanar quads read as a tree with depth rather than as one picture drawn
+## four times. `_check_scatter` asserts that order is kept — "the trunk sways more
+## than the canopy" is a mistake that still looks like wind.
 const WIND_STRENGTH := {
 	"grass_tuft_01": 1.0,
 	"flower_daisy_01": 1.0,
 	"rock_small_01": 0.0,
 	"tree_oak_01": 0.30,
+	"tree_oak_leaves_back": 0.55,
+	"tree_oak_trunk": 0.10,
+	"tree_oak_leaves_mid": 0.85,
+	"tree_oak_leaves_front": 1.20,
 }
 
 ## Draw vegetation with the moving-billboard shader
@@ -274,7 +284,20 @@ func _sample_chunk(coord: Vector2i) -> Dictionary:
 					# standing where the square's own sample was taken.
 					var gy := terrain.height_at(bx, bz)
 					entry["low"] = minf(float(entry["low"]), gy)
-					assets_by_id[asset_id].append({"pos": Vector3(bx, gy, bz), "scale": sc})
+					# ONE PLANT, SEVERAL PIECES. A rule may declare `layers`, and the
+					# instance is then recorded under EVERY piece's asset id — so the
+					# pieces share a position, a scale and a jitter BY CONSTRUCTION.
+					# Recording them as four rules would place four trees, and the only
+					# reason that would not look like four trees is luck.
+					#
+					# `asset_id` is NOT drawn when `layers` is present: it stays the
+					# rule's identity and its size reference (see the rule table).
+					var drawn: Array = res.get("layers", [])
+					if drawn.is_empty():
+						place_under(assets_by_id, asset_id, bx, gy, bz, sc)
+					else:
+						for piece in drawn:
+							place_under(assets_by_id, String(piece), bx, gy, bz, sc)
 				counts[rule_id] = int(counts.get(rule_id, 0)) + n
 	return entry
 
@@ -311,6 +334,36 @@ func _finish() -> Dictionary:
 	return _counts
 
 
+## Record one instance under one asset id, making the list if it is new.
+##
+## THE SAME DICTIONARY GOES INTO EVERY PIECE'S LIST rather than a copy: the
+## pieces of one plant must share a position, and two dictionaries that agree
+## today are two dictionaries that can disagree tomorrow.
+func place_under(into: Dictionary, asset_id: String, x: float, y: float, z: float,
+		scale: float) -> void:
+	if not into.has(asset_id):
+		into[asset_id] = []
+	into[asset_id].append({"pos": Vector3(x, y, z), "scale": scale})
+
+
+## The direction a piece is pushed to be drawn IN FRONT of the one behind it.
+##
+## THE PIECES OF ONE PLANT ARE COPLANAR, and an alpha-scissor material is
+## depth-tested rather than sorted — so two of them at the same depth fight
+## over which pixel wins, and the fight changes as the camera moves.
+##
+## DERIVED FROM THE CAMERA'S OWN CONSTANT rather than written as "+Z": the
+## offset has to point at wherever the camera actually is, and a hard-coded
+## axis would be right only while the locked yaw happened to be 180. The camera
+## being LOCKED (ART_PROFILE 1) is what makes a fixed axis legitimate at all —
+## this is the line that would have to move with the yaw.
+static func _toward_camera() -> Vector3:
+	var yaw := deg_to_rad(CozyCameraRig.FIXED_YAW)
+	# `ground_forward` is the direction the camera looks; the camera sits back
+	# along it, so toward the camera is the other way.
+	return -Vector3(-sin(yaw), 0.0, -cos(yaw))
+
+
 func _build_multimesh(asset_id: String, items: Array) -> void:
 	if items.is_empty():
 		return
@@ -332,8 +385,12 @@ func _build_multimesh(asset_id: String, items: Array) -> void:
 		# The quad is centred; lift by half its height so the sprite STANDS on
 		# the ground rather than sinking through it (anchor rule, ART_PROFILE).
 		var h := world_size * s * 0.5
+		# The lift puts the sprite ON the ground; the depth push puts this PIECE in
+		# front of the one behind it. Zero for everything that is not a layer.
+		var depth := float(LAYER_DEPTH.get(asset_id, 0.0))
 		mm.set_instance_transform(i, Transform3D(
-			Basis().scaled(Vector3(s, s, s)), p + Vector3(0.0, h, 0.0)))
+			Basis().scaled(Vector3(s, s, s)),
+			p + Vector3(0.0, h, 0.0) + _toward_camera() * depth))
 
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
@@ -367,6 +424,19 @@ func _build_multimesh(asset_id: String, items: Array) -> void:
 ## This is the same shape as `PLACEHOLDER_SIZE` and it is NOT the same thing: a
 ## placeholder's number is a stopgap for art that does not exist, this one is the
 ## size the thing IS.
+## WHICH PIECE BELONGS TO WHICH PLANT. Only the base is in `PLACEHOLDER_SIZE`,
+## and a piece defers to it — so a tree's four canvases are ONE number written
+## once. Four rows all saying 2.40 would agree today and could disagree
+## tomorrow, and four pieces at different world sizes do not line up at all:
+## the leaves would hover somewhere near the trunk.
+const LAYER_OF := {
+	"tree_oak_leaves_back": "tree_oak_01",
+	"tree_oak_trunk": "tree_oak_01",
+	"tree_oak_leaves_mid": "tree_oak_01",
+	"tree_oak_leaves_front": "tree_oak_01",
+}
+
+
 const REAL_SIZE := {
 	"grass_tuft_01": 0.40,
 }
@@ -383,6 +453,10 @@ const REAL_SIZE := {
 ## would make a 0.27 m tree. `_check_scatter` prints how far each one is from the
 ## profile, so the list is a measured number rather than a complaint.
 func _world_size(asset_id: String, tex: Texture2D) -> float:
+	# A piece of a layered plant is exactly as big as the plant.
+	var base := String(LAYER_OF.get(asset_id, ""))
+	if base != "":
+		return _world_size(base, tex)
 	if REAL_SIZE.has(asset_id):
 		return float(REAL_SIZE[asset_id])
 	var real_path := String(REAL_TEXTURES.get(asset_id, ""))
@@ -410,7 +484,8 @@ func _material_for(asset_id: String, world_size: float, tex: Texture2D) -> Mater
 		Vector2(1.0 / size.x, 1.0 / size.y),
 		# The tint IS the plant's colour for a silhouette, and is unused for a
 		# painted sprite — the shader returns the texture's own colour there.
-		CozyPixelArt.GREEN_BASE if silhouette else Color.WHITE)
+		CozyPixelArt.GREEN_BASE if silhouette else Color.WHITE,
+		float(LAYER_PHASE.get(asset_id, 0.0)))
 
 
 ## Real sprites, by asset id, as EXPLICIT PATHS.
@@ -441,6 +516,36 @@ const SILHOUETTE := {
 	"tree_oak_01": false,
 }
 
+
+## HOW FAR EACH PIECE READS THE GUST FROM THE ONE BEHIND IT, in metres.
+##
+## The wind is sampled WHERE THE PLANT STANDS, so every piece of one tree would
+## otherwise read the same gust and bend in perfect lockstep — the exact thing a
+## layered tree is for. This moves the piece's sample through the gust field,
+## so the front leaves meet the same wind a moment after the back ones.
+##
+## A DISTANCE RATHER THAN A TIME, on purpose: two trees of one kind then differ
+## for the ordinary reason (they stand in different places), and a layered
+## tree's own pieces differ for the same reason rather than by a special case.
+const LAYER_PHASE := {
+	"tree_oak_leaves_back": 0.0,
+	"tree_oak_trunk": 1.5,
+	"tree_oak_leaves_mid": 3.0,
+	"tree_oak_leaves_front": 4.5,
+}
+
+## DRAW ORDER, in metres toward the camera. See `_toward_camera`.
+##
+## The gap has to be big enough that two pieces a metre apart are unmistakably
+## nearer and further, and small enough that nobody can see the tree has been
+## taken apart — 6 cm at a 22.5 m view is well under one screen pixel.
+const LAYER_DEPTH := {
+	"tree_oak_leaves_back": 0.0,
+	"tree_oak_trunk": 0.02,
+	"tree_oak_leaves_mid": 0.04,
+	"tree_oak_leaves_front": 0.06,
+}
+
 ## Sprite pixel dimensions, for the shader's one-texel outline pass. Only
 ## silhouette sprites need it — a painted sprite has its outline baked in.
 const SPRITE_SIZE := {
@@ -457,6 +562,15 @@ func _placeholder_texture(asset_id: String) -> Texture2D:
 			return CozyPixelArt.make_pebble_texture()
 		"tree_oak_01":
 			return CozyPixelArt.make_tree_texture()
+		# The four pieces of a layered tree, by their index in the rule's list.
+		"tree_oak_leaves_back":
+			return CozyPixelArt.make_tree_layer_texture(0)
+		"tree_oak_trunk":
+			return CozyPixelArt.make_tree_layer_texture(1)
+		"tree_oak_leaves_mid":
+			return CozyPixelArt.make_tree_layer_texture(2)
+		"tree_oak_leaves_front":
+			return CozyPixelArt.make_tree_layer_texture(3)
 		_:
 			return CozyPixelArt.make_grass_tuft_texture()
 

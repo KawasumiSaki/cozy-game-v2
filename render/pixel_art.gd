@@ -253,6 +253,70 @@ static func make_tree_texture(seed_val := 4) -> ImageTexture:
 	return _outline(img, Color(0.14, 0.22, 0.12, 1.0))
 
 
+## One PIECE of a layered tree — the stand-in until real art arrives.
+##
+## A tree is drawn as four quads at one position (trunk, then leaves behind it,
+## around it and in front of it) so the canopy can move in layers rather than as
+## one picture. The pieces are separate ASSETS rather than one sprite with bands
+## in it, which is what lets each have its own wind strength and its own gust —
+## see `CozyVegetationScatter.LAYERS`.
+##
+## `piece` is the index in that list: 0 = leaves behind, 1 = trunk, 2 = leaves
+## around, 3 = leaves in front. The three canopy pieces are the same disc at
+## different radii and heights, which is enough to see the layering work: a real
+## artist replaces this function and nothing else.
+##
+## NOT ANIMATED, and not meant to be: the movement is the shader bending the quad.
+static func make_tree_layer_texture(piece: int, seed_val := 4) -> ImageTexture:
+	const W := 24
+	const H := 32
+	var img := Image.create(W, H, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val + piece * 17
+
+	if piece == 1:
+		# TRUNK ONLY, and it is the one piece that does not move: a tree whose
+		# trunk sways is a tree that has come loose.
+		var bark := Color(0.42, 0.29, 0.19)
+		for y in range(8, H - 1):
+			for x in range(10, 14):
+				var n := rng.randf_range(-0.05, 0.05)
+				img.set_pixel(x, y, Color(bark.r + n, bark.g + n, bark.b + n, 1.0))
+		# Two branches, so the canopy has something to sit on.
+		for i in range(3):
+			img.set_pixel(9 - i, 12 + i, bark)
+			img.set_pixel(14 + i, 12 + i, bark)
+		return _outline(img, Color(0.14, 0.22, 0.12, 1.0))
+
+	# The canopy pieces: a disc whose radius, height and shade say how far back it
+	# is. FURTHER BACK IS DARKER AND SMALLER — that is the whole of the depth cue
+	# in a fixed-Y billboard, since none of them can be nearer than another.
+	var behind := piece == 0
+	var front := piece == 3
+	var radius := 92.0 if not front else 78.0
+	var cy := 14.0 if behind else (11.0 if piece == 2 else 10.0)
+	var shade := (0.78 if behind else (1.0 if piece == 2 else 1.12))
+	var leaf := Color(0.28 * shade, 0.52 * shade, 0.24 * shade)
+	var cx := 12.0
+	for y in range(0, H - 10):
+		for x in range(0, W):
+			var dx := float(x) - cx
+			var dy := (float(y) - cy) * 1.15
+			if dx * dx + dy * dy <= radius:
+				var n := rng.randf_range(-0.06, 0.06)
+				img.set_pixel(x, y, Color(
+					clampf(leaf.r + n, 0.0, 1.0), clampf(leaf.g + n, 0.0, 1.0),
+					clampf(leaf.b + n, 0.0, 1.0), 1.0))
+	# The front layer is drawn over the trunk and the others, so it gets a hole in
+	# the middle where the trunk shows through — otherwise the trunk is invisible.
+	if front:
+		for y in range(16, H - 1):
+			for x in range(10, 14):
+				img.set_pixel(x, y, Color(0, 0, 0, 0))
+	return _outline(img, Color(0.14, 0.22, 0.12, 1.0))
+
+
 ## ---------------------------------------------------------------- UI icons
 ##
 ## 16x16, procedural, placeholder like everything else. Each one must be
@@ -553,12 +617,16 @@ const VEGETATION_SHADER := "res://shaders/vegetation.gdshader"
 ## about it, so it has to be the same number the scatter lifts the quad by.
 static func vegetation_parameters(half_height: float, wind_strength := 1.0,
 		tex: Texture2D = null, wind: Texture2D = null, silhouette := true,
-		texel := Vector2(1.0, 1.0), tint := Color(1, 1, 1)) -> Dictionary:
+		texel := Vector2(1.0, 1.0), tint := Color(1, 1, 1),
+		layer_phase := 0.0) -> Dictionary:
 	return {
 		"albedo_texture": tex,
 		"wind_noise": wind,
 		"quad_half_height": half_height,
 		"wind_strength": wind_strength,
+		# How far this piece of a layered plant sits from the piece behind it, in
+		# metres. See the shader's `layer_phase`. Zero for everything else.
+		"layer_phase": layer_phase,
 		"silhouette": silhouette,
 		"sprite_texel": texel,
 		"tint": tint,
@@ -612,9 +680,9 @@ static func wind_noise() -> NoiseTexture2D:
 ## not do yet).
 static func make_vegetation_material(tex: Texture2D, half_height: float,
 		wind_strength := 1.0, silhouette := true, texel := Vector2(1.0, 1.0),
-		tint := GREEN_BASE) -> ShaderMaterial:
+		tint := GREEN_BASE, layer_phase := 0.0) -> ShaderMaterial:
 	var values := vegetation_parameters(half_height, wind_strength, tex,
-		wind_noise(), silhouette, texel, tint)
+		wind_noise(), silhouette, texel, tint, layer_phase)
 	var mat := ShaderMaterial.new()
 	mat.shader = load(VEGETATION_SHADER)
 	for name in values:

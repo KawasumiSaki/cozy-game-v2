@@ -143,6 +143,20 @@ uniform float lean_variety : hint_range(0.0, 45.0) = 14.0;
 // second thing to keep in step.
 uniform float wind_strength : hint_range(0.0, 2.0) = 1.0;
 
+// HOW FAR THIS PIECE OF A PLANT IS FROM THE PIECE BEHIND IT, in metres.
+//
+// A LAYERED TREE IS FOUR QUADS AT ONE POSITION, and the wind is sampled WHERE THE
+// PLANT STANDS — so without this every layer of one tree reads the same gust and
+// bends in perfect lockstep, which is the one thing a layered tree exists to
+// avoid. The offset moves this piece's sample through the gust field, so the
+// front leaves and the back leaves meet the same wind a moment apart.
+//
+// IT IS A DISTANCE, NOT A TIME, on purpose: two trees of the same kind then differ
+// from each other for the ordinary reason (they stand in different places), and a
+// layered one differs from itself for the same reason. Zero is everything that is
+// not a layer, which is every other plant in the world.
+uniform float layer_phase = 0.0;
+
 
 // Where this plant stands, in world space, carried to the fragment. `VERTEX` is
 // view space there, so the colour patches cannot be sampled from it.
@@ -181,6 +195,10 @@ void vertex() {
 	float half_h = quad_half_height * instance_scale;
 
 	float id = float(INSTANCE_ID);
+	// PER-INSTANCE, and deliberately NOT shifted by `layer_phase`: every piece of
+	// one plant scales together, or the leaves grow out of the trunk they belong
+	// to. Instance ids line up across the pieces because the scatter fills every
+	// piece's mesh from the same list in the same order.
 	float seed = hash1(id);
 	float seed_b = hash1(id + 7.0);
 
@@ -210,10 +228,13 @@ void vertex() {
 
 	vec2 dir_a = normalize(rotate2(wind_direction, noise_diverge_angle));
 	vec2 dir_b = normalize(rotate2(wind_direction, -noise_diverge_angle));
-	float n1 = texture(wind_noise, origin.xz * wind_scale + time * wind_speed * dir_a).r;
+	// WHERE THIS PIECE READS THE GUST FROM. Zero for everything that is not a layer
+	// of a layered plant, so the ordinary field is unchanged.
+	vec2 sample_at = origin.xz + vec2(layer_phase * 0.7, layer_phase * 0.5);
+	float n1 = texture(wind_noise, sample_at * wind_scale + time * wind_speed * dir_a).r;
 	// The second sample runs at a different scale AND a different speed, so the
 	// two do not line up into one visible texture.
-	float n2 = texture(wind_noise, origin.xz * (wind_scale * 0.8)
+	float n2 = texture(wind_noise, sample_at * (wind_scale * 0.8)
 		+ time * wind_speed * 0.89 * dir_b).r;
 	float gust = clamp(n1 * n2 + wind_threshold, 0.0, 1.0);
 	gust = (gust - 0.5) * 2.0;

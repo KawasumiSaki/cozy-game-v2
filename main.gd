@@ -5201,8 +5201,15 @@ func _check_scatter() -> void:
 	print("[cozyv2] scatter: %d instance(s) in %d mesh(es), %d candidate(s)  [%s]" % [
 		total, meshes, scatter.sample_candidates(),
 		"OK" if total > 0 and meshes > 0 else "FAIL, nothing placed"])
-	print("[cozyv2] scatter instancing: %d instance(s) -> %d draw call(s)  [%s]" % [
-		total, meshes, "OK" if meshes <= 4 else "FAIL, too many meshes"])
+	# ONE MESH PER ASSET, and the limit comes from the RULE TABLE rather than
+	# from a literal. The property is "thousands of plants in a handful of draw
+	# calls" (#61), and a hard-coded 4 stopped meaning that the day a fifth plant
+	# — or the four pieces of one tree — arrived. Derived from the same table the
+	# scatter draws from, so the two cannot disagree about how many there are.
+	var expected := CozyScatterRule.drawn_asset_ids().size()
+	print("[cozyv2] scatter instancing: %d instance(s) -> %d draw call(s), the rules draw %d asset(s)  [%s]" % [
+		total, meshes, expected,
+		"OK" if meshes <= expected else "FAIL, more meshes than the rules draw"])
 
 	# E.20.1 — the density field must respond to what is under it.
 	var on_grass := CozyScatterRule.base_probability("grass_tuft",
@@ -5300,6 +5307,27 @@ func _check_scatter() -> void:
 	print("[cozyv2] sprite density (native is x1.00): %s -- %d of %d off  [%s]" % [
 		" | ".join(density), off, scatter.asset_ids().size(),
 		"OK" if off == 0 else "NOTE"])
+
+	# ...AND EVERY PIECE OF ONE PLANT IS THE SAME SIZE, which is what makes the
+	# layers line up at all. Four canvases that agree today, in a table somebody
+	# can edit one row at a time, is exactly how they stop agreeing.
+	# THE REFERENCE IS ANOTHER PIECE, not the rule's `asset_id`: a layered rule never
+	# places its base, so the base has no world size at all — comparing against it
+	# compared four real sizes against a zero and called them different.
+	var pieces := ["tree_oak_leaves_back", "tree_oak_trunk",
+		"tree_oak_leaves_mid", "tree_oak_leaves_front"]
+	var tree_size := scatter.world_size_of(pieces[0])
+	var pieces_agree := tree_size > 0.0
+	var piece_sizes := {}
+	for piece in CozyScatterRule.drawn_asset_ids():
+		piece_sizes[scatter.world_size_of(piece)] = true
+	for piece in pieces:
+		if not is_equal_approx(scatter.world_size_of(piece), tree_size):
+			pieces_agree = false
+	print("[cozyv2] layered tree: the 4 piece(s) share one size=%s (%.2f m each); %d distinct size(s) across %d asset(s)  [%s]" % [
+		str(pieces_agree), tree_size, piece_sizes.size(),
+		CozyScatterRule.drawn_asset_ids().size(),
+		"OK" if pieces_agree else "FAIL, the pieces of one tree are different sizes"])
 
 	# ...AND THE SIZE OF A TUFT IS NOT ITS PIXEL COUNT.
 	#

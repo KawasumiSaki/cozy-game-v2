@@ -80,7 +80,12 @@ func _half_height() -> void:
 ## What `CozyPixelArt` drives, per asset, from GDScript.
 const PER_ASSET := ["albedo_texture", "wind_noise", "quad_half_height", "wind_strength",
 	"silhouette", "sprite_texel", "tint", "outline_colour",
-	"albedo2", "albedo2_noise", "albedo3", "albedo3_noise"]
+	"albedo2", "albedo2_noise", "albedo3", "albedo3_noise",
+	# Per-asset since the layered tree: how far THIS piece reads the gust from the
+	# one behind it, in metres. `LAYER_PHASE` is the table it comes from — and this
+	# list is why a uniform nobody writes turns red instead of quietly doing
+	# nothing, which is what the default in the .gdshader would otherwise hide.
+	"layer_phase"]
 
 ## World-level tuning that currently lives in the shader file with a default:
 ## the strength of the wind, how fast it travels, how far a plant bends, how
