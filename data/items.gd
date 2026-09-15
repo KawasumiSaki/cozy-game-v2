@@ -27,12 +27,16 @@ extends RefCounted
 const SLOTS: Array[String] = ["helmet", "armor", "legs", "arms", "boots",
 	"backpack", "charm", "ring", "weapon", "offhand"]
 
-## How many of each a character wears at once.
+## HOW MANY SLOTS OF EACH KIND A CHARACTER HAS.
 ##
-## A SLOT IS A KIND WITH A CAPACITY, NOT ONE PLACE. "Three charms and two rings"
-## is the whole reason: with one place per kind, a second ring would have to
-## displace the first, and `ring_1` / `ring_2` as separate ids would make the
-## ring a definition names a different thing from the ring it is worn in.
+## Willow, 2026-09-15: THREE charm slots and TWO ring slots — three slots, not
+## one slot holding three. They are three separate squares on the panel, they
+## empty one at a time, and the difference shows the moment a rule wants to care
+## which charm is in which one.
+##
+## This number belongs to the BODY rather than to the item: a copper ring does not
+## know which finger it goes on, and a character with three ring slots is a
+## different character rather than a different ring.
 ##
 ## The order of `SLOTS` is the PANEL's order, not this table's — this one is a
 ## lookup, and a Dictionary's order is an implementation detail.

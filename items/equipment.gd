@@ -17,16 +17,23 @@ extends RefCounted
 ## OWN id, so taking one off is a subtraction that cannot touch the other.
 ##
 ## ---------------------------------------------------------------------------
-## A SLOT IS A KIND WITH A CAPACITY, NOT A PLACE.
+## THE CHARACTER HAS THREE CHARM SLOTS AND TWO RING SLOTS.
 ##
-## Willow, 2026-09-15: three charms and two rings. With one place per kind a
-## second ring could only ever displace the first, and `ring_1` / `ring_2` as
-## separate ids would make the ring a definition names a different thing from the
-## ring it is worn in — `slot_of("copper_ring")` would have to answer "which
-## one", and it cannot know.
+## Willow, 2026-09-15 — and the wording matters, because the wrong wording is a
+## different system. It is NOT one slot that holds three charms; it is THREE
+## SLOTS. They are drawn as three squares, they empty one at a time, and a rule
+## that later wants to say "this charm works in the first one" has somewhere to
+## point.
 ##
-## So the kind is what an item knows about itself, the capacity is what the
-## character knows, and this file is the only place the two meet.
+## WHAT AN ITEM NAMES IS THE KIND, NOT THE SLOT. A copper ring knows it is a ring;
+## it does not know which finger, and `slot_of("copper_ring")` cannot answer a
+## question the item has no information about. So the definition says `ring`, the
+## character owns two ring slots, and this file is the only place the two meet —
+## `equip` takes the first one that is empty.
+##
+## That is why the count lives on the CHARACTER (below) rather than in the
+## definition: "how many ring slots do you have" is a fact about a body, and a
+## third ring slot is a different body rather than a different ring.
 ##
 ## ---------------------------------------------------------------------------
 ## THE SLOT TABLES ARE NOT WRITTEN HERE. `CozyItemDefs.SLOTS` and
@@ -35,11 +42,12 @@ extends RefCounted
 ## fifteenth slot is added, and it would drift silently, because both copies
 ## would still be internally consistent.
 
-## kind -> Array of `capacity` entries, each a `CozyItemInstance` or null.
+## kind -> one entry per SLOT of that kind, each a `CozyItemInstance` or null.
 ##
-## The array is built ONCE in `_init` and never resized, so a place is a thing
-## with a position rather than a thing that appears. An empty place is a null,
-## which is what a panel draws as an empty square.
+## The array is built ONCE in `_init` and never resized, so a slot is a thing
+## with a position rather than a thing that appears. An empty slot is a null,
+## which is what a panel draws as an empty square — three for charms, two for
+## rings, and the player can see which of them is empty.
 var _worn := {}
 
 
@@ -139,9 +147,10 @@ func is_wearing(instance_id: String) -> bool:
 	return not place_of(instance_id).is_empty()
 
 
-## How many places this kind has, and how many of them are filled. The panel
-## draws `capacity` squares and fills `filled` of them, so both numbers come from
-## here rather than from a count of what happens to be worn.
+## How many SLOTS of this kind the character has, and how many are filled. The
+## panel draws `capacity` squares and fills `filled` of them, so both numbers come
+## from here rather than from a count of what happens to be worn — a count of
+## worn rings is 1 whether the body has two ring slots or ten.
 func capacity(slot_kind: String) -> int:
 	return (_worn[slot_kind] as Array).size() if _worn.has(slot_kind) else 0
 
