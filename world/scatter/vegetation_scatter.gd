@@ -355,7 +355,14 @@ func _build_multimesh(asset_id: String, items: Array) -> void:
 ##
 ## With the size fixed, the density report NAMES the art that no longer matches —
 ## a 24 px tuft over 0.40 m at 32 px/m is a 0.53x magnification, i.e. the tuft
-## wants redrawing at 13 px. That number is the work list.
+## wants redrawing at 13 px.
+##
+## ⚠️ THAT NUMBER IS NOT A TO-DO. Willow, 2026-09-15: the grass sprite is being
+## redrawn and she will supply it — so the current 24 px `grassleaf.png` STAYS as
+## it is and goes on being drawn at 0.53x, slightly soft, until the new one lands.
+## Do not "fix" the density line by resizing the sprite or by moving the size here:
+## the size is the ground's coverage (114%, asserted in `_check_scatter`) and the
+## sprite is a placeholder that is already on order.
 ##
 ## This is the same shape as `PLACEHOLDER_SIZE` and it is NOT the same thing: a
 ## placeholder's number is a stopgap for art that does not exist, this one is the
