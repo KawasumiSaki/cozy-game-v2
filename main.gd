@@ -267,6 +267,22 @@ var pack_panel: CozyPackPanel = null
 ## lookup would be a second way to ask the same question.
 var monsters: Array[CozyMonster] = []
 
+## What is lying on the ground, in the order it fell.
+##
+## NOT part of `objects`, and that is the decision rather than the shape: an entry
+## in `objects` is a placed thing that blocks movement and advertises interaction
+## points, and a drop does neither. Keeping them separate is also what stops a
+## dropped sword from becoming a navigation obstacle a resident has to walk round.
+##
+## OWNED HERE, like `monsters`, because `main.gd` is where the world's loose lists
+## live — and registered with `CozyEntityRegistry` with an encoder, so a drop
+## survives a save the same way a wall does.
+var drops: Array[CozyDroppedItem] = []
+
+## Where the next drop's id comes from. A counter, not a random suffix, because a
+## file has to be able to name one.
+var _next_drop_id := 1
+
 ## Whether the attack button is down THIS frame. Set by the input handler and
 ## cleared after the tick, so a click that lands between two frames is still a
 ## click rather than a lost one.
@@ -585,6 +601,12 @@ func _build_self_check() -> void:
 	self_check.add("outdoor_route", 180, _check_outdoor_route_is_walkable)
 	self_check.add("landing", 190, _check_landing_is_walkable)
 	self_check.add("entity_registry", 160, _check_entity_registry)
+	# The ground, and the radius that makes it a place rather than a formality.
+	# A STAGE rather than a `_report()` check because it MUTATES the world — a
+	# drop, a full bag, and the player — and a stage is the shape that says so. It
+	# restores everything it touches. Late enough that the autopilot has parked the
+	# player, early enough to be nowhere near the resident's own work at 900.
+	self_check.add("dropped_items", 500, _check_dropped_items)
 	self_check.add("outline", 1500, _check_outline_build)
 	# Gated on BUILDING, not on the house. This test adds a dividing wall at
 	# runtime with a door cut into it, which is the ONE thing measured to produce
@@ -1144,6 +1166,12 @@ func _build_entity_registry() -> void:
 	entities.register_kind(CozyEntityRegistry.OBJECT,
 		func() -> Array: return objects,
 		func(o) -> Dictionary: return o.to_dict())
+	# Saved like any other authored thing: a sword on the ground is a fact about
+	# the world, and a load that quietly swept the floor would take away the one
+	# case the drop system exists for — the bag was full, so it stayed there.
+	entities.register_kind(CozyEntityRegistry.DROP,
+		func() -> Array: return drops,
+		func(d) -> Dictionary: return d.to_dict())
 	entities.register_kind(CozyEntityRegistry.NPC,
 		_resident_states,
 		func(n) -> Dictionary: return n.to_dict())
@@ -2052,17 +2080,15 @@ func _flat_distance(a: Vector3, b: Vector3) -> float:
 var _next_item_id := 1
 
 
-## Roll the table and hand the drops to whoever killed it.
+## Roll the table and drop what it yields where the monster fell.
 ##
-## THE DROP GOES TO THE PLAYER'S OWN ACCOUNT, which is the two-ledger decision
-## arriving at its point: a monster the player killed pays the player. Routing
-## this into `building.inventory` would make the sword the village's.
+## THE DROP LANDS IN THE WORLD AND BELONGS TO WHOEVER WALKS OVER IT, which is the
+## two-ledger decision arriving at its point: a monster the player killed pays the
+## player. Routing this into `building.inventory` would make the sword the
+## village's — and now it would also have to be a drop on the ground, because the
+## village has no business owning something nobody has picked up.
 ##
-## Three kinds, three destinations, and they are the three the roller produces:
-## equipment becomes an INSTANCE and goes in the bag, materials go in the pack,
-## and gold becomes the currency — `KIND_GOLD` has said "currency, which is not
-## an item and has no row" since the table was written, and copper is now the only
-## thing that sentence can mean.
+## The three destinations are the roller's three kinds; see `_lay_drops`.
 func _kill_monster(m: CozyMonster) -> void:
 	_say("%s falls" % CozyMonsterDefs.display_name(m.def_id))
 	var table := CozyMonsterDefs.loot_table(m.def_id)
@@ -2071,53 +2097,190 @@ func _kill_monster(m: CozyMonster) -> void:
 		rng.randomize()
 		var rolled := CozyLootRoller.roll(table, rng, _next_item_id)
 		_next_item_id = int(rolled["next_id"])
-		_hand_out(rolled["drops"])
+		# AT THE MONSTER'S OWN POSITION rather than at `_drop_spot`: a monster is
+		# not a world object with a footprint, and it is freed on the next line, so
+		# there is nothing for the drop to end up inside of.
+		_lay_drops(rolled["drops"], m.global_position)
 	if is_instance_valid(m):
 		m.queue_free()
 
 
-## Put a rolled drop list into the player's things, and say what was picked up.
+## Put a rolled drop list ON THE GROUND, around `at`, and say what fell.
+##
+## THE THREE BRANCHES ARE THE ROLLER'S THREE KINDS, unchanged — what changed on
+## 2026-09-15 is the destination. Until then each of them wrote straight into the
+## player's ledgers, which made "loot" and "a number going up" the same event and
+## left nowhere for the case this system exists for: the bag is full, so the sword
+## stays where it fell until you make room.
 ##
 ## Split from the kill so the self-check can hand it a roll it made itself: the
 ## distribution is the roller's business and the destination is this one's, and a
 ## check that had to kill something to test the destination would be testing both
 ## at once.
-func _hand_out(drops: Array) -> void:
-	var got: Array[String] = []
-	for drop in drops:
-		var d: Dictionary = drop
+##
+## GOLD BECOMES A MATERIAL DROP, which is not a shortcut: `KIND_GOLD` has said
+## "currency, which is not an item and has no row" since the table was written,
+## and copper is a row in `CozyMaterials` like wood is. A pile of coins is picked
+## up by the same pass that picks up a pile of wood.
+func _lay_drops(dropped: Array, at: Vector3) -> void:
+	var fell: Array[String] = []
+	for i in dropped.size():
+		var spot := at + _drop_spread(i, dropped.size())
+		var d: Dictionary = dropped[i]
 		match String(d["kind"]):
 			CozyLootRoller.DROP_EQUIPMENT:
-				var item: CozyItemInstance = d["item"]
-				if player_state.bag.add_item(item) < 0:
-					_say("the bag is full, %s is left behind" % item.display_name(), true)
-					continue
-				got.append(item.display_name())
+				var made := _lay_item(d["item"], spot)
+				if made != null:
+					fell.append(made.display_name())
 			CozyLootRoller.DROP_ITEM:
-				player_state.pack.add(String(d["id"]), float(d["amount"]))
-				got.append("%s x%d" % [String(d["id"]), int(d["amount"])])
+				fell.append(_lay_material(String(d["id"]), float(d["amount"]),
+					spot).display_name())
 			CozyLootRoller.DROP_GOLD:
-				player_state.pack.add(CozyPrices.CURRENCY, float(d["amount"]))
-				got.append("%d %s" % [int(d["amount"]),
-					CozyMaterials.display_name(CozyPrices.CURRENCY)])
-	if not got.is_empty():
-		_say("picked up %s" % ", ".join(got))
+				fell.append(_lay_material(CozyPrices.CURRENCY, float(d["amount"]),
+					spot).display_name())
+	if not fell.is_empty():
+		_say("dropped %s" % ", ".join(fell))
+
+
+## How far apart the things that fell together are spread.
+##
+## A kill drops up to three things, and on one point two of them sit inside the
+## third: the player walks over, picks up "one thing", and three vanish. A small
+## ring in table order, so the same roll always scatters the same way — a
+## per-frame random offset would be a world that cannot be compared with itself.
+const DROP_SPREAD := 0.36
+
+
+func _drop_spread(index: int, count: int) -> Vector3:
+	if count <= 1:
+		return Vector3.ZERO
+	var a := TAU * float(index) / float(count)
+	return Vector3(cos(a), 0.0, sin(a)) * DROP_SPREAD
+
+
+## Where what falls out of an object lands.
+##
+## AT ITS FOOT, ON THE PLAYER'S SIDE, and both halves are load-bearing. At the
+## object's own centre the wood would be inside the trunk — a tree is a box 0.8 m
+## across and the marker is smaller than that — so a felled tree would appear to
+## drop nothing at all. And on the player's side rather than anywhere around it,
+## because the way to a drop is to walk over it, and that is the direction you are
+## already coming from.
+##
+## The offset is the object's own half-diagonal, the number `_within_reach` and
+## the navigation obstacle already both use, so this cannot drift from what "the
+## edge of the thing" means everywhere else. It is also why a drop is out of
+## pickup range for a player standing at the limit of their reach: you are `reach`
+## from the edge, and every reach in the table (0.8 m at the shortest) is longer
+## than the radius (0.6 m).
+func _drop_spot(o: CozyWorldObject) -> Vector3:
+	var here := o.global_position
+	if player == null:
+		return here
+	var away := Vector2(here.x - player.global_position.x,
+		here.z - player.global_position.z)
+	if away.length_squared() < 0.0001:
+		return here
+	var size: Vector2 = CozyObjectDefs.get_def(o.def_id).get("size", Vector2.ZERO)
+	away = away.normalized()
+	var edge := size.length() * 0.5
+	return Vector3(here.x - away.x * edge, here.y, here.z - away.y * edge)
+
+
+## A new drop node: in the tree, with an id, and nothing in it yet.
+##
+## The id and the list entry happen together so a drop cannot exist in one and not
+## the other — an id the registry can see but the pickup pass cannot would be a
+## sword the player can never reach, and the save would carry it forever.
+func _mint_drop() -> CozyDroppedItem:
+	var drop := CozyDroppedItem.new()
+	drop.id = "drop_%03d" % _next_drop_id
+	_next_drop_id += 1
+	add_child(drop)
+	drops.append(drop)
+	return drop
+
+
+## Lay one thing on the ground. The two halves of the payload, and the reason
+## there are two is in `CozyDroppedItem`'s header.
+func _lay_material(material_id: String, amount: float, at: Vector3) -> CozyDroppedItem:
+	var drop := _mint_drop()
+	drop.setup_material(material_id, amount)
+	drop.place(at)
+	return drop
+
+
+func _lay_item(item: CozyItemInstance, at: Vector3) -> CozyDroppedItem:
+	if item == null:
+		return null
+	var drop := _mint_drop()
+	drop.setup_item(item)
+	drop.place(at)
+	return drop
+
+
+## Whatever the player is standing on, picked up.
+##
+## ONE PASS, and the two ways to get it wrong are both invisible. A drop that is
+## taken but not removed is taken again next frame — the same sword, forever. A
+## drop that does not fit and is removed anyway is a thing the player watched fall
+## and can never find again. So: take it only if it fits, and remove it only after
+## the ledger says it arrived.
+##
+## BACKWARDS, because the list is being shortened while it is walked. A forward
+## loop skips the drop after every taken one, which is a sword lying on the ground
+## that the player is standing on top of and cannot pick up.
+func _tick_pickups() -> void:
+	if player == null or player_state == null or drops.is_empty():
+		return
+	for i in range(drops.size() - 1, -1, -1):
+		var drop: CozyDroppedItem = drops[i]
+		if drop == null or not is_instance_valid(drop):
+			drops.remove_at(i)
+			continue
+		if not drop.in_range(player.global_position):
+			continue
+		if not drop.fits_in(player_state):
+			# SAID ONCE PER DROP, not once per frame: a full bag and a sword at
+			# your feet is a state that lasts as long as you stand there, and a
+			# line every frame is the same as no line at all.
+			#
+			# THIS BRANCH IS ONLY THE MESSAGE, and it must not be deleted as
+			# redundant with `collect_into`'s own check — that check refuses the drop
+			# either way, so removing this one changes nothing a behaviour assertion
+			# can see. It was measured: the mutation came back green. What it alone
+			# produces is the sentence, and `dropped items` asserts the sentence.
+			if not drop.refused:
+				drop.refused = true
+				_say("%s stays on the ground - the bag is full" % drop.display_name(),
+					true)
+			continue
+		if not drop.collect_into(player_state):
+			continue
+		drops.remove_at(i)
+		drop.queue_free()
+		_say("picked up %s" % drop.display_name())
 
 
 # ------------------------------------------------- the player's work and trade
 
 ## The player works a resource node by hand.
 ##
-## IT PAYS INTO `player_state.pack`, NOT INTO THE VILLAGE. That is the whole of
-## the two-ledger decision (Willow 2026-09-15): the residents farm, cook and
-## store on their own schedule without anyone watching, so the only goods the
-## player can call their own are the ones they went and got. Routing this into
-## `building.inventory` instead would be a one-word change that quietly turns the
-## player into a spectator of their own economy — which is why the self-check
-## chops one tree and asserts which side the wood landed on.
+## WHAT IT YIELDS LANDS ON THE GROUND AND IS THE PLAYER'S ONCE THEY WALK OVER IT.
+## That is the whole of the two-ledger decision (Willow 2026-09-15) — the
+## residents farm, cook and store on their own schedule without anyone watching,
+## so the only goods the player can call their own are the ones they went and got.
+## Routing this into `building.inventory` instead would be a one-word change that
+## quietly turns the player into a spectator of their own economy, which is why
+## the self-check chops one tree and asserts which side the wood landed on.
 ##
-## The OUTPUT comes from `CozyRecipeDefs.for_point`, the same table the residents
-## work from, so a tree that yields 3 wood yields 3 wood whoever fells it.
+## It went straight into the pack until 2026-09-15, and the reason it does not now
+## is Willow's: "砍树，然后会掉下来木头*4 ... 我们靠近自动拾取". The recipe still
+## decides WHAT falls — the same table the residents work from, so a tree that
+## yields 3 wood yields 3 wood whoever fells it — and `_lay_drops` decides where
+## it lands. Converting the recipe's outputs into the roller's own drop
+## dictionaries is what makes a tree and a monster arrive by one road rather than
+## two that are supposed to agree.
 func _gather_from(o: CozyWorldObject, verb: String) -> void:
 	if o == null or not is_instance_valid(o) or player_state == null:
 		return
@@ -2133,17 +2296,16 @@ func _gather_from(o: CozyWorldObject, verb: String) -> void:
 		return
 	o.take_one(now)
 	var outs: Dictionary = recipe.get("outputs", {})
-	var got: Array[String] = []
+	var rolled: Array = []
 	for id in outs:
-		var n := float(outs[id])
-		player_state.pack.add(String(id), n)
-		got.append("%s x%d" % [String(id), int(n)])
+		rolled.append({"kind": CozyLootRoller.DROP_ITEM,
+			"id": String(id), "amount": float(outs[id])})
+	_lay_drops(rolled, _drop_spot(o))
 	# The node goes back through the same refresh the residents' loop uses, so a
 	# felled tree becomes a stump for the PLAYER by exactly the path it does for
 	# an agent — one rule, two callers.
 	if o.refresh_availability(now):
 		_rebuild_spatial()
-	_say("%s: %s" % [CozyObjectDefs.display_name(o.def_id), ", ".join(got)])
 
 
 ## One row per thing on the shelf: a `Buy` line and a `Sell` line for each.
@@ -2676,6 +2838,12 @@ func _process(delta: float) -> void:
 	_refresh_npc_panel()
 	_refresh_pack_panel()
 	_tick_combat()
+	# LAST, so the loot from a kill this frame is on the ground before anything
+	# asks whether the player is standing on it. The order does not change the
+	# outcome — a drop in range is taken in the frame it appeared, which is what a
+	# player standing on top of a kill expects — but it is the order that makes the
+	# drop pass the only thing that can take a drop, rather than one of two.
+	_tick_pickups()
 	_update_hud()
 
 
@@ -2828,6 +2996,14 @@ func _report_runtime_building() -> void:
 ## So the check CHOPS A REAL TREE with the real player and asserts which side the
 ## wood landed on, and then asserts the OTHER side did not move.
 ##
+## AND SINCE 2026-09-15 THERE IS A THIRD PLACE IT COULD HAVE GONE. The wood now
+## lands ON THE GROUND, so "into the pack" is no longer the only correct answer —
+## it is a wrong answer that looks right until somebody walks over. The check
+## therefore measures all three: the drop fell, the pack did NOT move, and the
+## pickup pass is the only thing that moves it. A check that still chopped and
+## looked at the pack would have gone green against a `_gather_from` that wrote
+## the pack directly and dropped a decorative copy.
+##
 ## It also gives the reach rule teeth, by standing out of range FIRST. A check
 ## that only ever stands in the right place has said nothing about the places the
 ## game refuses — the same reason `_check_resource_chain` measures reachability
@@ -2852,6 +3028,8 @@ func _check_player_ledger() -> void:
 	# Everything below MUTATES the world, so everything is put back at the end.
 	var village_before: Dictionary = building.inventory.items.duplicate()
 	var pack_before: Dictionary = player_state.pack.items.duplicate()
+	var drops_before: int = drops.size()
+	var next_drop_id_before := _next_drop_id
 	var tree_taken := tree.taken
 	var tree_worked := tree.worked_at
 	var here := player.global_position
@@ -2860,6 +3038,9 @@ func _check_player_ledger() -> void:
 	# what to read. Reaching for `row["id"]` is an error rather than a null.
 	var want: Dictionary = CozyRecipeDefs.for_point(
 		CozyObjectDefs.INTERACT_CHOP).get("outputs", {})
+	var expected := 0.0
+	for id in want:
+		expected += float(want[id])
 
 	# (2) Out of range first: the reach is measured from the PLAYER, not from the
 	#     mouse, so pointing at a distant tree must not fell it.
@@ -2867,17 +3048,48 @@ func _check_player_ledger() -> void:
 	_gather_from(tree, CozyObjectDefs.INTERACT_CHOP)
 	var refused_far := tree.taken == tree_taken
 
-	# (3) In range.
-	player.global_position = tree.global_position
+	# (3) In range, and standing at the LIMIT of it — which is the one position
+	#     that measures the whole "on the ground" rule instead of arguing about it.
+	#
+	#     Stand `reach` away from the object's EDGE and the drop lands on that same
+	#     edge, so the gap between the player and their own loot is exactly the
+	#     reach: 1.3 m for a tree, against a pickup radius of 0.6. That is why
+	#     felling a tree leaves something to walk to, and it is the relation a
+	#     radius chosen by feel gets wrong in one direction or the other.
+	var edge: float = (CozyObjectDefs.get_def("tree").get("size", Vector2.ZERO)
+		as Vector2).length() * 0.5
+	player.global_position = tree.global_position + Vector3(0.0, 0.0,
+		CozyObjectDefs.reach_of("tree") + edge - 0.05)
+	var pack_at_chop: String = JSON.stringify(player_state.pack.items)
 	_gather_from(tree, CozyObjectDefs.INTERACT_CHOP)
 	var took := tree.taken == tree_taken + 1
 
+	var fell := 0.0
+	var too_close := false
+	for i in range(drops_before, drops.size()):
+		var drop: CozyDroppedItem = drops[i]
+		if want.has(drop.material_id):
+			fell += drop.amount
+		if drop.in_range(player.global_position):
+			too_close = true
+	# The half that used to be the whole check: the pack did NOT move.
+	var stayed_up := JSON.stringify(player_state.pack.items) == pack_at_chop
+
+	# (4) And walking over is what moves it: the pickup pass, called once, the same
+	#     one `_process` calls every frame.
+	#
+	#     GUARDED, and not out of caution: the thing most likely to be wrong here is
+	#     the ground step above, and a check that CRASHES when the code under it is
+	#     broken reports NOTHING — it takes its own measurements down with it.
+	#     Measured: with the chop put back to writing the pack, this line raised
+	#     `SCRIPT ERROR: Out of bounds` instead of a `[FAIL` (INVARIANTS, bug 24).
+	if drops.size() > drops_before:
+		player.global_position = drops[drops_before].at
+		_tick_pickups()
 	var got := 0.0
 	for id in want:
 		got += player_state.pack.count(String(id))
-	var expected := 0.0
-	for id in want:
-		expected += float(want[id])
+	var cleared := drops.size() == drops_before
 
 	var village_still := true
 	for id in village_before:
@@ -2891,24 +3103,135 @@ func _check_player_ledger() -> void:
 		village_total_before += float(village_before[id])
 	var village_total_after := building.inventory.total()
 
-	print("[cozyv2] player chopped a tree: refused out of range=%s, took=%s, pack +%.0f (wanted %.0f), village %s (%.0f -> %.0f)  [%s]" % [
-		str(refused_far), str(took), got, expected,
+	print("[cozyv2] player chopped a tree: refused out of range=%s, took=%s; fell on the ground %.0f of %.0f, out of pickup range=%s, pack unmoved=%s; walked over -> picked up %.0f, ground cleared=%s; village %s (%.0f -> %.0f)  [%s]" % [
+		str(refused_far), str(took), fell, expected, str(not too_close),
+		str(stayed_up), got, str(cleared),
 		"untouched" if village_still and is_equal_approx(
 			village_total_after, village_total_before) else "MOVED",
 		village_total_before, village_total_after,
-		"OK" if refused_far and took and is_equal_approx(got, expected)
-			and village_still and player_state.pack.count(
-				String(want.keys()[0])) > 0.0
+		"OK" if refused_far and took and is_equal_approx(fell, expected) \
+			and not too_close and stayed_up and is_equal_approx(got, expected) \
+			and cleared and village_still and is_equal_approx(
+				village_total_after, village_total_before)
 			else "FAIL, the player's work did not land on exactly one side of the split"])
 
-	# (4) Put the world back. The tree, the pack, the player, and the navigation
-	#     the gather refreshed.
+	# (5) Put the world back. The tree, the ground, the pack, the player, and the
+	#     navigation the gather refreshed.
+	for i in range(drops.size() - 1, drops_before - 1, -1):
+		if is_instance_valid(drops[i]):
+			drops[i].queue_free()
+	drops.resize(drops_before)
+	_next_drop_id = next_drop_id_before
 	tree.taken = tree_taken
 	tree.worked_at = tree_worked
 	tree.refresh_availability(_game_hours())
 	player_state.pack.items = pack_before
 	player.global_position = here
 	_rebuild_spatial()
+
+
+## Things on the ground: how close is close enough, and what happens when there is
+## nowhere to put one.
+##
+## THE RADIUS IS THE WHOLE MECHANIC, and nothing else in the game can tell a right
+## one from a wrong one — both end with the wood in the pack. Too long and every
+## drop is taken on the frame it appears, which makes "掉在地上、走近自动拾取"
+## indistinguishable from the "直接进包" it replaced. Too short and loot is a
+## pixel hunt. So it is measured from both sides: six metres must refuse, half a
+## metre must take.
+##
+## THE FULL BAG IS THE OTHER HALF, and it is the only one the player experiences
+## as a LOSS rather than as a convenience: a sword falls, there is no room, and it
+## is gone. `CozyItemContainer` refusing the item is already a unit case; what is
+## measured here is that the refusal REACHES THE GROUND instead of being swallowed
+## on the way — and that the thing is still there when room is made.
+##
+## It MUTATES the world and puts it back: a drop, a full bag, and the player.
+func _check_dropped_items() -> void:
+	if player == null or player_state == null or entities == null:
+		print("[cozyv2] dropped items: no player or no registry to check  [FAIL]")
+		return
+
+	var here := player.global_position
+	var pack_before: Dictionary = player_state.pack.items.duplicate()
+	var bag_before := player_state.bag.to_dict()
+	var wood_before := player_state.pack.count("wood")
+	var drops_before: int = drops.size()
+	var objects_before: int = objects.size()
+	var next_drop_id_before := _next_drop_id
+
+	# (1) Six metres away is not a subtle distance — the radius is 0.6, and a check
+	#     that stood at 0.7 would be measuring its own arithmetic rather than the
+	#     rule. The drop must simply stay where it was put.
+	var far := Vector3(here.x + 6.0, 0.0, here.z)
+	var laid := _lay_material("wood", 4.0, far)
+	_tick_pickups()
+	var stayed_down := is_instance_valid(laid) and drops.size() == drops_before + 1
+	var unmoved := is_equal_approx(player_state.pack.count("wood"), wood_before)
+	var far_refuses := not laid.in_range(here)
+	var near_takes := laid.in_range(far + Vector3(0.4, 0.0, 0.0))
+	# And the registry can name it, which is what `_apply_world` needs to put it
+	# back after a load — the same `id` contract every other kind keeps.
+	var indexed := entities.state_of(laid.id) == laid
+
+	# (2) Walk over. The pickup pass is the only thing that moves anything.
+	player.global_position = far
+	_tick_pickups()
+	var took := is_equal_approx(player_state.pack.count("wood"), wood_before + 4.0) \
+		and drops.size() == drops_before
+
+	# (3) Nowhere to put it. The bag is filled with a sword that is NOT the one on
+	#     the ground, so "it went in" and "it did not" are two different swords
+	#     rather than the same one counted twice.
+	while not player_state.bag.is_full():
+		player_state.bag.add_item(CozyItemInstance.make(
+			"probe_%d" % player_state.bag.count(), "iron_sword"))
+	var left := _lay_item(CozyItemInstance.make("probe_prize", "steel_sword"),
+		player.global_position)
+	_tick_pickups()
+	var left_on_the_ground := is_instance_valid(left)
+	var refused := left_on_the_ground and drops.size() == drops_before + 1 \
+		and not player_state.bag.has_item("probe_prize")
+	# AND IT SAID SO, which is the whole of what the `fits_in` branch in
+	# `_tick_pickups` adds. `collect_into` refuses on its own, so taking that branch
+	# out changes nothing any behaviour assertion can see — measured, and the
+	# mutation came back GREEN. What the branch alone produces is a SENTENCE, so the
+	# sentence is what is asserted: without it the player watches a sword stay on
+	# the ground and is told nothing about why.
+	var told_why := _hud_message.contains(left.display_name())
+
+	# (4) Make room, and it is still there to be had. This is the sentence the whole
+	#     system exists for.
+	player_state.bag.remove_at(0)
+	_tick_pickups()
+	var recovered := drops.size() == drops_before \
+		and player_state.bag.has_item("probe_prize")
+
+	# (5) AND IT IS NOT FURNITURE. Both navigation layers read `objects`, and an
+	#     entry there blocks movement and advertises interaction points — a dropped
+	#     sword would become a wall a hauler walks around. The two lists cannot even
+	#     hold each other (`objects` is `Array[CozyWorldObject]` and asking it
+	#     `has()` a drop is a typed-array error, not a false), so what is worth
+	#     measuring is that laying one put nothing in it.
+	var not_furniture := objects.size() == objects_before
+
+	print("[cozyv2] dropped items: 6 m away -> stayed down=%s, wood unmoved=%s, out of range=%s, in range up close=%s, indexed by id=%s; walked over -> wood +4=%s, ground cleared=%s; full bag -> not taken=%s, still on the ground=%s, said why=%s; made room -> recovered=%s; not furniture=%s  [%s]" % [
+		str(stayed_down), str(unmoved), str(far_refuses), str(near_takes),
+		str(indexed), str(took), str(drops.size() == drops_before), str(refused),
+		str(left_on_the_ground), str(told_why), str(recovered), str(not_furniture),
+		"OK" if stayed_down and unmoved and far_refuses and near_takes and indexed \
+			and took and refused and told_why and recovered and not_furniture
+			else "FAIL, the ground did not behave like a place things wait to be taken from"])
+
+	# Put it back: the ground, the bag, the pack's own count, the player.
+	for i in range(drops.size() - 1, drops_before - 1, -1):
+		if is_instance_valid(drops[i]):
+			drops[i].queue_free()
+	drops.resize(drops_before)
+	_next_drop_id = next_drop_id_before
+	player_state.bag = CozyItemContainer.from_dict(bag_before)
+	player_state.pack.items = pack_before
+	player.global_position = here
 
 
 ## Buying and selling move the player's purse and the shelf — and nothing else.
@@ -3076,14 +3399,18 @@ func _check_pack_panel() -> void:
 ##      `has_hit` guard a swing would land six times and the damage numbers would
 ##      be six times the frame data. Measured by counting hits, not by trusting
 ##      the guard.
-##   2. THE DROP IS THE PLAYER'S. The village has an account too and the two look
-##      identical on screen. The brigand's steel sword must end up in
-##      `player_state.bag` and NOT in `building.inventory`.
+##   2. THE DROP IS THE PLAYER'S, AND IT IS ON THE GROUND FIRST. The village has an
+##      account too and the two look identical on screen. The brigand's steel
+##      sword must fall at its feet and NOT appear in `building.inventory` — and
+##      since 2026-09-15 it must ALSO not appear in the bag until something walks
+##      over and takes it. That second half is the one a check can lose without
+##      noticing: a kill that wrote the bag directly and dropped a decorative copy
+##      would satisfy every sentence written about this before today.
 ##   3. RANGE MEANS SOMETHING. A swing from across the field must miss — the
 ##      reach is the one number that stops the game being a click anywhere.
 ##
-## It MUTATES the world (a monster dies) and puts it back: monsters are re-placed
-## and the player's things are restored.
+## It MUTATES the world (a monster dies) and puts it back: monsters are re-placed,
+## the ground is cleared of what this dropped, and the player's things restored.
 func _check_fight() -> void:
 	if player_state == null or player == null or monsters.is_empty():
 		print("[cozyv2] fight: no monsters to fight  [FAIL]")
@@ -3101,6 +3428,8 @@ func _check_fight() -> void:
 	var pack_before: Dictionary = player_state.pack.items.duplicate()
 	var bag_before := player_state.bag.to_dict()
 	var village_before := building.inventory.total()
+	var drops_before: int = drops.size()
+	var next_drop_id_before := _next_drop_id
 
 	# (1) Out of range: 25 m away, a full swing must do nothing at all.
 	player.global_position = brigand.global_position + Vector3(0.0, 0.0, 25.0)
@@ -3141,7 +3470,9 @@ func _check_fight() -> void:
 	var one_hit := hits == 1
 	var hurt := brigand.hp < hp_before
 
-	# (3) Kill it, and see where the sword went.
+	# (3) Kill it, and see where the sword went — which is the GROUND, not the bag.
+	var drops_here := drops.size()
+	var purse_before_kill := JSON.stringify(player_state.pack.items)
 	var guard := 0
 	while not brigand.is_dead() and guard < 900:
 		_attack_held = true
@@ -3149,22 +3480,67 @@ func _check_fight() -> void:
 		guard += 1
 	var dead := brigand.is_dead()
 
+	var on_ground := ""
+	var gear := 0
+	var spots := {}
+	for i in range(drops_here, drops.size()):
+		var drop: CozyDroppedItem = drops[i]
+		spots["%.2f,%.2f" % [drop.at.x, drop.at.z]] = true
+		if drop.kind == CozyDroppedItem.KIND_ITEM:
+			gear += 1
+			if drop.item.definition_id == "steel_sword":
+				on_ground = drop.item.display_name()
+	# NOT ALL IN ONE HEAP. Three things on one point are two things the player never
+	# sees, and the ring they land on is the only thing stopping it — a ring that
+	# quietly went back to zero would look exactly like a working drop system.
+	var spread_out := spots.size() == drops.size() - drops_here
+	# TAKEN WITHOUT WALKING OVER, which is the failure this half is for.
+	var bagged_itself := false
+	for it in player_state.bag.get_items():
+		if it.definition_id == "steel_sword":
+			bagged_itself = true
+	var purse_unmoved := JSON.stringify(player_state.pack.items) == purse_before_kill
+
+	# (4) Now walk over — TO EACH ONE, because a kill scatters its loot over a ring
+	#     wider than one pickup radius, and that is deliberate: three things on one
+	#     point are two things the player never sees. A check that stood on the
+	#     first drop and expected all of them would be asserting that the scatter
+	#     does nothing, which is the opposite of why it is there.
+	#
+	#     The pass is ONE call — the same one `_process` makes every frame — so what
+	#     this measures is that something has to make it. The spot comes from the
+	#     DROP rather than from the monster: the brigand is already freed, and
+	#     reading a position off a node on its way out is how a check becomes a
+	#     crash on the day the engine defers something a little differently.
+	var steps := 0
+	while drops.size() > drops_before and steps < 32:
+		player.global_position = drops[drops_before].at
+		_tick_pickups()
+		steps += 1
 	var sword := ""
 	for it in player_state.bag.get_items():
 		if it.definition_id == "steel_sword":
 			sword = it.display_name()
 	var copper := player_state.pack.count(CozyPrices.CURRENCY)
+	var floor_cleared := drops.size() == drops_before
 	var village_still := is_equal_approx(building.inventory.total(), village_before)
 
-	print("[cozyv2] fight: a swing from 25 m missed=%s; up close one swing landed %d hit(s)=%s, hurt=%s; killed=%s, bag=%d item(s) incl. '%s', copper %d, village %s  [%s]" % [
-		str(missed), hits, str(one_hit), str(hurt), str(dead),
-		player_state.bag.count(), sword, int(copper),
+	print("[cozyv2] fight: a swing from 25 m missed=%s; up close one swing landed %d hit(s)=%s, hurt=%s; killed=%s, fell %d thing(s) on the ground spread over %d spot(s), incl. '%s', bag stayed empty=%s, purse unmoved=%s; walked over -> bag %d item(s) incl. '%s', copper %d, ground cleared=%s, village %s  [%s]" % [
+		str(missed), hits, str(one_hit), str(hurt), str(dead), gear, spots.size(),
+		on_ground, str(not bagged_itself), str(purse_unmoved),
+		player_state.bag.count(), sword, int(copper), str(floor_cleared),
 		"untouched" if village_still else "MOVED",
-		"OK" if missed and one_hit and hurt and dead and sword != "" \
-			and copper > 0.0 and village_still
-			else "FAIL, the fight did not put the drop in the player's own hands"])
+		"OK" if missed and one_hit and hurt and dead and gear > 0 and on_ground != "" \
+			and spread_out and not bagged_itself and purse_unmoved \
+			and sword != "" and copper > 0.0 and floor_cleared and village_still
+			else "FAIL, the kill did not put its loot on the ground for the player to take"])
 
-	# Put the world back: the player's things, the player, and the monsters.
+	# Put the world back: the player's things, the player, the ground, the monsters.
+	for i in range(drops.size() - 1, drops_before - 1, -1):
+		if is_instance_valid(drops[i]):
+			drops[i].queue_free()
+	drops.resize(drops_before)
+	_next_drop_id = next_drop_id_before
 	player_state.pack.items = pack_before
 	player_state.bag = CozyItemContainer.from_dict(bag_before)
 	player.global_position = here
@@ -5102,6 +5478,7 @@ func _check_entity_registry() -> void:
 		CozyEntityRegistry.STAIR: building.state.stairs.size(),
 		CozyEntityRegistry.ROOF: building.state.roofs.size(),
 		CozyEntityRegistry.OBJECT: objects.size(),
+		CozyEntityRegistry.DROP: drops.size(),
 		CozyEntityRegistry.NPC: 1 if npc != null and npc.npc_state != null else 0,
 		CozyEntityRegistry.PLAYER: 1 if player_state != null else 0,
 	}
@@ -5113,6 +5490,17 @@ func _check_entity_registry() -> void:
 	# registered in `_build_entity_registry` and forgotten here would never be
 	# counted — the check would agree with itself about a provider that returns
 	# nothing at all, which is the shape this file exists to refuse.
+	#
+	# AND THE OTHER WAY ROUND TOO. The loop above asks whether every REGISTERED kind
+	# was counted; this asks whether every counted kind was registered, and it is
+	# the direction with no other detector. A kind missing from
+	# `_build_entity_registry` is never saved, `all_of` answers zero for it forever,
+	# and zero agrees with an empty list perfectly — so the world would quietly stop
+	# recording that kind and nothing would say so.
+	var registered := entities.kinds()
+	for kind in per_kind:
+		if not registered.has(String(kind)):
+			complete = false
 	for kind in entities.kinds():
 		if not per_kind.has(String(kind)):
 			complete = false
@@ -5188,6 +5576,7 @@ func _world_to_dict() -> Dictionary:
 func _next_ids_to_dict() -> Dictionary:
 	var ids := building.state.counters_to_dict()
 	ids["object"] = _next_object_id
+	ids["drop"] = _next_drop_id
 	return ids
 
 
@@ -5231,6 +5620,29 @@ func _apply_world(d: Dictionary) -> void:
 		objects.append(o)
 	_next_object_id = int((d.get("next_ids", {}) as Dictionary).get(
 		"object", objects.size() + 1))
+
+	# The ground. Freed and rebuilt like the objects above, and for the same
+	# reason: a payload can be re-read but it cannot be re-used, so leaving the old
+	# nodes in place would put the file's drops and the world's side by side.
+	for drop in drops:
+		if is_instance_valid(drop):
+			drop.queue_free()
+	drops.clear()
+	for dd in CozyEntityRegistry.payloads(d, CozyEntityRegistry.DROP):
+		var drop := CozyDroppedItem.new()
+		# Add first, then apply: `apply_dict` sets a world position, and a node
+		# outside the tree has no world transform to set.
+		add_child(drop)
+		if not drop.apply_dict(dd):
+			# REFUSED AND REMOVED rather than loaded as a box that can never be
+			# picked up. A save that cannot be read is a save with a bug in it, and
+			# quietly turning that into an unpickable prop is the shape of thing a
+			# player reports as "the game is haunted".
+			drop.queue_free()
+			continue
+		drops.append(drop)
+	_next_drop_id = int((d.get("next_ids", {}) as Dictionary).get(
+		"drop", drops.size() + 1))
 
 	var npcs := CozyEntityRegistry.payloads(d, CozyEntityRegistry.NPC)
 	if npc != null and not npcs.is_empty():
@@ -5300,6 +5712,15 @@ const V1_OBJECTS := 6
 ## T-junction check adds a divider), so a wall COUNT is not a stable baseline.
 const XPROC_MARK_A := Vector3(11.0, 0.0, 11.0)
 const XPROC_MARK_B := Vector3(13.0, 0.0, 11.0)
+
+## Where the save check puts the drop it is about to lose, and what is in it.
+##
+## OFF THE HOMESTEAD'S OWN GROUND, where nothing in the default world stands, and
+## not a round number of anything — for the same reason the wall markers are where
+## they are: a fixture that a default world could coincidentally match is a check
+## that has stopped checking.
+const DROP_MARK_AT := Vector3(-17.5, 0.0, 9.25)
+const DROP_MARK_AMOUNT := 3.0
 
 
 func _has_arg(flag: String) -> bool:
@@ -5423,6 +5844,14 @@ func _check_save_load() -> void:
 		chest.container.inventory.add("wood", 12.0)
 		chest.container.inventory.add("stone", 4.0)
 
+	# A DROP ON THE GROUND, for the same reason the chest is seeded: a round trip
+	# that only ever carries an empty list proves nothing about the thing in it.
+	# This one also carries the case the drop system exists for — something the
+	# player did not pick up — across the disk.
+	var drop_id_before := _next_drop_id
+	var marker := _lay_material("stone", DROP_MARK_AMOUNT, DROP_MARK_AT)
+	var drops_before: int = drops.size()
+
 	var before := _world_to_dict()
 	var path := "user://selfcheck.json"
 
@@ -5519,9 +5948,42 @@ func _check_save_load() -> void:
 	print("[cozyv2] save/load resident: %s  [%s]" % [
 		npc_note, "OK" if npc_ok else "FAIL"])
 
-	print("[cozyv2] save/load round-trip: terrain=%s building=%s object=%s npc=%s  [%s]" % [
-		str(terrain_ok), str(building_ok), str(object_ok), str(npc_ok),
-		"OK" if terrain_ok and building_ok and object_ok and npc_ok else "FAIL"])
+	# (5) The ground. Shape, identity and position all at once: a drop that came
+	# back under a new id, or at the origin, or holding the wrong thing, is a
+	# player's loot quietly turning into somebody else's — or into nothing.
+	#
+	# READ BACK THROUGH THE DROP'S OWN READER, not by comparing the two payloads as
+	# text. JSON gives every number back as a float, so a written `0` and a loaded
+	# `0.0` are unequal as strings and equal as numbers — `CozySaveManager`'s header
+	# says exactly that, and the first version of this line did it the other way and
+	# reported a perfectly faithful round trip as changed.
+	var live_drops: Array = CozyEntityRegistry.payloads(before, CozyEntityRegistry.DROP)
+	var back_drops: Array = CozyEntityRegistry.payloads(loaded, CozyEntityRegistry.DROP)
+	var drop_ok := back_drops.size() == live_drops.size() and not back_drops.is_empty()
+	var drop_note := "nothing in the file"
+	if drop_ok:
+		var there := CozyDroppedItem.new()
+		var back := CozyDroppedItem.new()
+		var read_both := there.apply_dict(live_drops[0]) and back.apply_dict(back_drops[0])
+		# THE POSITION IS COMPARED WITH THE MARKER'S OWN CONSTANT, not with the live
+		# payload, and that is the whole difference between catching a field that is
+		# not written and catching nothing. Comparing live against loaded is
+		# SYMMETRIC: with `to_dict` stripped of its position both sides load at the
+		# origin, agree perfectly, and the check goes green — measured, and it did.
+		# A round trip proves the two agree; only a constant proves they are right.
+		drop_ok = read_both and there.id == back.id and there.id == marker.id \
+			and there.describe() == back.describe() \
+			and back.at.distance_to(DROP_MARK_AT) < 0.0001
+		drop_note = "%s at %s" % [back.describe(), str(back.at)]
+		there.free()
+		back.free()
+	print("[cozyv2] save/load ground: %d drop(s), %s  [%s]" % [
+		back_drops.size(), drop_note, "OK" if drop_ok else "FAIL"])
+
+	print("[cozyv2] save/load round-trip: terrain=%s building=%s object=%s npc=%s ground=%s  [%s]" % [
+		str(terrain_ok), str(building_ok), str(object_ok), str(npc_ok), str(drop_ok),
+		"OK" if terrain_ok and building_ok and object_ok and npc_ok and drop_ok
+			else "FAIL"])
 
 	# The terrain system is a Node3D and nothing else will free it. The building
 	# state is RefCounted — calling free() on it is an engine error, so it is
@@ -5546,11 +6008,12 @@ func _check_save_load() -> void:
 		and objects.size() == objs_before \
 		and floor_system.all_rooms().size() == rooms_before \
 		and building.state.stairs.size() == stairs_before \
+		and drops.size() == drops_before \
 		and npc.npc_state != null and npc.npc_state.id == live_npc.id
-	print("[cozyv2] save/load applied live: %d wall(s), %d slab(s), %d stair(s), %d room(s), %d object(s)  [%s]" % [
+	print("[cozyv2] save/load applied live: %d wall(s), %d slab(s), %d stair(s), %d room(s), %d object(s), %d drop(s)  [%s]" % [
 		building.state.wall_count(), building.state.slabs.size(),
 		building.state.stairs.size(), floor_system.all_rooms().size(), objects.size(),
-		"OK" if applied else "FAIL"])
+		drops.size(), "OK" if applied else "FAIL"])
 
 	# (6) An OLD file, through the real load path.
 	#
@@ -5594,15 +6057,23 @@ func _check_save_load() -> void:
 	_apply_world(before)
 	var restored := building.state.wall_count() == walls_before \
 		and objects.size() == objs_before \
+		and drops.size() == drops_before \
 		and floor_system.all_rooms().size() == rooms_before
-	print("[cozyv2] save/load restores the world it found: %d wall(s), %d object(s)  [%s]" % [
-		building.state.wall_count(), objects.size(),
+	print("[cozyv2] save/load restores the world it found: %d wall(s), %d object(s), %d drop(s)  [%s]" % [
+		building.state.wall_count(), objects.size(), drops.size(),
 		"OK" if restored else "FAIL"])
 
 	CozySaveManager.erase(path)
 	var chest2 := _first_object("chest")
 	if chest2 != null and chest2.container != null:
 		chest2.container.inventory.items = chest_before
+	# And the ground is left as it was found, like everything else here. What is in
+	# `drops` now is exactly the marker this check laid, put back by the line above.
+	for drop in drops:
+		if is_instance_valid(drop):
+			drop.queue_free()
+	drops.clear()
+	_next_drop_id = drop_id_before
 
 
 ## Camera lock (V2.1 doc E.1.1). Free rotation is barred as a gameplay feature

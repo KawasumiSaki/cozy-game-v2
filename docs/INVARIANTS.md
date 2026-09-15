@@ -566,8 +566,9 @@ log (`02-开发日志/游戏开发日志.md`).
 | 24 | `_check_building_state()` took `s.stairs[0]` outright: with no stair in the world it CRASHED rather than failing, and took its two neighbouring measurements with it | removing the demo house — the check died instead of reporting |
 | 25 | A wall added at RUNTIME with a door cut into it leaves the navigation routing through a door the collider keeps shut — the resident walks into the wall forever (debt 22) | the pathing probe, then a differential experiment on that one cause |
 | 26 | The schedule mapped the activity `work` onto the point type `work`, so at 09:00 it overrode every trade that is not `work` — a woodcutter sought a desk, and the three gathering trades could not do their own work in the game | `tests/probe/work_priority_probe.gd`, one day after the trades landed |
+| 27 | `Array[CozyWorldObject].has(a_drop)` is not `false`, it is a typed-array **error**: the assertion written to prove that a thing on the ground is not furniture printed two `ERROR` lines and answered `false`, which happened to be the wanted answer | `0 ERROR`, which the smoke run counts and which the check's own author was not watching |
 
-**Twenty of the twenty-six were found by an assertion, not by looking at the
+**Twenty of the twenty-seven were found by an assertion, not by looking at the
 screen.** Several were invisible in a still frame. That is the whole argument for
 the assertion discipline in `03-流程/更新方案.md`.
 
@@ -889,4 +890,101 @@ alive by a doc comment claiming the HUD used it. That is
 `## A declared capability with no consumer` again, in the one place this project
 is most tempted to allow it — a convenience wrapper. A display that wants one word
 takes the first element; a decision that wants one word is the bug.
+
+## A pickup radius is bounded by the SHORTEST reach, not by the longest
+
+Things on the ground (2026-09-15) work like this: a felled tree or a killed
+monster leaves a marker at the edge of whatever dropped it, on the side the player
+is standing, and a pass over `drops` each frame moves whatever the player is
+standing on into their ledgers.
+
+The radius is the whole mechanic. Too long and every drop is taken on the frame it
+appeared, which makes 掉在地上 and 直接进包 the same code with different comments —
+the ledgers, the numbers and the moment are all identical. Too short and loot is a
+pixel hunt. Nothing in the game can tell a right radius from a wrong one, because
+both end with the wood in the pack.
+
+**The bound comes from the shortest reach in the object table, not the one you are
+looking at.** `_gather_from` refuses to work a node from further than its reach,
+and a drop lands at that node's edge — so the gap between a player standing at the
+limit of their reach and the thing they just knocked loose IS the reach. A tree's
+is 1.3 m. A crop's is **0.8 m**, and a first version of this shipped a radius of
+1.0 because 1.3 was the number in front of it. Harvesting a crop would have put
+the wheat straight into the pack while felling a tree left something to walk to,
+and nothing anywhere would have said so.
+
+    pickup radius 0.6  <  crop reach 0.8  <  tree reach 1.3
+
+`test_dropped_item` asserts the relation for EVERY gathered node rather than for
+the tree, so the next row with a short reach cannot reintroduce it. **When a
+constant is bounded by a table, the bound is the table's minimum, and a check that
+names one row is a check that has stopped looking.**
+
+## A drop that does not fit stays where it is
+
+The bag has a capacity and the pack does not, so exactly one kind of drop can be
+refused. The refusal is `CozyItemContainer.add_item` returning -1, and what
+matters is where it goes from there.
+
+**Taken-and-destroyed is the one outcome the player experiences as a loss.** They
+watched a sword fall, they have no room, and it is not there — with nothing to
+explain it and no way to get it back. The rule is therefore: take it only if it
+fits, and remove it from the ground only after the ledger says it arrived. It
+stays, with a line saying why, and it is still there when room is made.
+
+Two ways to get this wrong that no state assertion can see: a drop that is taken
+but NOT removed is taken again next frame (the same sword, forever), and a drop
+that does not fit and is removed anyway is bug-shaped silence. Both are asserted,
+and both were checked by breaking them on purpose.
+
+**A per-frame "it did not fit" message is the same as no message.** `refused` is
+one bool per drop, set once, and it is deliberately NOT saved — it is a fact about
+what this session has already said, not about the drop.
+
+**AND THE MESSAGE IS THE ONLY THING THAT BRANCH IS FOR, which mutation testing had
+to say out loud.** `_tick_pickups` asks `fits_in` before taking a drop, and
+`collect_into` asks it again — so replacing the outer test with `if false:`
+changed NOTHING that any assertion could see: the drop was still refused, still
+stayed on the ground, and was still there when room was made. The mutation came
+back green, and the honest reading is not "the check is weak" but **"that branch
+is the difference between a refusal and a refusal the player is told about."**
+
+So the branch has its own assertion now: after a refused pickup the HUD message
+NAMES the thing that did not fit. **Defence in depth makes the outer layer
+untestable by behaviour, and the only way to test it is to test the thing it alone
+produces — here, a sentence.**
+
+## Compare a loaded payload by READING it, not by stringifying it
+
+A save round trip gives every number back as a float. `0` on the way out is `0.0`
+on the way in, and the two are unequal as text and equal as numbers — this is
+written at the top of `CozySaveManager` and it is still the thing that gets
+forgotten.
+
+The first version of the drop section in `_check_save_load` compared
+`JSON.stringify(live_payload)` with `JSON.stringify(loaded_payload)` and reported
+a perfectly faithful round trip as `(CHANGED)`. The fix is not a tolerance: it is
+to put both payloads through the drop's own `apply_dict` and compare what the two
+drops then say about themselves. That asserts the property that matters — the file
+is READABLE and yields the same thing — where string equality asserted a
+coincidence of formatting.
+
+**The general shape: a serialiser round trip is a claim about two readers
+agreeing, so test it by reading.** Comparing the bytes tests the writer twice.
+
+**AND A ROUND TRIP IS SYMMETRIC, SO IT CANNOT SEE A FIELD THAT IS NEVER WRITTEN
+AT ALL.** The drop section compares `live_payload` against `loaded_payload`, and
+stripping the position out of `to_dict` broke BOTH sides identically: both loaded
+at the origin, agreed perfectly, and the check went green. Mutation testing found
+it — the unit suite caught it only because that case compares against the position
+it PLACED the drop at (`Vector3(-3.5, 0.0, 8.25)`), which is a constant rather
+than a comparison.
+
+    live   payload without "position"  -> drop at (0,0,0)
+    loaded payload without "position"  -> drop at (0,0,0)   -> equal, green
+
+The fix is one line and it is the same rule the production chain learned: **compare
+against something the subject cannot forge.** The drop's expected position is
+`DROP_MARK_AT`, the constant this check chose, so the assertion is now that the
+loaded drop is *there* rather than that it agrees with its twin.
 

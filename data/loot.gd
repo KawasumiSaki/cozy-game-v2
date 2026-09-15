@@ -35,6 +35,11 @@ const TABLES := {
 		"entries": [
 			{"kind": KIND_ITEM, "id": "wheat", "chance": 1.0, "min": 1, "max": 2},
 			{"kind": KIND_ITEM, "id": "wood", "chance": 0.5, "min": 1, "max": 3},
+			# WILLOW'S OWN EXAMPLE: "某个小怪掉落 5% 的几率掉钢剑什么的". Five per cent is
+			# the whole of what makes it rare — the brigand still drops the same
+			# sword for certain, because that one is a designed reward and this one
+			# is a reason to kill a second slime.
+			{"kind": KIND_EQUIPMENT, "chance": 0.05, "pick": "steel_sword_pick"},
 		],
 	},
 	"goblin": {
@@ -56,7 +61,26 @@ const TABLES := {
 			# exists to make possible, and a player who kills the one brigand in
 			# the world and gets nothing has learned that loot is a lottery rather
 			# than a reward.
-			{"kind": KIND_EQUIPMENT, "chance": 1.0, "pick": "brigand_gear"},
+			{"kind": KIND_EQUIPMENT, "chance": 1.0, "pick": "steel_sword_pick"},
+		],
+	},
+	## WHAT A PICK NAMES RATHER THAN WHAT CARRIES IT.
+	##
+	## The first table in the game that NAMES a definition instead of a type, and
+	## the reason is the same one the type-based pick below is written the way it
+	## is: "some weapon" is three swords and "the steel sword" is one of them, and
+	## a designed reward is the second.
+	##
+	## NAMED FOR THE SWORD AND NOT FOR THE BRIGAND, because two monsters draw from
+	## it now — the brigand for certain, the slime at five per cent. A table called
+	## `brigand_gear` that a slime rolled from would be a name that had stopped
+	## being true, and the next person to retune one of them would have to find
+	## that out by reading the other's row.
+	"steel_sword_pick": {
+		"kind": "pick",
+		"pick": 1,
+		"entries": [
+			{"weight": 1.0, "item": "steel_sword"},
 		],
 	},
 	## Which SLOT the equipment lands in. Weights, not chances: exactly one of
@@ -67,20 +91,6 @@ const TABLES := {
 	## that silently does not happen — the failure this project has paid for seven
 	## times, arriving through a table rather than a field. The slot joins the
 	## table on the day an amulet exists, and `complaints()` will insist on it.
-	## WHAT ONE PARTICULAR MONSTER IS CARRYING.
-	##
-	## The first table in the game that NAMES a definition rather than a type,
-	## and the reason is the same one the pick table above is written the way it
-	## is: "some weapon" is three swords and "the steel sword" is one of them, and
-	## a designed reward is the second. A goblin drops whatever it drops; the
-	## brigand is carrying the sword the player is meant to walk away with.
-	"brigand_gear": {
-		"kind": "pick",
-		"pick": 1,
-		"entries": [
-			{"weight": 1.0, "item": "steel_sword"},
-		],
-	},
 	"goblin_gear": {
 		"kind": "pick",
 		"pick": 1,

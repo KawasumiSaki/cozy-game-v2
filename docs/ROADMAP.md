@@ -416,13 +416,16 @@ the loop.
 | The source | `data/monsters.gd` · `character/monster.gd` |
 | The player's ledger, bag and swing | `character/player_state.gd` · `main.gd` |
 | Prices and the stall | `data/prices.gd` · `data/objects.gd` (`market_stall`) |
+| **Things on the ground** | `world/objects/dropped_item.gd` · `main.gd` (`_lay_drops` / `_tick_pickups`) |
 | The pack, on screen | `ui/pack_panel.gd` |
 
 **The fight, measured rather than described:**
 
 ```
 a swing from 25 m missed=true; up close one swing landed 1 hit(s), hurt=true;
-killed=true, bag=1 item(s) incl. 'Steel Sword', copper 7, village untouched  [OK]
+killed=true, fell 1 thing(s) on the ground spread over 3 spot(s), incl. 'Steel Sword',
+bag stayed empty=true, purse unmoved=true; walked over -> bag 1 item(s) incl. 'Steel Sword',
+copper 11, ground cleared=true, village untouched  [OK]
 ```
 
 **A MONSTER DOES NOT FIGHT BACK AND DOES NOT MOVE**, and both are decisions
@@ -431,10 +434,34 @@ rather than omissions — an aggression row arrives with the driver that reads i
 animation work), so a glamour's sprite half has no consumer yet and a renderer
 will ask `CozyItemInstance.appearance_id()` and nothing else.
 
+### The ground (2026-09-15)
+
+A felled tree and a killed monster both leave a marker at the edge of whatever
+dropped it, and a per-frame pass moves whatever the player is standing on into
+their ledgers. Until this existed BOTH wrote the ledgers directly, so nothing was
+ever on the ground and there was nowhere to put "it did not fit, so it stayed".
+
+**THE PICKUP RADIUS IS BOUNDED BY THE SHORTEST REACH IN THE OBJECT TABLE**, which
+is a crop's 0.8 m and not a tree's 1.3 — `_gather_from` refuses to work a node from
+further than its reach and a drop lands at that node's edge, so the gap between a
+player at the limit of their reach and their own loot IS the reach. The first
+version used 1.0 because 1.3 was the number in front of it, which would have made
+harvesting a crop a different mechanic from felling a tree. `test_dropped_item`
+asserts the relation for EVERY gathered node. See `docs/INVARIANTS.md`.
+
+**A DROP THAT DOES NOT FIT STAYS WHERE IT IS.** The bag has a capacity and the pack
+does not, so exactly one kind of drop can be refused; it stays with a line saying
+why, and it is still there when room is made. Taken-and-destroyed is the one
+outcome a player experiences as a loss rather than as a convenience.
+
+**A DROP IS NOT FURNITURE**: it does not join `objects`, so it blocks no movement
+and advertises no interaction point — a dropped sword must not become a wall a
+hauler walks around.
+
 **Two ledgers, and they are asserted apart**: the player's pack and the village's
 account have the same shape, the same method names and the same units, so a
 mistake between them is invisible on screen. Teeth: routing the player's chopped
-wood into `building.inventory` reports "pack +0 (wanted 4), village MOVED".
+wood into `building.inventory` reports "fell on the ground 0 of 4".
 
 ---
 

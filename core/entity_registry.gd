@@ -42,6 +42,14 @@ const ROOF := "roof"
 const OBJECT := "object"
 const NPC := "npc"
 
+## Something lying on the ground, waiting to be walked over (2026-09-15).
+##
+## A kind of its own rather than a `world_object`, because the two are different
+## questions: an object is placed, blocks movement and advertises interaction
+## points, and a drop is none of those. It is loaded back through `_apply_world`
+## like any other persisted kind.
+const DROP := "drop"
+
 ## The PLAYER's own ledger (Willow 2026-09-15: two accounts, the village's and
 ## the player's). One state object, like a resident's — the difference between
 ## them is WHO the goods belong to, not what shape a ledger is.

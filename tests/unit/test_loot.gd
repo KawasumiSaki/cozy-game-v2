@@ -68,15 +68,41 @@ func _the_extremes() -> void:
 				gold += 1
 	eq("a certain drop drops every time", gold, 39)
 
-	# ... and the slime, which drops wheat always and wood half the time, never
-	# produces anything else. A table that invented a drop would be caught here.
+	# ... and the slime produces only what its own table names. A table that
+	# invented a drop would be caught here.
+	#
+	# ASKED OF THE TABLE, NOT OF A HARDCODED PAIR OF IDS. This case used to read the
+	# `id` of every drop and assert it was wheat or wood, which said the same thing
+	# while the slime had exactly two item rows. It stopped saying it the moment
+	# the 5% gear entry arrived: an equipment drop carries no `id` at all, so it
+	# read as "something not on the table" and the case went red for a table that
+	# was perfectly correct. The question was never about `id` — it is "can this
+	# drop have come from a row of this table" — so it is asked of the rows.
+	#
+	# The two constant sets share their values (`DROP_ITEM` is `KIND_ITEM`), which
+	# is why a rolled drop's kind can be looked up in the definitions directly.
+	var table_items := {}
+	var table_kinds := {}
+	for e in CozyLootDefs.entries("slime"):
+		var row: Dictionary = e
+		table_kinds[String(row.get("kind", ""))] = true
+		if String(row.get("kind", "")) == CozyLootDefs.KIND_ITEM:
+			table_items[String(row.get("id", ""))] = true
+
 	var other := 0
 	for s in range(1, 40):
 		for d in (CozyLootRoller.roll("slime", _rng(s), 1)["drops"] as Array):
-			if String((d as Dictionary).get("id", "")) != "wheat" \
-					and String((d as Dictionary).get("id", "")) != "wood":
+			var drop: Dictionary = d
+			var k := String(drop["kind"])
+			if not table_kinds.has(k):
+				other += 1
+			elif k == CozyLootDefs.KIND_ITEM and not table_items.has(String(drop["id"])):
 				other += 1
 	eq("and nothing that is not on the table", other, 0)
+	# THE CONTROL: the loop above counts nothing when nothing drops, so the case
+	# only means something if the slime's rare row can actually fire.
+	is_true("and the slime can drop gear at all",
+		table_kinds.has(CozyLootDefs.KIND_EQUIPMENT))
 
 
 func _rates_hold() -> void:
@@ -101,6 +127,15 @@ func _rates_hold() -> void:
 	# The control that keeps the band honest: a rate of zero would also be
 	# "inside" a badly written check, so the count is asserted too.
 	is_true("and equipment really did drop", int((r["kinds"] as Dictionary)
+		.get(CozyLootRoller.DROP_EQUIPMENT, 0)) > 0)
+
+	# AND THE SLIME'S FIVE PER CENT — Willow's own example, and the first rate in
+	# the game small enough that a table stating the wrong number would not be
+	# noticed by playing. Measured, not read back off the row.
+	var s := CozyLootRoller.simulate("slime", ROLLS, 20260915)
+	near("the slime's gear rate is what the table says",
+		float(s["equipment_rate"]), 0.05, 0.02)
+	is_true("and it really did drop", int((s["kinds"] as Dictionary)
 		.get(CozyLootRoller.DROP_EQUIPMENT, 0)) > 0)
 
 
