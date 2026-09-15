@@ -518,3 +518,46 @@ GODOT="D:/privacy/Openclaw/Godot-4.7.2/Godot_v4.7.2-stable_win64.exe"
 ```
 
 Every block must end with the self-check green and the demo still runnable.
+
+---
+
+## ENV V0.3 — the wind (2026-09-15)
+
+`core/wind_system.gd`. The doc's §6 V0.3 is "一个数据源 + 注入，风格与 clock 一致":
+it owns `wind_direction`, `wind_speed` and `wind_gust`, and it is a Node for the
+same reason the clock is — something has to pull on a frame.
+
+**DERIVED FROM THE CLOCK, NOT STORED.** `wind_at(hours)` is a pure function, so the
+wind at 14:30 on day 3 is the same wind every time that hour comes round, in any
+session, after any save, with **nothing about it in the save file**. `INVARIANTS`
+has the two bugs this prevents: a stored value that can disagree with what it was
+derived from, and an accumulating one that drifts every frame.
+
+**IT DOES NOT BEND ANYTHING.** How much a KIND of plant moves is
+`CozyVegetationScatter.WIND_STRENGTH` — a fact about a plant. How windy it is is
+this file's — a fact about the world. The scatter multiplies them in one place, so
+a lull leaves the order intact: a trunk still moves less than its leaves when the
+wind drops, rather than the tree coming apart.
+
+The gust is two sines at rates that do not divide into one another (one sine is a
+fan switching on and off on a schedule); the scroll speed never reaches zero (a
+field that stops dead and starts again is a bug with a shape rather than a lull);
+and nothing is published when nothing changed — a signal every quarter second
+carrying the same three numbers trains its listeners to ignore it, and these
+listeners rewrite eight materials.
+
+```
+wind reaches the plants: calm hour 0.0 gust 0.05, windy hour 23.8 gust 0.61;
+front leaves 0.063 -> 1.095, trunk 0.005 < leaves in the calm=true,
+exactly strength x gust=true, direction told=true  [OK]
+```
+
+The check reads the **material**, not the wind system: a check that asked the wind
+would pass just as well against materials nothing ever writes to.
+
+**Open: the camera is too far** (Willow, 2026-09-15, after looking at it). Density
+and visible height are ONE number — `720 / visible_height = px/m` — so bringing the
+view closer means re-scaling every asset. Three options are written up in the
+Obsidian board index; **C** (default zoom step 0 at 11.25 m, density 64) makes the
+world density equal the character sheet's authoring density and removes the "art at
+2x" special case entirely.
