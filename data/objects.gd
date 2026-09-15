@@ -37,6 +37,18 @@ const INTERACT_HARVEST := "harvest"
 ## merging them.
 const INTERACT_PLANT := "plant"
 
+## NOTHING HERE FOR THE NEW PLANTS, and that is the fix rather than an omission.
+##
+## The first version gave grass and flax verbs of their own, because
+## `CozyRecipeDefs.for_point()` returns the FIRST recipe naming a point type —
+## iterating ids ALPHABETICALLY — so a second recipe sharing `harvest` is never
+## found and a flax plant offering `harvest` would quietly yield WHEAT.
+##
+## Willow, 2026-09-15: "不同的植物harvest会产生不同的产物，你逻辑先做好." Inventing a
+## verb per plant is not that logic; it is the same trap with more vocabulary. THE
+## OBJECT NOW NAMES ITS RECIPE — see `CozyRecipeDefs.for_object` — so every plant
+## offers `harvest` and what comes out of it is a fact about the plant.
+
 ## A SHOP'S VERBS, which are not worked on the world at all — see `is_stall`.
 ## They are interaction rows so that a stall answers `interaction_types` like
 ## anything else, and a menu can find them the same way it finds `chop`.
@@ -208,7 +220,8 @@ const OBJECTS := {
 		"yields": 1,
 		"regrow_hours": 24.0,
 		"interactions": [
-			{"type": "harvest", "skill": "farming", "duration": 3.0, "reach": 0.8},
+			{"type": "harvest", "recipe": "harvest_crop", "skill": "farming",
+				"duration": 3.0, "reach": 0.8},
 		],
 	},
 	# ---- lights (2026-09-14) --------------------------------------------------
@@ -221,6 +234,42 @@ const OBJECTS := {
 	# `energy` is what the lamp is worth at FULL dark. The world multiplies it by
 	# how dark it actually is, so a lamp needs no clock of its own and turns
 	# itself on at dusk without anything deciding that it should.
+	# ---- the crafting chain's two sources (2026-09-15) ------------------------
+	#
+	# OBJECTS rather than scattered plants, and that is the answer to a question
+	# this project has been carrying: the 2011 scattered tufts are a MultiMesh with
+	# no identity, so "cut that one patch" has nothing to name. A resource node has
+	# an id, a `taken` count and a regrow — everything gathering already needs.
+	#
+	# THEY REGROW FAST (4 h against the tree's 72): hay and flax are the bottom of a
+	# chain the player will walk many times, and a three-day wait at the bottom of a
+	# chain is a chain nobody climbs.
+	"grass_patch": {
+		"name": "Grass",
+		"kind": "resource",
+		"size": Vector2(0.9, 0.9),
+		"height": 0.5,
+		"color": Color(0.42, 0.62, 0.30),
+		"yields": 3,
+		"regrow_hours": 4.0,
+		"interactions": [
+			{"type": "harvest", "recipe": "harvest_grass", "skill": "gathering",
+				"duration": 2.0, "reach": 1.1},
+		],
+	},
+	"flax": {
+		"name": "Flax",
+		"kind": "resource",
+		"size": Vector2(0.7, 0.7),
+		"height": 0.9,
+		"color": Color(0.55, 0.66, 0.78),
+		"yields": 2,
+		"regrow_hours": 8.0,
+		"interactions": [
+			{"type": "harvest", "recipe": "harvest_flax", "skill": "gathering",
+				"duration": 3.0, "reach": 1.1},
+		],
+	},
 	"lamp_post": {
 		"name": "Lamp Post",
 		"kind": "light",

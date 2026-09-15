@@ -48,6 +48,23 @@ const POINT_WORK := "work"
 ## that document set.
 
 const RECIPES := {
+	# ---- the crafting chain's two sources (2026-09-15) -----------------------
+	#
+	# Their own point types, and the header above says why: `for_point` answers by
+	# point type and takes the first, so the verb a gatherable offers IS its recipe.
+	"harvest_grass": {
+		"job": "farmer",
+		"point_type": "harvest",
+		"inputs": {},
+		"outputs": {"hay": 2.0},
+	},
+	"harvest_flax": {
+		"job": "farmer",
+		"point_type": "harvest",
+		"inputs": {},
+		"outputs": {"fibre": 2.0},
+	},
+
 	# ---- the gathering legs (2026-09-14) -------------------------------------
 	#
 	# Each names a point type that an object in `CozyObjectDefs` actually offers —
@@ -164,6 +181,55 @@ static func skill_for_point(point_type: String) -> String:
 ## match in id order, so a second recipe at one type would be unreachable.
 ## `test_resource_chain` refuses a second one rather than letting it sit in the
 ## table looking usable.
+## The recipe a PARTICULAR OBJECT performs for a verb — the one that matters.
+##
+## `for_point` answers by the verb alone and takes the FIRST match in alphabetical
+## order, so three plants that all offer `harvest` would resolve to one recipe and
+## two of them would produce the wrong thing. THE OBJECT DECIDES: an interaction row
+## may name its `recipe`, and this is what reads it.
+##
+## Falls back to `for_point` so every object that predates this keeps working, and
+## `complaints()` names the ones that need a recipe rather than leaving it to be
+## discovered as a plant that yields wheat.
+static func for_object(def_id: String, point_type: String) -> Dictionary:
+	for it in CozyObjectDefs.get_def(def_id).get("interactions", []):
+		var row: Dictionary = it
+		if String(row.get("type", "")) != point_type:
+			continue
+		var named := String(row.get("recipe", ""))
+		if named != "" and RECIPES.has(named):
+			return RECIPES[named]
+		break
+	return for_point(point_type)
+
+
+## Every gatherable that offers a verb more than one recipe claims, and does not
+## say which one it is.
+##
+## THE TRAP THIS EXISTS FOR: `for_point` is first-match, so the day a second plant
+## offers `harvest` one of them silently produces the other's goods. Named here
+## rather than discovered as "my flax gave me wheat".
+static func ambiguous_offers() -> Array[String]:
+	var by_point := {}
+	for id in ids():
+		var pt := String(RECIPES[id]["point_type"])
+		if not by_point.has(pt):
+			by_point[pt] = 0
+		by_point[pt] = int(by_point[pt]) + 1
+	var out: Array[String] = []
+	for def_id in CozyObjectDefs.OBJECTS:
+		for it in CozyObjectDefs.get_def(String(def_id)).get("interactions", []):
+			var row: Dictionary = it
+			var pt := String(row.get("type", ""))
+			if int(by_point.get(pt, 0)) < 2:
+				continue
+			if String(row.get("recipe", "")) == "":
+				out.append("%s offers '%s', which %d recipes claim" % [
+					def_id, pt, int(by_point[pt])])
+	out.sort()
+	return out
+
+
 static func for_point(point_type: String) -> Dictionary:
 	for id in ids():
 		if String(RECIPES[id]["point_type"]) == point_type:

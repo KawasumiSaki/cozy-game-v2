@@ -106,6 +106,57 @@ const MATERIALS := {
 		"kind": "material",
 		"color": Color(0.79, 0.52, 0.28),
 	},
+
+	# ---- the crafting chain (Willow, 2026-09-15) ------------------------------
+	#
+	# Her example: "一开始玩家只能造简易帐篷，需要木棍 x4 布 x2 绳 x2，棍子就是去
+	# 砍树得到的木头合成的，绳子就割草用干草做的，布来自纤维植物，比方说亚麻."
+	#
+	# So the world holds three RAW things — wood, hay, fibre — and everything else
+	# is made from them. A row here is one link of that chain; the chain itself is
+	# `CozyCraftDefs`, which is a DIFFERENT table from `CozyRecipeDefs` and the
+	# reason is in its header.
+	#
+	# INGREDIENTS are gathered (hay, fibre) and materials are made (stick, rope,
+	# cloth): the same split wheat and bread already use, and it is what stops a
+	# recipe asking for something only a recipe can make without saying so.
+	"stick": {
+		"name": "Stick",
+		"kind": "material",
+		"color": Color(0.58, 0.42, 0.26),
+	},
+	"hay": {
+		"name": "Hay",
+		"kind": "ingredient",
+		"color": Color(0.82, 0.74, 0.42),
+	},
+	"fibre": {
+		"name": "Fibre",
+		# British spelling to match the game's own `colour`/`favourite`, and it is
+		# the row id, so it travels into saves. Changing it later is a migration.
+		"kind": "ingredient",
+		"color": Color(0.78, 0.76, 0.62),
+	},
+	"rope": {
+		"name": "Rope",
+		"kind": "material",
+		"color": Color(0.72, 0.62, 0.38),
+	},
+	"cloth": {
+		"name": "Cloth",
+		"kind": "material",
+		"color": Color(0.86, 0.84, 0.78),
+	},
+	# THE GOAL OF THE CHAIN, and it is a MATERIAL rather than an object for now:
+	# making it puts it in the pack, and putting it in the WORLD is the build
+	# system's business. That split is the same one walls already use — wood is a
+	# material and a wall is what the build tool makes of it — and it means this
+	# round does not need the build system unparked.
+	"tent": {
+		"name": "Simple Tent",
+		"kind": "material",
+		"color": Color(0.66, 0.60, 0.48),
+	},
 }
 
 const DEFAULT_MATERIAL := "wood"

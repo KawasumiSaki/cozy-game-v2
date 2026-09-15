@@ -35,6 +35,8 @@ func _init() -> void:
 	case("a node gives its season, then waits", _yield_cycle)
 	case("sowing is wired end to end", _sowing_is_wired)
 	case("every job of work names the skill it trains", _work_skills_are_real)
+	case("a plant decides what comes out of it, not the verb", _object_decides)
+
 
 
 # ---------------------------------------------------------------- the teeth
@@ -361,3 +363,46 @@ func _want(a: Array) -> Array[String]:
 	for x in a:
 		out.append(String(x))
 	return out
+
+
+## THE VERB IS NOT THE ANSWER. `CozyRecipeDefs.for_point()` returns the FIRST recipe
+## naming a point type, in alphabetical order — so three plants that all offer
+## `harvest` resolve to ONE recipe and two of them yield the wrong thing, silently.
+##
+## Willow, 2026-09-15: "不同的植物harvest会产生不同的产物，你逻辑先做好." This is that
+## logic with teeth: the three `harvest` plants are asked one at a time and each has
+## to name its own goods.
+func _object_decides() -> void:
+	eq("no gatherable leaves its verb ambiguous", CozyRecipeDefs.ambiguous_offers(), [])
+
+	# The trap, demonstrated and then closed: one verb, three answers.
+	eq("a crop harvested gives wheat",
+		CozyRecipeDefs.for_object("crop", "harvest").get("outputs", {}).get("wheat"), 2.0)
+	eq("flax gives fibre",
+		CozyRecipeDefs.for_object("flax", "harvest").get("outputs", {}).get("fibre"), 2.0)
+	eq("and grass gives hay",
+		CozyRecipeDefs.for_object("grass_patch", "harvest").get("outputs", {}).get("hay"), 2.0)
+	# ...and the verb on its own really cannot tell them apart, which is why the
+	# object has to: this is the bug, pinned so the fix cannot be undone quietly.
+	# ...and the verb ALONE can be right for at most one of them, which is the bug
+	# this whole change is about. Written as a count rather than as "it returns
+	# something", because "it returns something" is true of the broken version too.
+	var by_verb := CozyRecipeDefs.for_point("harvest")
+	var right := 0
+	for def_id in ["crop", "flax", "grass_patch"]:
+		if CozyRecipeDefs.for_object(def_id, "harvest") == by_verb:
+			right += 1
+	is_true("the verb alone is right for at most one plant (right for %d of 3)" % right,
+		right <= 1)
+	is_true("...and it is not right for none of them either", right == 1)
+
+	# And every gatherable in the world resolves to SOMETHING that produces
+	# something — a plant whose harvest yields nothing is a verb that wastes a walk.
+	for def_id in CozyObjectDefs.OBJECTS:
+		var row := String(def_id)
+		if not CozyObjectDefs.is_gathered(row):
+			continue
+		for verb in CozyObjectDefs.interaction_types(row):
+			var r := CozyRecipeDefs.for_object(row, verb)
+			is_true("'%s' + '%s' produces something" % [row, verb],
+				not r.is_empty() and not (r.get("outputs", {}) as Dictionary).is_empty())

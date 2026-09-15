@@ -2375,7 +2375,9 @@ func _gather_from(o: CozyWorldObject, verb: String) -> void:
 	if not o.is_available(now):
 		_say("%s is worked out" % CozyObjectDefs.display_name(o.def_id), true)
 		return
-	var recipe := CozyRecipeDefs.for_point(verb)
+	# BY THE OBJECT, not by the verb: three plants offer `harvest` and they do not
+	# all yield wheat. See `CozyRecipeDefs.for_object`.
+	var recipe := CozyRecipeDefs.for_object(o.def_id, verb)
 	if recipe.is_empty():
 		return
 	o.take_one(now)
@@ -2606,7 +2608,9 @@ func _gather_hint(o: CozyWorldObject, verb: String, near: bool) -> String:
 		return "stand closer to the %s" % CozyObjectDefs.display_name(o.def_id).to_lower()
 	if not o.is_available(_game_hours()):
 		return "worked out for now"
-	var recipe := CozyRecipeDefs.for_point(verb)
+	# BY THE OBJECT, not by the verb: three plants offer `harvest` and they do not
+	# all yield wheat. See `CozyRecipeDefs.for_object`.
+	var recipe := CozyRecipeDefs.for_object(o.def_id, verb)
 	if recipe.is_empty():
 		return ""
 	var parts: Array[String] = []

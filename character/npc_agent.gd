@@ -589,7 +589,12 @@ func _finish_work() -> void:
 		# THE RECIPE FOR THE WORK JUST DONE, not for the resident's trade. Looked
 		# up by trade it produced that trade's goods at whatever point the resident
 		# happened to work — wheat from a farmer standing at a research table.
-		haul = _produce(CozyRecipeDefs.for_point(finished_type), finished_at)
+		# BY THE OBJECT IT FINISHED AT — `finished_obj` is right there, and the verb
+		# alone cannot tell a crop from a flax plant.
+		var worked := ""
+		if finished_obj is CozyWorldObject:
+			worked = (finished_obj as CozyWorldObject).def_id
+		haul = _produce(CozyRecipeDefs.for_object(worked, finished_type), finished_at)
 		# AND THE NODE IS THE POORER FOR IT. Only when something was actually
 		# made — a batch that produced nothing because the pack was empty did not
 		# take anything out of the ground either. Guarded on the type because the
