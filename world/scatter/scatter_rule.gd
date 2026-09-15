@@ -20,11 +20,38 @@ extends RefCounted
 ##     painted stripe.
 ##
 ## Rules are data. Adding a mushroom later is a row here.
+##
+## ---------------------------------------------------------------------------
+## `base_density` AND `cluster` ARE TWO DIFFERENT QUESTIONS, AND THEY COST
+## DIFFERENT THINGS.
+##
+##   `base_density` decides WHICH squares of ground grow this plant.
+##   `cluster`      decides how many of it a square grows, spread over the square.
+##
+## The split exists because the two cost different things. A SQUARE costs a
+## terrain material query and a biome classification — measured at about 47
+## microseconds, of which 10 is a woodland value-noise and another 6 is a
+## material lookup the biome then repeats. A PLANT costs one transform in a mesh
+## that is being drawn anyway.
+##
+## SO DENSITY IS BOUGHT IN `cluster`, NOT BY A FINER LATTICE. Halving
+## `SAMPLE_STEP` quadruples the sampling AND leaves the field as a grid; the
+## clusters are jittered inside their own square, so a tuft of five reads as a
+## patch of grass rather than as five plants standing in a row.
+##
+## A rule with no `cluster` grows exactly one, which is right for anything that
+## is a THING rather than a texture — `[1, 1]` on every rule below says so out
+## loud, because "one rock" and "one square metre of rock" are not the same
+## claim and only one of them is true.
 
 const RULES := {
+	# 0.42 x ~10 = about four soft tufts per square metre. One tuft covers
+	# 0.3 m2, so the ground comes out a little over 100% covered — which is what
+	# "grass" means, and what a third of that visibly does not.
 	"grass_tuft": {
 		"asset_id": "grass_tuft_01",
 		"base_density": 0.42,
+		"cluster": [6, 14],
 		"biomes": {"grassland": 1.0, "forest_edge": 1.0, "village": 0.45,
 			"shore": 0.25, "rocky": 0.0},
 		"materials": {"grass": 1.0, "soil": 0.45, "sand": 0.0, "stone": 0.0, "water": 0.0},
@@ -34,6 +61,7 @@ const RULES := {
 	"flower_daisy": {
 		"asset_id": "flower_daisy_01",
 		"base_density": 0.10,
+		"cluster": [1, 2],
 		"biomes": {"grassland": 1.0, "forest_edge": 0.5, "village": 0.6,
 			"shore": 0.0, "rocky": 0.0},
 		"materials": {"grass": 1.0, "soil": 0.0, "sand": 0.0, "stone": 0.0, "water": 0.0},
@@ -43,6 +71,7 @@ const RULES := {
 	"pebble": {
 		"asset_id": "rock_small_01",
 		"base_density": 0.14,
+		"cluster": [1, 1],
 		"biomes": {"grassland": 0.35, "forest_edge": 0.6, "village": 0.5,
 			"shore": 1.0, "rocky": 1.0},
 		"materials": {"grass": 0.3, "soil": 0.7, "sand": 1.0, "stone": 1.0, "water": 0.0},
@@ -52,6 +81,7 @@ const RULES := {
 	"tree": {
 		"asset_id": "tree_oak_01",
 		"base_density": 0.17,
+		"cluster": [1, 1],
 		# Trees belong to the woodland region and are essentially absent
 		# elsewhere — a lone tree on open grassland should be an event.
 		"biomes": {"forest_edge": 1.0, "grassland": 0.015, "village": 0.0,
@@ -93,6 +123,11 @@ static func resolve(rule_id: String) -> Dictionary:
 		"near_building": float(r["near_building"]),
 		"scale_lo": float(r["scale"][0]),
 		"scale_hi": float(r["scale"][1]),
+		# Absent means one. A rule that grows exactly one plant is the common
+		# case and saying `[1, 1]` everywhere would be noise — but see the table
+		# header: the rules that carry one are written out on purpose.
+		"cluster_lo": int(r.get("cluster", [1, 1])[0]),
+		"cluster_hi": int(r.get("cluster", [1, 1])[1]),
 	}
 
 

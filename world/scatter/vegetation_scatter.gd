@@ -31,6 +31,17 @@ extends Node3D
 ## wrongly.
 const SAMPLE_STEP := 1.0
 
+## How far a plant may sit from its square's lattice point, in metres.
+##
+## STRICTLY LESS THAN `SAMPLE_STEP / 2`, and that is a correctness bound rather
+## than a taste one: every plant grown by a square has to stay inside that
+## square, or the per-chunk split puts the plant in one chunk while its square is
+## in another — and the incremental rebuild, which re-samples only the dirty
+## chunks, would then drop it or duplicate it. `_check_scatter`'s
+## "incremental == full" assertion is what would catch that, but only by
+## accident, so the bound is written here instead.
+const JITTER := SAMPLE_STEP * 0.45
+
 ## World size of each placeholder sprite, metres. Real definitions will carry
 ## this, derived from resolution and the profile's pixel density.
 const PLACEHOLDER_SIZE := {
@@ -221,19 +232,40 @@ func _sample_chunk(coord: Vector2i) -> Dictionary:
 						near_building, seed_val):
 					continue
 				var asset_id: String = res["asset_id"]
-				var sc := CozyArtSeed.range_f(seed_val ^ 0x5bf03635,
-					res["scale_lo"], res["scale_hi"])
 				if not assets_by_id.has(asset_id):
 					assets_by_id[asset_id] = []
-				# On the ground, not at y=0 (debt 6). The field carries a height
-				# and DIG/FILL move it, so a fixed y would leave plants hanging
-				# over a hole or sunk in a mound — and it was the HEIGHT half of
-				# that debt, not the material half, that was ever wrong: this loop
-				# already re-read the terrain on every rebuild.
-				var gy := terrain.height_at(x, z)
-				entry["low"] = minf(float(entry["low"]), gy)
-				assets_by_id[asset_id].append({"pos": Vector3(x, gy, z), "scale": sc})
-				counts[rule_id] = int(counts.get(rule_id, 0)) + 1
+				# HOW MANY of it this square grows (see `CozyScatterRule`). The
+				# roll is derived from the SAME seed the spawn test used, so a
+				# square that passes still passes after a reload and the cluster
+				# is the same size every time.
+				var lo: int = res["cluster_lo"]
+				var span: int = maxi(1, int(res["cluster_hi"]) - lo + 1)
+				var n := lo + CozyArtSeed.pick_index(seed_val ^ 0x2545f491, span)
+				for k in n:
+					# A fresh stream per plant, from the square's own seed.
+					var s := seed_val ^ (k * 0x9e3779b9)
+					# JITTERED INSIDE ITS OWN SQUARE, not dropped on the lattice
+					# point. This is most of what turns "a grid of plants" into
+					# "a patch of grass", and it is why density is bought with
+					# clusters rather than with a finer lattice — a finer lattice
+					# is still a lattice. `JITTER < SAMPLE_STEP / 2` keeps every
+					# plant inside the square that grew it, so the per-chunk split
+					# and the incremental rebuild stay correct.
+					var bx := x + CozyArtSeed.range_f(s ^ 0x1b873593, -JITTER, JITTER)
+					var bz := z + CozyArtSeed.range_f(s ^ 0xcc9e2d51, -JITTER, JITTER)
+					var sc := CozyArtSeed.range_f(s ^ 0x5bf03635,
+						res["scale_lo"], res["scale_hi"])
+					# On the ground, not at y=0 (debt 6). The field carries a
+					# height and DIG/FILL move it, so a fixed y would leave plants
+					# hanging over a hole or sunk in a mound — and it was the
+					# HEIGHT half of that debt, not the material half, that was
+					# ever wrong: this loop already re-read the terrain on every
+					# rebuild. Read PER PLANT, because a jittered plant is not
+					# standing where the square's own sample was taken.
+					var gy := terrain.height_at(bx, bz)
+					entry["low"] = minf(float(entry["low"]), gy)
+					assets_by_id[asset_id].append({"pos": Vector3(bx, gy, bz), "scale": sc})
+				counts[rule_id] = int(counts.get(rule_id, 0)) + n
 	return entry
 
 
@@ -309,14 +341,55 @@ func _build_multimesh(asset_id: String, items: Array) -> void:
 func _material_for(asset_id: String, world_size: float) -> Material:
 	if not USE_VEGETATION_SHADER:
 		return CozyPixelArt.make_billboard_material(_texture_for(asset_id))
+	var silhouette := bool(SILHOUETTE.get(asset_id, false))
+	var size: Vector2 = SPRITE_SIZE.get(asset_id, Vector2.ONE)
 	return CozyPixelArt.make_vegetation_material(
 		_texture_for(asset_id), world_size * 0.5,
-		float(WIND_STRENGTH.get(asset_id, 1.0)))
+		float(WIND_STRENGTH.get(asset_id, 1.0)),
+		silhouette,
+		Vector2(1.0 / size.x, 1.0 / size.y),
+		# The tint IS the plant's colour for a silhouette, and is unused for a
+		# painted sprite — the shader returns the texture's own colour there.
+		CozyPixelArt.GREEN_BASE if silhouette else Color.WHITE)
 
 
-## Placeholder textures, keyed by asset id. When real art arrives this becomes a
-## lookup into the asset library and nothing else in the system changes.
-func _texture_for(asset_id: String) -> Texture2D:
+## Real sprites, by asset id, as EXPLICIT PATHS.
+##
+## Not a directory walk, and the reason is written down in
+## `tests/unit/test_asset_manifest.gd`: `DirAccess` does not work in an exported
+## build, which is why `CozyAssetLibrary` has a manifest at all. A scatter that
+## scanned `assets/art` at runtime would work in the editor and ship empty.
+##
+## A path here is a PROMISE THAT CAN BE BROKEN, so `_texture_for` checks
+## `ResourceLoader.exists` and falls back to the generated sprite. Deleting a
+## file then costs a placeholder rather than a crash — and never a silently
+## invisible field, because the fallback is a visible tuft.
+const REAL_TEXTURES := {
+	"grass_tuft_01": "res://assets/art/pixel/environment/grassleaf.png",
+}
+
+## Which sprites are SILHOUETTES — white, one colour, tinted by the shader — and
+## which carry their own colours. See `shaders/vegetation.gdshader`.
+##
+## A tree is painted: it has a brown trunk and a green canopy and no single tint
+## makes both. The grass is a silhouette, which is what lets the shader decide
+## what colour this hillside is (see `docs/CREDITS.md`).
+const SILHOUETTE := {
+	"grass_tuft_01": true,
+	"flower_daisy_01": false,
+	"rock_small_01": false,
+	"tree_oak_01": false,
+}
+
+## Sprite pixel dimensions, for the shader's one-texel outline pass. Only
+## silhouette sprites need it — a painted sprite has its outline baked in.
+const SPRITE_SIZE := {
+	"grass_tuft_01": Vector2(24, 24),
+}
+
+
+## Placeholder sprites, keyed by asset id, for anything with no real file yet.
+func _placeholder_texture(asset_id: String) -> Texture2D:
 	match asset_id:
 		"flower_daisy_01":
 			return CozyPixelArt.make_flower_texture()
@@ -328,7 +401,31 @@ func _texture_for(asset_id: String) -> Texture2D:
 			return CozyPixelArt.make_grass_tuft_texture()
 
 
+## The real sprite if there is one, the generated one otherwise.
+func _texture_for(asset_id: String) -> Texture2D:
+	var path := String(REAL_TEXTURES.get(asset_id, ""))
+	if path != "" and ResourceLoader.exists(path):
+		return load(path)
+	return _placeholder_texture(asset_id)
+
+
 # ---------------------------------------------------------------- queries
+
+## The material a kind of plant is actually drawn with, or null if that kind is
+## not in this field. For the self-check: a material is the one part of the
+## scatter that renders rather than places, and until this existed nothing
+## asserted anything about it.
+func material_of(asset_id: String) -> Material:
+	var mmi: MultiMeshInstance3D = _meshes.get(asset_id)
+	return mmi.material_override if mmi != null else null
+
+
+## The kinds of plant this field actually built, sorted.
+func asset_ids() -> Array:
+	var out: Array = _meshes.keys()
+	out.sort()
+	return out
+
 
 func instance_count(rule_id: String) -> int:
 	return int(_counts.get(rule_id, 0))
