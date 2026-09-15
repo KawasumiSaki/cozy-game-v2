@@ -179,7 +179,9 @@ GODOT="D:/privacy/Openclaw/Godot-4.7.2/Godot_v4.7.2-stable_win64.exe"
 "$GODOT" --headless --path D:/cozy/cozy-game-v2 --import
 ```
 
-**⚠️ 仓库在 `D:\cozy\cozy-game-v2`。**（`CLAUDE.md` 里的旧路径已修正。）
+**⚠️ 路径换成你自己克隆的位置。** 上面写的 `D:/cozy/cozy-game-v2` 是 Willow 机器上的路径，
+**你克隆到哪就改成哪** —— 这一行是这份文档里唯一一处只对一个人成立的东西，
+所以单独说一遍。（`CLAUDE.md` 里原来写的 C 盘旧路径已修正。）
 
 ### 三个会骗人的数数陷阱（都真发生过）
 
