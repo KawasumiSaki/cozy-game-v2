@@ -351,3 +351,61 @@ the parallax the layers exist to produce. So the tree asset needs a world-fixed
 path, while grass keeps `make_billboard_material()`. Measured payoff at the
 locked camera: about 4.6 px of layer separation at the screen edge at default
 zoom, 0 at the centre (see the yaw sweep in `--cozy-probe-occlusion`).
+
+---
+
+## 10. ⏳ UNDER DISCUSSION: three-tone shading, ink outlines, hand-drawn texture (2026-09-16)
+
+**NOT DECIDED. Nothing here is in force, and nothing here has been built.**
+Recorded because an artist reading this file should know which way the wind is
+blowing before drawing anything, and because the reasoning is worth not
+re-deriving.
+
+Willow, on feedback from someone who saw the game: **the 3D scene and the 2D
+characters read as two different games.** The ask is to follow *Borderlands* —
+**cel shading (三渲二)**, **black ink lines at model corners**, **hand-drawn
+pixel-art textures**, and the effort spent on **textures and filters**.
+
+**The problem is already diagnosed in this codebase.** `render/pixel_art.gd:696`:
+
+> *UNSHADED, like the rest of the world's flat geometry: a lit box next to an
+> unshaded billboard is two objects from two different games.*
+
+So today's answer is to **flatten the 3D as well** (`make_flat_material`) — which
+trades one seam for another: the buildings become cardboard with no light on them.
+The new direction is **the same problem answered the other way**: instead of
+removing the light, **stylise the light so both halves share one look.**
+
+**But there are FOUR asset classes here, not two** (§9's table): real 3D
+buildings, 2.5D tree shells, sprite grass, and sprite-sheet characters. "Not two
+different games" means all four sharing one set of value steps, one lighting
+curve and one outline treatment — **which is a bigger job than outlining the
+buildings**, and is also the only version that works.
+
+Three things stand in the way, each needing a decision from Willow:
+
+1. **"Characters are NOT 3D" is a LOCKED decision** (§1.2, §9, ROADMAP). The seam
+   runs along exactly that line. Either the characters stay flat and the two ends
+   are made to share a look, or the characters become real 3D — which retires the
+   Blender sprite-sheet factory (§9), the **8 character sheets** in the art
+   templates, and the money saved by "one observation direction = one set of
+   sprites".
+2. **"Filters" IS ENV V0.1's PixelRenderer, which is currently blocked** — blocked
+   precisely for changing the art pipeline. And there is a hard conflict: §2 fixes
+   **native 1280×720 with no global downscale**, while **a full-screen
+   post-process outline at native resolution draws sub-pixel-width lines.**
+3. **Where the ink line lives**: **baked into the texture** (what Borderlands
+   actually does most of), **geometry** (inverted hull — corner-crisp, but line
+   width will crawl at 32 px/m), or **post-process** (the only thing that can also
+   outline a flat character — but that is item 2 again).
+
+**The first step needs none of those decisions** and is where the work should
+start: hand-drawn pixel textures for **walls / ground / furniture** (tiled by
+size, not stretched), cel shading with cloud shadows across **grass, trees and
+rocks together**, and ink baked into those textures. All three are already on the
+to-do list in `04-美术模板/README.md` §4, and **after them the only seam left is
+the characters** — which is a much easier thing to judge.
+
+**And it is cheapest now.** The repo has almost no real art yet (the 16 template
+canvases were generated on 2026-09-15 and the character sheets are not drawn). The
+moment to change a scale or a drawing style is before there is art to redraw.
