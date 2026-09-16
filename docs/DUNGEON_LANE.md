@@ -136,7 +136,7 @@ data/               objects.gd  materials.gd  recipes.gd  jobs.gd  schedule.gd
     （这条在 `docs/INVARIANTS.md` 里有**八条**记录，是这个项目最贵的习惯。）
 11. **两个账本**：玩家 `player_state.pack`／村庄 `building.inventory`。**副本掉落是玩家的。**
     两者形状一样、方法名一样、单位一样，**写错是看不见的**（有断言盯着）。
-12. **改任何子系统行为之前，先读 `docs/INVARIANTS.md`。** 42 节，都是付过代价的。
+12. **改任何子系统行为之前，先读 `docs/INVARIANTS.md`。** 42 节 = **41 条不变量 + 1 张表（27 个已付过代价的 bug）**，都是付过代价的。
 
 ---
 
@@ -260,7 +260,7 @@ grep -c '\[FAIL\]'           # 错误！会漏掉所有 [FAIL, 原因] 形式的
 
 | 想知道 | 读 |
 |---|---|
-| **这个项目的硬规则 + 已经付过代价的 42 个坑** | `docs/INVARIANTS.md` ← **改行为前必读** |
+| **这个项目的硬规则 + 已经付过代价的 27 个坑** | `docs/INVARIANTS.md` ← **改行为前必读**（42 节） |
 | 你的权威设计文档（Phase / 数值 / 词条 / 掉落） | `docs/design/副本世界_装备词条掉落系统_V1.0.md` |
 | 架构为什么是这样（**只在要改架构时读**） | `docs/ROADMAP.md` ｜ 总纲在 Willow 那边，**先别要** |
 | 美术规范（相机锁死、像素密度） | `docs/ART_PROFILE.md` |

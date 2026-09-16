@@ -327,7 +327,7 @@ See `docs/INVARIANTS.md`.
 | Resolution | **Native 1280×720**, `canvas_items` stretch. Pixel size comes from asset texel density, not a global downscale. | doc E.2 |
 | Buildings | Remain real 3D geometry | doc E.1.3 |
 | Everything else | Pixel sprite / billboard by default | doc E.1.4 |
-| Art | Placeholder only; nothing real committed | doc §58.1 |
+| Art | **Real assets may enter the repo, but every one records source / author / a licence that permits redistribution (MIT / CC0 / CC BY) in `docs/CREDITS.md`. An unclear licence is refused.** Replaces doc §58.1's "placeholder only", which was doing two jobs — and only the first of them (keep the repo replaceable until the direction was set) is finished. | Willow 2026-09-15 |
 | **Art pipeline** | **Hybrid Pixel Diorama**: buildings/furniture = 3D, **large trees = 2.5D shells**, grass/small = sprites, **NPC = Blender-rendered sprite sheets**. Blender is a factory, not a runtime dependency — `Characters are NOT 3D` (§1.2) still holds. See `ART_PROFILE.md` §9. | Willow 2026-09-12 |
 | Language | Code and comments in English | Willow 2026-09-11 |
 | UI tool grouping | By OPERATION, not by resulting object — a Door is a wall opening, not a tool | doc #24 |
@@ -497,8 +497,15 @@ tooltip carries `describe()`, which is what it IS. That method was written for t
 and had no caller until the grid existed.
 
 **NOTHING DRAWS WORN EQUIPMENT ON THE CHARACTER** (Willow: the visuals come after the
-animation work). Cells are names, not icons: this project ships no item icons, and
-replacing `CozyItemSlot`'s label is the whole of what an icon pass would change.
+animation work).
+
+**A CELL SHOWS AN ICON WHEN THERE IS ONE, AND ITS NAME ALWAYS** (2026-09-15). The icon
+comes from `data/item_icons.gd`, which reads `appearance_id()` — so a glamoured item
+wears the icon of what it LOOKS like, the same promise the name makes. **Six of
+thirty-one drawable ids have a picture**, and `missing()` returns the other twenty-five:
+the gap is a measured work list, not the sentence "we still need icons". The icon is
+HIDDEN rather than blank when there is none, because an empty `TextureRect` still takes
+its width and a bag of mixed icons would have a ragged left edge.
 
 **Two ledgers, and they are asserted apart**: the player's pack and the village's
 account have the same shape, the same method names and the same units, so a
@@ -561,3 +568,86 @@ view closer means re-scaling every asset. Three options are written up in the
 Obsidian board index; **C** (default zoom step 0 at 11.25 m, density 64) makes the
 world density equal the character sheet's authoring density and removes the "art at
 2x" special case entirely.
+
+Willow, 2026-09-16: **C, provisionally.** The two constants and the 16 regenerated
+canvases are NOT flipped yet — the cost has to be measured and the "provisionally"
+honoured before every asset is re-scaled twice.
+
+---
+
+## Harvest resolves by the PLANT, not by the verb (2026-09-15)
+
+Willow: "不同的植物 harvest 会产生不同的产物，你逻辑先做好."
+
+`CozyRecipeDefs.for_point()` returned the FIRST recipe naming a point type, iterating
+ids in **alphabetical** order. Three plants that all offer `harvest` therefore resolved
+to ONE recipe, and two of them yielded the wrong thing **silently** — a flax plant
+handing over wheat, with nothing anywhere saying so.
+
+The first attempt added a verb per plant (`cut` for grass, `pull` for flax). That is
+the same trap with more vocabulary rather than the logic that was asked for, and it is
+gone: every gatherable offers `harvest`, and **the object names its recipe**.
+`for_object(def_id, point_type)` reads an interaction row's `recipe` and falls back to
+`for_point` for everything that predates this. Both consumers — the player's gather and
+the resident's produce — now go through it.
+
+`ambiguous_offers()` names any gatherable offering a verb that more than one recipe
+claims without saying which one it is, and the suite asserts it empty. **The rule that
+makes alphabetical order safe is not "there is only one recipe per verb" — it is "no
+two recipes may claim the same verb without the object saying which".**
+
+The assertion for the logic itself asks all three `harvest` plants one at a time, then
+counts how many of them the VERB alone could have been right for: **at most one, and
+not none.** The first version compared a value against itself — a tautology, and the
+third one this session.
+
+Also in: the chain's raw materials (stick / hay / fibre / rope / cloth) and its goal
+(a simple tent — a MATERIAL rather than an object, so placing it stays the build
+system's business), plus the two gatherables it starts from: `grass_patch` (3 hay,
+regrows in 4 h) and `flax` (2 fibre, 8 h).
+
+Baseline 168 OK / 0 FAIL / 0 ERROR; unit 27/232/3210 -> 27/233/3237.
+
+---
+
+## Icons: six of thirty-one (2026-09-15)
+
+The licence is checked FIRST, because that is the gate. Kenney Vleugels' Roguelike /
+RPG pack is **CC0-1.0** — a public-domain dedication, no conditions, redistribution
+allowed — which the pack's own `License.txt` states. A CC BY-SA pack was rejected on
+sight for the same rule: **share-alike is a condition this project cannot meet.**
+
+The sheet is committed WHOLE (94 KB, 57x31 tiles of 16x16) rather than only the tiles
+in use, so the other ~1700 sprites are addressable by coordinate without another
+download, and a tile in the game can be traced back to the sheet it came from.
+`docs/CREDITS.md` records source, author and licence. CC0 asks for no attribution and
+the entry is there anyway — "nobody is owed this one" is a reason to write less, not a
+reason to write nothing.
+
+`data/item_icons.gd` maps an id to a tile, and **drawable ids are ONE vocabulary**: a
+bag cell holds an equipment instance and a pack row holds a material, and both are an
+id with a sprite beside it.
+
+**Six of thirty-one have a picture, and the other twenty-five are the point.**
+`missing()` returns them, so the gap is a measured work list rather than the sentence
+"we still need icons". **The denominator comes from the vocabularies, not from the
+table** — a table that quietly lost a row cannot look like progress.
+
+Only what could be read off the sheet is mapped. The pack ships no sprite index, so
+every entry was checked by looking at the tile, and an id is mapped only when the
+reading is honest: `wood` is a wooden branch, `copper` is a pile of coins,
+`wooden_shield` is a shield. **A plausible-looking wrong icon is worse than no icon** —
+a bag showing a hammer over an axe is a bug report about a lie, which is the argument
+`appearance_name()` already makes about names.
+
+Both consumers draw it: the bag/gear cell puts a 16 px icon at the left of the name and
+**hides it when there is none** (an empty `TextureRect` still takes its width, so a bag
+of mixed icons would have a ragged left edge), and the pack's material rows do the
+same. The cell reads `appearance_id()`, so a glamoured item wears the icon of what it
+looks like.
+
+`detect_3d/compress_to` defaults to `1` and would swap these for VRAM-compressed on
+their first trip into 3D — applied by hand, and it has to be re-applied whenever these
+are re-imported.
+
+Baseline 168 OK / 0 FAIL / 0 ERROR; unit 27/233/3237 -> 28/237/3271.
