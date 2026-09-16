@@ -1090,3 +1090,83 @@ about the image would look "broken", it would just stop matching the art.
 The lens is computed from the CONSTANTS rather than read off the live camera,
 because a player who has zoomed out leaves a saved index behind and a check that
 read `camera.fov` would then be measuring their last session.
+
+## A save is written BESIDE the live file and renamed into place
+
+**MEASURED 2026-09-16.** `save_world` opened the live path with `FileAccess.WRITE`,
+which **truncates the old world before a byte of the new one is written**. A crash,
+a power cut or a full disk in that window does not leave a damaged world — it
+leaves **no** world. `tests/probe/save_write_probe.gd` builds exactly that file:
+
+    a truncated save with NO backup: load_world -> {} (the world is GONE)
+
+The order now is chosen so that **at every instant at least one complete
+generation exists on disk**:
+
+    1. write `<path>.tmp`, flush, close
+    2. rename the live file to `<path>.bak`      (the previous generation)
+    3. rename `<path>.tmp` to the live path
+
+A crash between (2) and (3) leaves no live file and a complete `.bak` — which is
+why `load_world` tries the backup. Same pattern Factorio, Minecraft
+(`level.dat_old`), Terraria (`.bak`/`.bak2`) and both Godot save addons arrived at
+independently, which is the only reason to trust it without a proof.
+
+**Do not "simplify" this into one write.** It looks like three steps where one
+would do, and the extra two exist for a window that is microseconds wide and
+fatal when it lands. `mutation_check_save.py` reverts it to in-place and **two
+assertions go red**, which is the whole of the evidence that they are doing
+anything.
+
+**Windows caveat, measured rather than assumed:** replace-by-rename works here and
+does replace an existing destination — verified on this project's own `user://`
+path, which contains a space, under four spellings of the call. But Windows does
+not *guarantee* what POSIX guarantees, **which is exactly why the `.bak` is the
+real net: it does not depend on the rename being atomic.** And `FileAccess.flush()`
+is the closest Godot exposes to fsync (there is no directory fsync), so a power
+cut can still lose a save that reported success. The `.bak` covers that too.
+
+## A fallback nobody is told about is not a safety feature
+
+`load_world` falls back to `.bak`, and it **says so**: `CozySaveManager.last_source`
+records `"main"` or `"backup"`, and recovering pushes a **warning**.
+
+A silent fallback is worse than none. The player keeps playing a world **one save
+old** and never learns why their last hour is gone — and every check passes,
+because every check is about whether a world came back rather than about **which**
+one. `last_source` exists so the answer to "did we fall back" is readable by an
+assertion instead of by a human reading the log.
+
+The same rule applies to a leftover `.tmp`: it is a half-written world **with a
+plausible name**, so `load_world` discards it and says that it did, rather than
+reading it.
+
+## An error path that PRINTS is indistinguishable from a broken build (again)
+
+Bug 23, still. Its fix — `JSON.new().parse()` instead of `JSON.parse_string()` —
+was applied to the dungeon blueprint on 2026-09-14 and to **nothing else**. The
+save layer kept the printing call for two days, invisible, because **no test had
+ever fed it a file it could not read**. The first test that did turned the unit
+run's `0 ERROR` into `1 ERROR` with **every check still green**.
+
+    mutation: JSON.parse_string back   ->  0 FAIL, 1 ERROR
+
+**So say it plainly: that fix is witnessed by the log and by nothing else.** It is
+the second time this file's neighbourhood has produced a fix with no assertion
+under it, and the remedy is the same one the bug list already reached — **break
+the code on purpose and count what notices**, including the things that are not
+assertions.
+
+## The save format's version field is already the one people forget
+
+The research on per-player persistence is blunt that `save_format_version` is the
+field everyone omits and then regrets, because every content patch changes the
+save's shape and a player needs to know what they are migrating **from**.
+
+**This project already has it**: `CozySaveManager.VERSION` (now 2), a registered
+migration chain, a refusal for any version no chain reaches, and a suite that
+drives the machinery through explicit target versions so its shape is covered by
+something other than the one step that happens to exist.
+
+So the answer is **not** to add a second version field. Two fields answering the
+same question is the failure this file is full of.

@@ -651,3 +651,59 @@ their first trip into 3D — applied by hand, and it has to be re-applied whenev
 are re-imported.
 
 Baseline 168 OK / 0 FAIL / 0 ERROR; unit 27/233/3237 -> 28/237/3271.
+
+---
+
+## Write safety: a save is never written in place (2026-09-16)
+
+`save_world` opened the live path with `FileAccess.WRITE`, which truncates the old
+world before a byte of the new one is written. A crash in that window does not
+leave a damaged world — it leaves **no** world, and `load_world` returns `{}`. Not
+a hypothetical: `tests/probe/save_write_probe.gd` builds that file and prints
+`load_world -> {} (the world is GONE)`.
+
+It now writes `<path>.tmp`, renames the live file to `<path>.bak`, and renames the
+temp into place — chosen so that **at every instant at least one complete
+generation exists on disk**. A crash between the two renames leaves no live file
+and a complete backup, which is why `load_world` falls back.
+
+**The fallback is not silent.** `CozySaveManager.last_source` records `main` or
+`backup` and recovering pushes a warning. A silent fallback would hand the player
+a world one save old and never say so — and pass every check, because the checks
+ask whether a world came back, not **which** one.
+
+**This also turned up bug 23's second occurrence.** `_read_doc` used
+`JSON.parse_string`, which PRINTS on a malformed document, so refusing a corrupt
+save looked exactly like a broken build. Bug 23's fix had been applied to the
+dungeon blueprint and nothing else, and it stayed invisible for two days because
+**no test had ever fed the save layer a file it could not read**. The first one
+that did turned the unit run's `0 ERROR` into `1 ERROR` with every check green.
+
+Two measured platform facts, rather than assumed ones: replace-by-rename **works
+here and does replace an existing destination** (four spellings, on this project's
+own `user://` path, which contains a space) — but Windows does not *guarantee*
+what POSIX does, which is why the `.bak` is the real net rather than the rename;
+and `FileAccess.flush()` is the closest primitive Godot exposes to fsync, so a
+power cut can still lose a save that reported success.
+
+`save_manager.exists()` is gone. It had **no callers** — a declared capability with
+no consumer, this project's most expensive habit — and `load_world` answers the
+same question by returning `{}`.
+
+**Not in this card:** addressing a world by id, and autosave on safe boundaries.
+Both belong to the per-player-world shape the online direction needs (doc §82's
+three obligations) and neither is a write-safety question.
+
+```
+save/load: 531223 byte(s) survived the disk  [OK]
+save/load a v1 file through the real path: 10 wall(s), 3 slab(s), 1 stair(s), 6 object(s)  [OK]
+save safety  7 case(s), 15 check(s)  [OK]
+
+mutation (tools/mutation_check_save.py, outside the repo)  FAIL  ERROR
+  write in place (the pre-2026-09-16 bug)                     2      9
+  JSON.parse_string back                                      0      1   <- log only
+  never try the backup                                        2      1
+  erase the live file but keep the backup                     2      0
+
+Baseline unchanged: 168 OK / 0 FAIL / 0 ERROR; unit 28/237/3271 -> 29/244/3286.
+```
