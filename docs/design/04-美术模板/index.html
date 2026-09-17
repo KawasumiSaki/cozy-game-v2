@@ -1,0 +1,43 @@
+<!doctype html><meta charset="utf-8">
+<title>CozyVale 美术模板</title>
+<style>
+ body { background:#15131a; color:#efeadf; font:13px/1.6 system-ui,sans-serif; padding:24px; }
+ h1 { color:#dbb85f; font-size:18px; margin-bottom:4px; }
+ td { padding:10px 16px; border-bottom:1px solid #333; vertical-align:middle; }
+ td.c { white-space:nowrap; }
+ /* The canvas edge is drawn in CSS, not baked into the PNG: the blank files are
+    fully transparent ON PURPOSE (they are what you draw into) and a transparent
+    file with no edge reads as a missing file. */
+ img { image-rendering:pixelated; outline:1px solid #6a6472;
+   background: repeating-conic-gradient(#2a2730 0 25%, #22202a 0 50%) 0 0/12px 12px; }
+ img.g { margin-left:10px; }
+ .px { color:#dbb85f; font:600 15px ui-monospace,monospace; }
+ i { color:#8f8877; font-style:normal; }
+</style>
+<h1>CozyVale · 美术模板</h1>
+<p>世界 <b>32 px/m</b> ｜ 角色按 <b>64 px/m</b> 画、按 32 显示。
+每格 32 px ＝ 1 米。<span style="color:#f04dd6">洋红十字</span>＝轴心（底边中心）。</p>
+<p style="color:#8f8877">左＝画布（透明，画进这里）｜右＝带格子/轴心/安全区的参考。
+<b>页面把图放大了看，实际画布只有标注的那个像素数。</b></p>
+<table><tr><td class="c"><img style="width:390px;height:390px" src="png/env_grass_tuft_01_13x13_canvas.png"><img class="g" style="width:390px;height:390px" src="png/env_grass_tuft_01_13x13_grid.png"></td><td><b>env_grass_tuft_01</b><br><span class="px">13 x 13</span> px<br><i>scatter ｜ 显示放大 30x</i></td><td>the tuft IS 0.40 m (REAL_SIZE). 13 px is what 0.40 m is at 32 px/m</td></tr>
+<tr><td class="c"><img style="width:392px;height:392px" src="png/env_flower_daisy_01_14x14_canvas.png"><img class="g" style="width:392px;height:392px" src="png/env_flower_daisy_01_14x14_grid.png"></td><td><b>env_flower_daisy_01</b><br><span class="px">14 x 14</span> px<br><i>scatter ｜ 显示放大 28x</i></td><td>bottom-centre pivot, sits ON the ground</td></tr>
+<tr><td class="c"><img style="width:390px;height:390px" src="png/env_rock_small_01_13x13_canvas.png"><img class="g" style="width:390px;height:390px" src="png/env_rock_small_01_13x13_grid.png"></td><td><b>env_rock_small_01</b><br><span class="px">13 x 13</span> px<br><i>scatter ｜ 显示放大 30x</i></td><td>a rock is [1,1] in the rules — ONE thing, not a patch</td></tr>
+<tr><td class="c"><img style="width:385px;height:385px" src="png/tree_oak_trunk_77x77_canvas.png"><img class="g" style="width:385px;height:385px" src="png/tree_oak_trunk_77x77_grid.png"></td><td><b>tree_oak_trunk</b><br><span class="px">77 x 77</span> px<br><i>tree layer ｜ 显示放大 5x</i></td><td>TRUNK ONLY — leaves go in the three files below. Bottom-centre pivot</td></tr>
+<tr><td class="c"><img style="width:385px;height:385px" src="png/tree_oak_leaves_back_77x77_canvas.png"><img class="g" style="width:385px;height:385px" src="png/tree_oak_leaves_back_77x77_grid.png"></td><td><b>tree_oak_leaves_back</b><br><span class="px">77 x 77</span> px<br><i>tree layer ｜ 显示放大 5x</i></td><td>LAYER 1 of 3, drawn BEHIND the trunk. Same canvas as the trunk, so the three line up</td></tr>
+<tr><td class="c"><img style="width:385px;height:385px" src="png/tree_oak_leaves_mid_77x77_canvas.png"><img class="g" style="width:385px;height:385px" src="png/tree_oak_leaves_mid_77x77_grid.png"></td><td><b>tree_oak_leaves_mid</b><br><span class="px">77 x 77</span> px<br><i>tree layer ｜ 显示放大 5x</i></td><td>LAYER 2 of 3 — around and over the trunk. Its sway is out of phase with the other two</td></tr>
+<tr><td class="c"><img style="width:385px;height:385px" src="png/tree_oak_leaves_front_77x77_canvas.png"><img class="g" style="width:385px;height:385px" src="png/tree_oak_leaves_front_77x77_grid.png"></td><td><b>tree_oak_leaves_front</b><br><span class="px">77 x 77</span> px<br><i>tree layer ｜ 显示放大 5x</i></td><td>LAYER 3 of 3, in FRONT of everything. See the README for what the code still needs before three layers can be drawn</td></tr>
+<tr><td class="c"><img style="width:192px;height:336px" src="png/char_idle_64x112_canvas.png"><img class="g" style="width:192px;height:336px" src="png/char_idle_64x112_grid.png"></td><td><b>char_idle</b><br><span class="px">64 x 112</span> px<br><i>character ｜ 显示放大 3x</i></td><td>2 frames. <body>/<hair>__<face>__<clothes>__<color>/idle.png</td></tr>
+<tr><td class="c"><img style="width:384px;height:336px" src="png/char_walk_128x112_canvas.png"><img class="g" style="width:384px;height:336px" src="png/char_walk_128x112_grid.png"></td><td><b>char_walk</b><br><span class="px">128 x 112</span> px<br><i>character ｜ 显示放大 3x</i></td><td>4 frames. The frame order IS the walk cycle</td></tr>
+<tr><td class="c"><img style="width:192px;height:336px" src="png/char_work_64x112_canvas.png"><img class="g" style="width:192px;height:336px" src="png/char_work_64x112_grid.png"></td><td><b>char_work</b><br><span class="px">64 x 112</span> px<br><i>character ｜ 显示放大 3x</i></td><td>2 frames</td></tr>
+<tr><td class="c"><img style="width:96px;height:336px" src="png/char_sit_32x112_canvas.png"><img class="g" style="width:96px;height:336px" src="png/char_sit_32x112_grid.png"></td><td><b>char_sit</b><br><span class="px">32 x 112</span> px<br><i>character ｜ 显示放大 3x</i></td><td>1 frame — sit is one pose</td></tr>
+<tr><td class="c"><img style="width:192px;height:336px" src="png/char_sleep_64x112_canvas.png"><img class="g" style="width:192px;height:336px" src="png/char_sleep_64x112_grid.png"></td><td><b>char_sleep</b><br><span class="px">64 x 112</span> px<br><i>character ｜ 显示放大 3x</i></td><td>2 frames</td></tr>
+<tr><td class="c"><img style="width:384px;height:384px" src="png/item_icon_32x32_canvas.png"><img class="g" style="width:384px;height:384px" src="png/item_icon_32x32_grid.png"></td><td><b>item_icon</b><br><span class="px">32 x 32</span> px<br><i>item ｜ 显示放大 12x</i></td><td>NOT LOADED YET — the bag draws item NAMES in a cell. An icon pass changes one widget</td></tr>
+<tr><td class="c"><img style="width:384px;height:384px" src="png/material_wall_64_64x64_canvas.png"><img class="g" style="width:384px;height:384px" src="png/material_wall_64_64x64_grid.png"></td><td><b>material_wall_64</b><br><span class="px">64 x 64</span> px<br><i>material ｜ 显示放大 6x</i></td><td>ONE TILE = 2 m of wall face (uv1_scale is size/2). Serves every material row: wood / stone / brick / plaster — they differ by palette, not by canvas. MUST TILE — the edges have to meet</td></tr>
+<tr><td class="c"><img style="width:400px;height:400px" src="png/material_codegen_16_16x16_canvas.png"><img class="g" style="width:400px;height:400px" src="png/material_codegen_16_16x16_grid.png"></td><td><b>material_codegen_16</b><br><span class="px">16 x 16</span> px<br><i>material ｜ 显示放大 25x</i></td><td>what `CozyMaterials.get_texture` generates TODAY. 16 px over a 2 m tile is 8 px/m — 4x coarser than the profile. One-line fix (16 -> 64), not made yet</td></tr>
+<tr><td class="c"><img style="width:384px;height:384px" src="png/material_ground_64_64x64_canvas.png"><img class="g" style="width:384px;height:384px" src="png/material_ground_64_64x64_grid.png"></td><td><b>material_ground_64</b><br><span class="px">64 x 64</span> px<br><i>material ｜ 显示放大 6x</i></td><td>2 m of ground. NOT CONSUMED YET: terrain is COLOURED per cell, never textured — this is for the day it is</td></tr>
+<tr><td class="c"><img style="width:384px;height:264px" src="png/furniture_chest_32x22_canvas.png"><img class="g" style="width:384px;height:264px" src="png/furniture_chest_32x22_grid.png"></td><td><b>furniture_chest</b><br><span class="px">32 x 22</span> px<br><i>furniture ｜ 显示放大 12x</i></td><td>chest face 1.00 x 0.70 m. ONE TEXTURE IS STRETCHED OVER EVERY FACE (uv_scale = 1), so this is a compromise between the top and the sides</td></tr>
+<tr><td class="c"><img style="width:384px;height:96px" src="png/furniture_bed_64x16_canvas.png"><img class="g" style="width:384px;height:96px" src="png/furniture_bed_64x16_grid.png"></td><td><b>furniture_bed</b><br><span class="px">64 x 16</span> px<br><i>furniture ｜ 显示放大 6x</i></td><td>bed face 2.00 x 0.50 m</td></tr>
+<tr><td class="c"><img style="width:399px;height:336px" src="png/furniture_chair_19x16_canvas.png"><img class="g" style="width:399px;height:336px" src="png/furniture_chair_19x16_grid.png"></td><td><b>furniture_chair</b><br><span class="px">19 x 16</span> px<br><i>furniture ｜ 显示放大 21x</i></td><td>chair face 0.60 x 0.50 m</td></tr>
+<tr><td class="c"><img style="width:348px;height:174px" src="png/furniture_table_58x29_canvas.png"><img class="g" style="width:348px;height:174px" src="png/furniture_table_58x29_grid.png"></td><td><b>furniture_table</b><br><span class="px">58 x 29</span> px<br><i>furniture ｜ 显示放大 6x</i></td><td>research table face 1.80 x 0.90 m</td></tr></table>
+<p style="color:#8f8877">尺寸全部来自代码常量，见 <code>README.md</code>。
+为什么这么小：见 README 第一节的「新旧对照」。</p>

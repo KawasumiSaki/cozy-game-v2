@@ -88,6 +88,19 @@ a tile already in the game can be traced back to the sheet it was cut from.
 
 ---
 
+### Kenney roguelike sheet — enlarged coordinate views
+
+| Source   | https://kenney.nl/assets/roguelike-rpg-pack (same pack as above) |
+| Author   | Kenney Vleugels (www.kenney.nl) |
+| Licence  | **CC0-1.0** |
+| Used for | `docs/design/04-美术模板/kenney参考/`: `sheet.png` (byte-identical copy of `roguelikeSheet.png`), and `b1.png`–`b4.png`, which are enlarged, grid-annotated views of the same sheet produced for picking tile coordinates by eye |
+
+Same licence as, and derived entirely from, the sheet recorded above — recorded
+separately because it is a distinct directory in this repository, and the rule is
+that every external asset is findable from here.
+
+---
+
 ## How to add an entry
 
 Copy this block, fill every line, and put it in "In use":
